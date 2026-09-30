@@ -1,0 +1,238 @@
+use num_bigint::BigInt;
+use num_traits::Signed;
+
+use crate::bigfloat::{self, BigFloat};
+use crate::number::Number;
+use crate::parser::{Evaluator, Expr};
+use crate::solver_linear;
+
+/// 发散判据：|x| 超过 1e6 即认为牛顿发散，放弃该初值。
+/// 指数/对数型方程（如 e^x+y=1）在某些初值处修正量会爆炸，不拦截会让 exp 的
+/// 中间量位数失控（卡死）。
+const NEWTON_ABS_LIMIT: i64 = 1_000_000;
+
+/// |b| > limit ?
+fn exceeds_abs_limit(b: &BigFloat, limit: i64) -> bool {
+    b.value.abs() > BigInt::from(limit) * BigInt::from(10).pow(b.precision as u32)
+}
+
+/// 在给定点求各方程残差（F_i 值）。任一方程求值失败返回 None。
+fn eval_residuals(
+    evaluator: &Evaluator,
+    equations: &[Expr],
+    vars: &[char],
+    x: &[BigFloat],
+) -> Option<Vec<BigFloat>> {
+    let xnums: Vec<Number> = x.iter().map(|b| Number::Approx(b.clone())).collect();
+    let substs: Vec<(String, &Number)> = vars
+        .iter()
+        .zip(xnums.iter())
+        .map(|(v, num)| (v.to_string(), num))
+        .collect();
+    let res: Result<Vec<BigFloat>, String> = equations
+        .iter()
+        .map(|e| evaluator.evaluate_with_vars(e, &substs).map(|n| n.to_approx()))
+        .collect();
+    res.ok()
+}
+
+/// 两个解是否相同（各分量差小于显示精度量级：显示 20 位 → 1e-12）
+fn same_solution(a: &[BigFloat], b: &[BigFloat]) -> bool {
+    let tol_exp = bigfloat::display_digits().div_ceil(2) + 2;
+    let eps = BigFloat::div(
+        &BigFloat::from_u64(1),
+        &BigInt::from(10).pow(tol_exp as u32).into(),
+        bigfloat::precision(),
+    );
+    a.iter().zip(b.iter()).all(|(x, y)| {
+        BigFloat::sub(x, y, bigfloat::precision()).value.abs() <= eps.value.abs()
+    })
+}
+
+/// 从单个初值做多维牛顿，返回收敛解（或 None）。
+/// max_iter 为迭代上限；tol_exp 控制收敛容差（10^-tol_exp）；
+/// forward 为 true 时雅可比用前向差分（粗扫提速）。
+fn newton_once(
+    evaluator: &Evaluator,
+    equations: &[Expr],
+    vars: &[char],
+    x0: &[BigFloat],
+    max_iter: usize,
+    tol_exp: u32,
+    forward: bool,
+) -> Option<Vec<BigFloat>> {
+    let n = vars.len();
+    let neq = equations.len();
+    let mut x: Vec<BigFloat> = x0.to_vec();
+
+    let h = BigFloat::div(
+        &BigFloat::from_u64(1),
+        &BigFloat::from_u64(1000000000),
+        bigfloat::precision(),
+    );
+    let tol = BigFloat::div(
+        &BigFloat::from_u64(1),
+        &BigInt::from(10).pow(tol_exp).into(),
+        bigfloat::precision(),
+    );
+
+    for _ in 0..max_iter {
+        // 残差（奇异/求值失败则放弃该初值）
+        let f = eval_residuals(evaluator, equations, vars, &x)?;
+
+        // 雅可比：前向差分（粗扫用，每变量 1 次求值）或中心差分（精收敛用）
+        let mut jac: Vec<Vec<Number>> = vec![vec![Number::from_int(0); n]; neq];
+        for j in 0..n {
+            if forward {
+                let mut xp = x.clone();
+                xp[j] = BigFloat::add(&xp[j], &h, bigfloat::precision());
+                let fp = eval_residuals(evaluator, equations, vars, &xp)?;
+                for i in 0..neq {
+                    let df = BigFloat::sub(&fp[i], &f[i], bigfloat::precision());
+                    jac[i][j] = Number::Approx(BigFloat::div(&df, &h, bigfloat::precision()));
+                }
+            } else {
+                let mut xp = x.clone();
+                xp[j] = BigFloat::add(&xp[j], &h, bigfloat::precision());
+                let fp = eval_residuals(evaluator, equations, vars, &xp)?;
+                let mut xm = x.clone();
+                xm[j] = BigFloat::sub(&xm[j], &h, bigfloat::precision());
+                let fm = eval_residuals(evaluator, equations, vars, &xm)?;
+                let two_h = BigFloat::from_u64(2) * h.clone();
+                for i in 0..neq {
+                    let df = BigFloat::sub(&fp[i], &fm[i], bigfloat::precision());
+                    jac[i][j] = Number::Approx(BigFloat::div(&df, &two_h, bigfloat::precision()));
+                }
+            }
+        }
+
+        // 解 J·δ = −F
+        let mut aug: Vec<Vec<Number>> = Vec::new();
+        for i in 0..neq {
+            let mut row = jac[i].clone();
+            row.push(Number::Approx(BigFloat::neg(&f[i])));
+            aug.push(row);
+        }
+        let ls = match solver_linear::gaussian_elimination(&mut aug, vars) {
+            Some(ls) => ls,
+            None => return None,
+        };
+        if !ls.unique {
+            return None; // 奇异雅可比
+        }
+
+        // x += δ
+        let mut max_step = BigFloat::from_u64(0);
+        for (v, dv) in &ls.values {
+            if let Some(pos) = vars.iter().position(|c| c == v) {
+                let d = dv.to_approx();
+                x[pos] = BigFloat::add(&x[pos], &d, bigfloat::precision());
+                if d.value.abs() > max_step.value.abs() {
+                    max_step = d;
+                }
+            }
+        }
+        // 发散保护：任一分量跑飞即放弃该初值
+        if x.iter().any(|b| exceeds_abs_limit(b, NEWTON_ABS_LIMIT)) {
+            return None;
+        }
+
+        // 收敛判定
+        let loose_tol = BigFloat::div(
+            &BigFloat::from_u64(1),
+            &BigInt::from(10).pow(25).into(),
+            bigfloat::precision(),
+        );
+        let f1 = eval_residuals(evaluator, equations, vars, &x);
+        if let Some(f1) = &f1 {
+            if f1.iter().all(|fi| fi.value.abs() <= tol.value.abs()) {
+                return Some(x);
+            }
+        }
+        if max_step.value.abs() <= tol.value.abs() {
+            // 步长极小但残差未必达标（可能落在平坦区/局部极小），必须再校验残差，
+            // 否则会返回"假根"（旧实现直接返回 x）。
+            if let Some(f1) = &f1 {
+                if f1.iter().all(|fi| fi.value.abs() <= loose_tol.value.abs()) {
+                    return Some(x);
+                }
+            }
+        }
+    }
+    None // 迭代超限未收敛，放弃该初值
+}
+
+/// 数值求解非线性方程组 F_i(vars) = 0。
+/// equations 均为已移项为 0 的表达式；vars 顺序即未知量顺序。
+/// 返回所有收敛到的解（网格初值遍历，多解去重）。
+pub fn solve_system(
+    evaluator: &Evaluator,
+    equations: &[Expr],
+    vars: &[char],
+) -> Vec<Vec<BigFloat>> {
+    let n = vars.len();
+    // 网格初值：变量少时用更密集（含 0.5 步长）以捕捉更多解，变量多时用稀疏网格保持性能
+    let half = BigFloat::div(
+        &BigFloat::from_u64(1),
+        &BigFloat::from_u64(2),
+        bigfloat::precision(),
+    );
+    let grid: Vec<BigFloat> = if n <= 2 {
+        vec![
+            BigFloat::from_i64(-2),
+            BigFloat::from_i64(-1),
+            BigFloat::mul(&BigFloat::from_i64(-1), &half, bigfloat::precision()),
+            BigFloat::from_u64(0),
+            half.clone(),
+            BigFloat::from_u64(1),
+            BigFloat::from_u64(2),
+        ]
+    } else {
+        vec![
+            BigFloat::from_i64(-2),
+            BigFloat::from_i64(-1),
+            BigFloat::from_u64(0),
+            BigFloat::from_u64(1),
+            BigFloat::from_u64(2),
+        ]
+    };
+    // 两阶段：先粗扫（少迭代、松容差）收集候选，再对候选精收敛到高精度
+    let mut candidates: Vec<Vec<BigFloat>> = Vec::new();
+
+    // 网格初值的笛卡尔积（共 grid.len()^n 个初值）
+    let total = grid.len().pow(n as u32);
+    let mut idx = vec![0usize; n];
+    for _ in 0..total {
+        let guess: Vec<BigFloat> = idx.iter().map(|&k| grid[k].clone()).collect();
+        // 粗扫：迭代少、容差为显示精度量级（默认 16 次、1e-12）
+        let rough_tol_exp = (bigfloat::display_digits().div_ceil(2) + 2) as u32;
+        if let Some(c) = newton_once(evaluator, equations, vars, &guess, 16, rough_tol_exp, true) {
+            if !candidates.iter().any(|r| same_solution(r, &c)) {
+                candidates.push(c);
+            }
+        }
+        // 进位（grid.len() 进制计数，遍历全部组合后自然结束）
+        let mut pos = n;
+        while pos > 0 {
+            pos -= 1;
+            idx[pos] += 1;
+            if idx[pos] < grid.len() {
+                break;
+            }
+            idx[pos] = 0;
+        }
+    }
+
+    // 精收敛阶段
+    let mut results: Vec<Vec<BigFloat>> = Vec::new();
+    for c in &candidates {
+        // 精收敛：全精度、容差取精度的一半再加 5（默认 80 位 → 1e-45）
+        let fine_tol_exp = (bigfloat::precision().div_ceil(2) + 5) as u32;
+        if let Some(sol) = newton_once(evaluator, equations, vars, c, bigfloat::precision(), fine_tol_exp, false) {
+            if !results.iter().any(|r| same_solution(r, &sol)) {
+                results.push(sol);
+            }
+        }
+    }
+    results
+}

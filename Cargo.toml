@@ -1,0 +1,20 @@
+[package]
+name = "hipercalc"
+version = "1.0.0"
+edition = "2024"
+description = "超高精度命令行计算器"
+
+[dependencies]
+num-bigint = "0.4"
+num-rational = "0.4"
+num-traits = "0.2"
+num-integer = "0.1"
+colored = "2"
+rustyline = "14"
+
+# debug 构建下仅对第三方依赖开启优化：
+# 本项目源码保持 opt-level 0（断点/变量查看不受影响），但 num-bigint / num-rational
+# 等大数库的乘除、取模、进制转换在 opt-level 0 下慢一个数量级以上，
+# 是方程求解等重计算在 debug 下耗时数十秒的主因。
+[profile.dev.package."*"]
+opt-level = 3
