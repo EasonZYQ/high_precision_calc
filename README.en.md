@@ -183,6 +183,9 @@ Notes:
 | Inverse hyperbolic | `arcsinh(x)` | inverse hyperbolic sine (defined on all reals) |
 | | `arccosh(x)` | inverse hyperbolic cosine, domain `x >= 1` |
 | | `arctanh(x)` | inverse hyperbolic tangent, domain `|x| < 1` |
+| Number theory | `gcd(a,b)` `lcm(a,b)` | greatest common divisor / least common multiple (non-zero integers; result never negative) |
+| | `primefac(n)` | prime factorization (outermost only): `primefac(12)` → `12 = 2^2 * 3` |
+| | `isprime(n)` `nextprime(n)` | primality test / next prime (see "Binary Functions") |
 
 Adding a function only touches **two places**: the `FUNCTIONS` constant in `parser.rs` (parsing validation, multi-letter splitting, and REPL highlighting all share it) and `Evaluator::eval_function`. `fact`/`abs` are internal names — don't add them to the whitelist.
 
@@ -317,9 +320,11 @@ x = 2, y = 3
 - **Nonlinear systems**: multi-dimensional Newton; first a **coarse scan** over a grid of initial guesses (forward differences, loose tolerance) collects candidates, then **fine convergence** (central differences, high tolerance); multiple solutions are deduplicated;
   after convergence the residual is re-checked (to avoid spurious flat-region roots), and any component above 10^6 is treated as divergence and dropped.
 
-## 9. Factorization fac / factor
+## 9. Factorization fac / factor and prime factorization primefac
 
 - `fac` and `factor` are equivalent and must be the outermost function of the whole expression;
+- When the argument is **exactly a non-zero integer** (`fac(12)`) it performs **prime factorization**, equivalent to
+  `primefac(12)` (see below); everything else still goes through polynomial factorization;
 - The factorization domain is decided by the current display mode:
   - **MathIO → real domain**: quadratic factors may be split into `sqrt` radicals;
   - **LineIO → rational domain**: integer/fraction coefficients only; reports when irreducible;
@@ -333,6 +338,10 @@ x = 2, y = 3
 ```
 > fac(x^2-4)
 = (x - 2) * (x + 2)
+> fac(12)
+12 = 2^2 * 3
+> fac(360)
+360 = 2^3 * 3^2 * 5
 > fac(x^2-y^2)
 = (x - y) * (x + y)
 > fac(x^3-8)
@@ -347,6 +356,39 @@ x = 2, y = 3
 ```
 
 > In LineIO a retained quadratic factor (like `x^2-2`) is definitely irreducible over the rationals (rational-root enumeration already failed), so it always gets `（有理数域内不可再分解）`; in MathIO the same quadratic factor gets no note when it can be split into `sqrt` radicals.
+
+### Prime factorization `primefac(x)`
+
+Splits an integer into a product of primes and prints it as an equation `x = …`:
+
+- **Must be the outermost function of the whole expression** (same convention as `sd`/`fac`/`triangle`);
+- The argument **must be a non-zero integer**: decimals and `0` error out (an evaluable expression like `2+3` is fine);
+- Factors are printed in **ascending** order, repeated factors use **exponents**, and `^1` is omitted;
+- **Negatives put the minus sign at the very front**: `-12 = -2^2 * 3`; `1`/`-1` have no prime factors, so they print `1 = 1` / `-1 = -1`;
+- **Scale guard**: in Fast mode the trial divisor never exceeds `10^6`; if the remaining cofactor is still composite
+  (i.e. it has a prime factor > 10^6) it reports `素因数分解超出试除预算…请先执行 /mode deep` instead of returning a
+  partial factorization; `/mode deep` removes the budget (possibly very slow).
+
+```
+> primefac(12)
+12 = 2^2 * 3
+> primefac(-12)
+-12 = -2^2 * 3
+> primefac(360)
+360 = 2^3 * 3^2 * 5
+> primefac(7)
+7 = 7
+> primefac(2+3)          ← the argument may be an evaluable expression
+5 = 5
+> primefac(-2^2)         ← -2^2 = -(2^2) = -4
+-4 = -2^2
+> primefac(0)
+错误: primefac 的参数必须是非零整数
+> primefac(2.5)
+错误: primefac 的参数必须是非零整数
+> 2*primefac(12)
+错误: primefac() 必须是整个表达式的最外层函数，不能参与其它运算
+```
 
 ## 10. Variable Storage
 
@@ -588,7 +630,8 @@ a = 4, b = 5, c ≈ 1.2076280197229941309
 | `mod(a, b)` | **Euclidean modulo**: result always satisfies `0 ≤ r < |b|` (`mod(-7,3)` → `= 2`, `mod(7,-3)` → `= 1`) |
 | `idiv(a, b)` | **Euclidean division** (matching Rust's `div_euclid`): `a = b·idiv + mod` (`idiv(-7,3)` → `= -3`, `idiv(7,-3)` → `= -2`) |
 | `nCr(n, r)` / `nPr(n, r)` | combination / permutation; arguments must be non-negative integers; `r > n` gives `0`; Fast mode `n ≤ 10000` (Deep lifts it) |
-| `gcd(a, b)` / `lcm(a, b)` | greatest common divisor / least common multiple; arguments must be integers (`gcd` always non-negative) |
+| `gcd(a, b)` / `lcm(a, b)` | greatest common divisor / least common multiple; arguments must be **non-zero integers** (decimals and `0` error); the **result is never negative**, and it can take part in other operations (`2*gcd(12,18)` → `= 12`) |
+| `primefac(n)` | **prime factorization**; must be the outermost function (see §9): `primefac(12)` → `12 = 2^2 * 3` |
 | `isprime(n)` | primality test, returns `1`/`0` (small-prime trial division + 12-base Miller-Rabin; deterministic for `n < 3.3×10^24`) |
 | `nextprime(n)` | smallest prime greater than `n` (`nextprime(0)` → `2`) |
 
@@ -695,6 +738,7 @@ src/
 ├── solver_factor.rs  polynomial factorization (uni/multi-variate, with candidate budgets)
 ├── solver_fit.rs     polynomial fit (points/vertex → general form + vertex form; templates & under-determined relationships)
 ├── solver_triangle.rs  triangle solver (sides/angles/heights → sides, angles, heights, area, perimeter, two radii)
+├── primefac.rs      integer prime factorization (trial division + budget guard) and `x = 2^2 * 3` formatting
 ├── solve_aux.rs      result prefix, periodic general form, root collection
 ├── state.rs          session persistence (modes + /let variables + /set colors, ~/.hipercalc_state)
 └── main.rs           REPL, commands, /help, color config (/set persistence), history, highlighting, timing
@@ -946,6 +990,7 @@ pub struct TriangleSolution { /* three sides, three angles (radians), three heig
 - `System` → `handle_system`: first check all-linear (Gaussian elimination), else multi-dimensional Newton;
 - `Fit` → `handle_fit`: `solver_fit::solve_polynomial_fit` solves params/coefficients, outputs `y = …` (quadratics append the vertex form). Recognition entry is `parser::parse_and_eval` → `looks_like_polynomial_fit` (line-start `(` / `P(` / `p(` + top-level comma + trailing-character whitelist) then `Parser::parse_fit`, before the `sd(…)` check to avoid clashing with function calls.
 - `Triangle` → `handle_triangle`: `solver_triangle::solve_triangle`, outputs 5 lines (`解 N:` sections when multiple). Recognition entry is `parser::parse_triangle_call`, handling the `triangle(… )` function form: the parentheses are split by **top-level commas or whitespace** (`split_triangle_items` is depth-aware, so the comma in `log(2,8)` is not a separator) and each item is `<notation>=<expression>`. Like `sd`/`fac` it **must be the outermost function of the whole expression**: if `triangle` appears anywhere else (`2*triangle(...)`) or anything follows the closing `)`, it errors with "must be the outermost function of the whole expression" and does **not** fall back to the normal grammar (which would give a misleading message).
+- `PrimeFac(n)` → `handle_primefac`: calls `primefac::format_prime_factorization` to print `12 = 2^2 * 3`. Recognition entry is `parser::parse_primefac`, also **outermost-only**, and it **evaluates and validates the parenthesized expression during parsing** into a non-zero integer (decimals/`0` error out; free variables surface the evaluation error). `EvalResult::PrimeFac` therefore carries a `Number` directly and no new `Expr` variant is needed. In addition, the `Factor` branch of `fac`/`factor` first tries `eval_nonzero_integer` and **takes the same prime-factorization path when the argument is a non-zero integer**, falling back to polynomial factorization otherwise — so `fac(12)` equals `primefac(12)`, while `fac(x^2-4)`, `fac(0)` and `fac(2.5)` are unchanged.
 
 ### Session Persistence (state.rs)
 

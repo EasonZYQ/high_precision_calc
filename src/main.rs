@@ -7,6 +7,7 @@ mod equation;
 mod i18n;
 mod number;
 mod parser;
+mod primefac;
 mod solver_factor;
 mod solver_linear;
 mod solver_nonlinear;
@@ -1457,6 +1458,7 @@ fn run_line(input: &str, state: &mut AppState) -> (String, bool) {
         Ok(EvalResult::System(equations)) => (handle_system(&equations, state), false),
         Ok(EvalResult::Fit(fit)) => (handle_fit(&fit, state), false),
         Ok(EvalResult::Triangle(tri)) => (handle_triangle(&tri, state), false),
+        Ok(EvalResult::PrimeFac(n)) => (handle_primefac(&n, state), false),
         Err(e) => (
             format!("{}: {}", "错误".color(state.colors.error).bold(), e),
             true,
@@ -1489,11 +1491,46 @@ fn format_result_line(result: &Number, state: &AppState) -> String {
     colorize_result(&format!("{} {}", prefix, output), &state.colors)
 }
 
-/// 处理 factor(表达式)：按当前显示模式（MathIO→实数域，LineIO→有理数域）因式分解
+/// 处理 fac/factor(表达式)。
+///
+/// 参数**恰好是非零整数**时走素因数分解（`fac(12)` → `12 = 2^2 * 3`），与 `primefac(12)` 等价；
+/// 其余情况（多项式、小数、0、含自由变量）保持原来的多项式分解语义不变——
+/// 所以这里只是在前面加一层"非零整数则做素因数分解"的分流。
 fn handle_factor(expr: &parser::Expr, state: &mut AppState) -> String {
+    if let Some(n) = eval_nonzero_integer(expr, &mut state.evaluator) {
+        return handle_primefac(&n, state);
+    }
     let mode = state.evaluator.display_mode;
     match solver_factor::factor_expr(&state.evaluator, expr, mode) {
         Ok(output) => colorize_result(&format!("= {}", output), &state.colors),
+        Err(e) => format!("{}: {}", "错误".color(state.colors.error).bold(), e),
+    }
+}
+
+/// 把表达式求值成"非零整数"；求值失败（含自由变量的 `x^2-4`）或结果不是非零整数时返回 `None`
+fn eval_nonzero_integer(expr: &parser::Expr, evaluator: &mut Evaluator) -> Option<Number> {
+    let v = evaluator.evaluate(expr).ok()?;
+    if v.is_zero() {
+        return None;
+    }
+    let r = v.as_rational()?;
+    if r.is_integer() {
+        Some(Number::from_bigint(r.to_integer()))
+    } else {
+        None
+    }
+}
+
+/// 处理 primefac(非零整数)：输出 `12 = 2^2 * 3` / `-12 = -2^2 * 3`
+fn handle_primefac(n: &Number, state: &AppState) -> String {
+    let Some(r) = n.as_rational() else {
+        return format!(
+            "{}: primefac 的参数必须是非零整数",
+            "错误".color(state.colors.error).bold()
+        );
+    };
+    match primefac::format_prime_factorization(&r.to_integer()) {
+        Ok(text) => colorize_result(&text, &state.colors),
         Err(e) => format!("{}: {}", "错误".color(state.colors.error).bold(), e),
     }
 }
@@ -2559,6 +2596,7 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   sin cos tan cot sec csc            三角函數（受角度模式影響）
   arcsin arccos arctan arccot arcsec arccsc
   sinh cosh tanh     雙曲函數；特殊角與反三角特殊值回傳精確值
+  gcd(a,b) lcm(a,b)  最大公因數 / 最小公倍數（須為非零整數，結果恆非負）
 
 【常數與精確度】
   pi π e             內部 80 位小數，顯示 20 位有效數字
@@ -2567,8 +2605,9 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   x^2-4=0            單方程：多項式精確/數值求全部根（含複數），三角方程給 k·π 通式
   x+y=5, 2x-y=1      逗號分隔方程組（線性高斯消去、非線性多維牛頓）
 
-【因式分解 / 顯示轉換 / 三角形】（須為最外層函數）
-  fac(x^2-4)         因式分解（factor 等價）；MathIO 實數域、LineIO 有理數域
+【因式分解 / 質因數分解 / 顯示轉換 / 三角形】（須為最外層函數）
+  fac(x^2-4)         因式分解（factor 等價）；整數入參做質因數分解；MathIO 實數域、LineIO 有理數域
+  primefac(12)       質因數分解：12 = 2^2 * 3（負數寫成 -12 = -2^2 * 3）
   sd(1/3)            顯示轉換：MathIO 轉小數、LineIO 轉符號
   triangle(a=3 b=4 c=5)  三角形求解：邊/角/高 → 全部量（可逗號分隔；只能最外層）
 
@@ -2610,6 +2649,7 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   sin cos tan cot sec csc            trigonometric (follows the angle mode)
   arcsin arccos arctan arccot arcsec arccsc
   sinh cosh tanh     hyperbolic; special angles and inverse values stay exact
+  gcd(a,b) lcm(a,b)  greatest common divisor / least common multiple (non-zero integers; never negative)
 
 [Constants & precision]
   pi π e             80 decimal digits internally, 20 significant digits on screen
@@ -2618,8 +2658,9 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   x^2-4=0            single equation: exact/numeric roots (incl. complex); trig equations get a k·π family
   x+y=5, 2x-y=1      comma-separated system (Gaussian elimination, multi-dim Newton)
 
-[Factoring / display conversion / triangle] (must be the outermost function)
-  fac(x^2-4)         factor (same as factor); MathIO over the reals, LineIO over the rationals
+[Factoring / prime factorization / display conversion / triangle] (must be the outermost function)
+  fac(x^2-4)         factor (same as factor); integer arguments get prime factorization; MathIO over the reals, LineIO over the rationals
+  primefac(12)       prime factorization: 12 = 2^2 * 3 (negatives: -12 = -2^2 * 3)
   sd(1/3)            display conversion: MathIO -> decimal, LineIO -> symbolic
   triangle(a=3 b=4 c=5)  triangle solver: sides/angles/heights -> everything (commas OK; outermost only)
 
@@ -2669,6 +2710,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   sin cos tan cot sec csc            三角函数（受角度模式影响）
   arcsin arccos arctan arccot arcsec arccsc
   sinh cosh tanh     双曲函数；特殊角与反三角特殊值返回精确值
+  gcd(a,b) lcm(a,b)  最大公因数 / 最小公倍数（须为非零整数，结果恒非负）
 
 【常数与精度】
   pi π e             内部 80 位小数，显示 20 位有效数字
@@ -2677,8 +2719,9 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   x^2-4=0            单方程：多项式精确/数值求全部根（含复数），三角方程给 k·π 通式
   x+y=5, 2x-y=1      逗号分隔方程组（线性高斯消元、非线性多维牛顿）
 
-【因式分解 / 显示转换 / 三角形】（须为最外层函数）
-  fac(x^2-4)         因式分解（factor 等价）；MathIO 实数域、LineIO 有理数域
+【因式分解 / 素因数分解 / 显示转换 / 三角形】（须为最外层函数）
+  fac(x^2-4)         因式分解（factor 等价）；整数入参做素因数分解；MathIO 实数域、LineIO 有理数域
+  primefac(12)       素因数分解：12 = 2^2 * 3（负数写成 -12 = -2^2 * 3）
   sd(1/3)            显示转换：MathIO 转小数、LineIO 转符号
   triangle(a=3 b=4 c=5)  三角形求解：边/角/高 → 全部量（可逗号分隔；只能最外层）
 
@@ -2838,6 +2881,54 @@ mod cli_tests {
             assert!(solve_eq("2^x=8", angle).contains("x = 3"));
             assert!(solve_eq("x^2-4=0", angle).contains("x = 2"));
             assert!(solve_eq("ln(x)=1", angle).contains("2.71828182845904"));
+        }
+    }
+
+    #[test]
+    fn primefac_and_gcd_lcm_end_to_end() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        for (input, want) in [
+            // primefac：负数负号顶在最前、重复因数用指数
+            ("primefac(12)", "12 = 2^2 * 3"),
+            ("primefac(-12)", "-12 = -2^2 * 3"),
+            ("primefac(1)", "1 = 1"),
+            ("primefac(-1)", "-1 = -1"),
+            ("primefac(7)", "7 = 7"),
+            ("primefac(360)", "360 = 2^3 * 3^2 * 5"),
+            ("primefac(2+3)", "5 = 5"), // 括号内是可以求值的表达式
+            // fac / factor 的整数入参走同一条路
+            ("fac(12)", "12 = 2^2 * 3"),
+            ("factor(-12)", "-12 = -2^2 * 3"),
+            // fac 的多项式路径**不受影响**
+            ("fac(x^2-4)", "= (x - 2) * (x + 2)"),
+            ("fac(0)", "= 0"),
+            ("fac(2.5)", "= 2.5"),
+            // gcd / lcm：不要求最外层，结果恒非负
+            ("gcd(12,18)", "= 6"),
+            ("lcm(4,6)", "= 12"),
+            ("gcd(-4,-6)", "= 2"),
+            ("lcm(-4,-6)", "= 12"),
+            ("2*gcd(12,18)", "= 12"),
+            ("lcm(3,5)+1", "= 16"),
+        ] {
+            let (out, is_err) = run_line(input, &mut st);
+            assert!(!is_err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 `{want}`");
+        }
+        // 报错路径
+        for bad in [
+            "primefac(0)",
+            "primefac(2.5)",
+            "primefac(1/2)",
+            "2*primefac(12)",
+            "primefac(12)+1",
+            "gcd(0,6)",
+            "lcm(6,0)",
+            "gcd(1.5,2)",
+        ] {
+            let (out, is_err) = run_line(bad, &mut st);
+            assert!(is_err, "{bad} 应当报错，实得: {out}");
+            assert!(out.contains("错误"), "{bad} → {out}");
         }
     }
 

@@ -16,7 +16,7 @@ pub const VALID_VARIABLES: &str = "xyzabcdefghjklmnopqrstuvwABCDEFGHIJKLMNOPQRST
 /// 新增函数时只需改这里 + `Evaluator::eval_function` 两处（旧实现有三份重复数组，易漏改）。
 pub const FUNCTIONS: &[&str] = &[
     "sqr", "sqrt", "sin", "cos", "tan", "cot", "sec", "csc", "arcsin", "arccos", "arctan",
-    "arccot", "arcsec", "arccsc", "abs", "sd", "factor", "fac", "triangle", "ln", "exp", "log", "log10",
+    "arccot", "arcsec", "arccsc", "abs", "sd", "factor", "fac", "primefac", "triangle", "ln", "exp", "log", "log10",
     "log2", "floor", "ceil", "round", "frac", "sign", "sinh", "cosh", "tanh", "coth", "sech",
     "csch", "arcsinh", "arccosh", "arctanh", "cbrt", "nroot", "mod", "idiv", "nCr", "nPr",
     "gcd", "lcm", "isprime", "nextprime", "re", "im", "conj", "arg",
@@ -1039,11 +1039,16 @@ impl Evaluator {
                 use num_integer::Integer;
                 let a = as_int(&args[0], "gcd/lcm 需要整数参数")?;
                 let b = as_int(&args[1], "gcd/lcm 需要整数参数")?;
-                if name == "gcd" {
-                    Ok(Number::from_bigint(a.gcd(&b)))
-                } else {
-                    Ok(Number::from_bigint(a.lcm(&b)))
+                // 参数须为**非零**整数：0 会让 gcd 退化成"另一个数"、lcm 恒为 0，按约定直接拒绝。
+                // 结果统一取绝对值 ⇒ 无论两个参数的正负，返回值**恒为非负**。
+                if a.is_zero() || b.is_zero() {
+                    return Err("gcd/lcm 的参数不能为 0".to_string());
                 }
+                Ok(Number::from_bigint(if name == "gcd" {
+                    a.gcd(&b).abs()
+                } else {
+                    a.lcm(&b).abs()
+                }))
             }
             "isprime" => {
                 let n = as_int(arg, "isprime 需要整数参数")?;
@@ -1663,6 +1668,8 @@ pub enum EvalResult {
     Fit(Box<crate::solver_fit::FitInput>),
     /// 三角形求解输入：空白分隔的赋值（`a=3 b=4 c=5`、`A=30 b=5 C=60`、`hA=4 a=3 b=4`）
     Triangle(Box<crate::solver_triangle::TriangleInput>),
+    /// `primefac(非零整数)`：参数已在解析期求值并校验（由 REPL 格式化成 `12 = 2^2 * 3`）
+    PrimeFac(Number),
 }
 
 /// 判断一行是否"看起来是多项式拟合输入"（坐标 + 可选解析式）。
@@ -1786,7 +1793,7 @@ pub fn parse_triangle_call(
             .map_or(true, |b| !is_ident_byte(*b));
     if !starts_with_ident {
         // 别处出现了 triangle ⇒ 用在了非最外层
-        if contains_triangle_ident(trimmed) {
+        if contains_ident(trimmed, "triangle") {
             return Err(OUTERMOST.to_string());
         }
         return Ok(None);
@@ -1811,10 +1818,12 @@ fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-/// 串里是否出现**独立的** `triangle` 标识符（前后都不是标识符字符）
-fn contains_triangle_ident(s: &str) -> bool {
+/// 串里是否出现**独立的** `ident` 标识符（前后都不是标识符字符）。
+/// 用于判断某个"必须最外层"的函数是否被用在了别处——词边界匹配可避免
+/// `primefac` 里的 `fac`、或变量名里的同形子串被误判。
+fn contains_ident(s: &str, ident: &str) -> bool {
     let bytes = s.as_bytes();
-    let needle = b"triangle";
+    let needle = ident.as_bytes();
     (0..bytes.len()).any(|i| {
         bytes[i..].starts_with(needle)
             && (i == 0 || !is_ident_byte(bytes[i - 1]))
@@ -1903,6 +1912,58 @@ fn parse_triangle_items(
     Ok(parts)
 }
 
+/// `primefac(非零整数)` 的入口：与 `sd` / `fac` / `triangle` 同一约定——**只能是整个表达式的最外层函数**。
+///
+/// - `Ok(Some(n))`：认领，`n` 是求值并校验过的**非零整数**；
+/// - `Ok(None)`：与本函数无关，继续走常规文法；
+/// - `Err(..)`：想用但写法不对（不是最外层 / 缺括号 / 参数不是非零整数）——直接报错、**不回落**。
+///
+/// 与 `fac`/`factor` 的分工：`fac` 的整数入参也走素因数分解（见 `main::handle_factor`），
+/// 但那条路径是"非零整数 ⇒ 分解，否则回落多项式分解"；本函数是**严格入口**，
+/// 小数、0 一律报错（含自由变量的表达式则由求值错误报出，如 `未定义变量: x`）。
+pub fn parse_primefac(input: &str, evaluator: &mut Evaluator) -> Result<Option<Number>, String> {
+    const IDENT: &str = "primefac";
+    const OUTERMOST: &str = "primefac() 必须是整个表达式的最外层函数，不能参与其它运算";
+    const NEED_INT: &str = "primefac 的参数必须是非零整数";
+    let trimmed = input.trim();
+    let starts_with_ident = trimmed.as_bytes().starts_with(IDENT.as_bytes())
+        && trimmed
+            .as_bytes()
+            .get(IDENT.len())
+            .map_or(true, |b| !is_ident_byte(*b));
+    if !starts_with_ident {
+        // 别处出现了 primefac ⇒ 用在了非最外层
+        if contains_ident(trimmed, IDENT) {
+            return Err(OUTERMOST.to_string());
+        }
+        return Ok(None);
+    }
+    let after = trimmed[IDENT.len()..].trim_start();
+    if !after.starts_with('(') {
+        return Err("primefac 函数需要参数: primefac(12)".to_string());
+    }
+    let (body, tail) = match split_paren_group(after) {
+        Some(v) => v,
+        None => return Err("缺少右括号 ')'".to_string()),
+    };
+    if !tail.trim().is_empty() {
+        return Err(OUTERMOST.to_string());
+    }
+    // 括号内是可求值的表达式（`primefac(2+3)`、`primefac(-2^2)` 都合法）
+    let mut p = Parser::new(body.trim());
+    let expr = p.parse_expression()?;
+    p.skip_whitespace();
+    if p.pos != p.input.len() {
+        return Err(format!("位置 {} 处多余的字符", p.pos));
+    }
+    let value = evaluator.evaluate(&expr)?;
+    let n = as_int(&value, NEED_INT)?;
+    if n == BigInt::from(0u32) {
+        return Err(NEED_INT.to_string());
+    }
+    Ok(Some(Number::from_bigint(n)))
+}
+
 /// 解析并求值顶层输入
 pub fn parse_and_eval(
     input: &str,
@@ -1919,6 +1980,13 @@ pub fn parse_and_eval(
     // 放在最前面：① 与拟合/方程组无冲突（都以 `t` 开头）；② 用错位置时能立刻给出明确提示。
     if let Some(tri) = parse_triangle_call(input)? {
         return Ok(EvalResult::Triangle(Box::new(tri)));
+    }
+
+    // 素因数分解：primefac(非零整数)，同样必须最外层。
+    // 必须在 `parse_factor` 之前——虽然 `primefac` 与 `fac`/`factor` 是不同的标识符，
+    // 但两者都要在 `parse_system` 之前拦截，否则 `primefac(12)` 会被当普通函数调用。
+    if let Some(n) = parse_primefac(input, evaluator)? {
+        return Ok(EvalResult::PrimeFac(n));
     }
 
     // 先尝试解析为"多项式拟合"（坐标 + 可选解析式）：
@@ -2289,6 +2357,76 @@ mod func_tests {
         assert!(matches!(
             parse_and_eval("a=3, b=4, c=5", &mut ev),
             Ok(EvalResult::System(_))
+        ));
+    }
+
+    #[test]
+    fn gcd_lcm_require_nonzero_integers() {
+        assert_eq!(eval_mathio("gcd(12,18)").unwrap(), "6");
+        assert_eq!(eval_mathio("lcm(4,6)").unwrap(), "12");
+        // 结果**恒为非负**：负数入参也一样
+        for (input, want) in [
+            ("gcd(-4,-6)", "2"),
+            ("gcd(-4,6)", "2"),
+            ("gcd(4,-6)", "2"),
+            ("lcm(-4,-6)", "12"),
+            ("lcm(-4,6)", "12"),
+            ("lcm(4,-6)", "12"),
+        ] {
+            assert_eq!(eval_mathio(input).unwrap(), want, "{input}");
+        }
+        // 0 与小数都报错
+        assert!(eval_lineio("gcd(0,6)").unwrap_err().contains("不能为 0"));
+        assert!(eval_lineio("lcm(6,0)").unwrap_err().contains("不能为 0"));
+        assert!(eval_lineio("gcd(0,0)").unwrap_err().contains("不能为 0"));
+        assert!(eval_lineio("gcd(1.5,2)").unwrap_err().contains("整数"));
+        assert!(eval_lineio("lcm(1/2,2)").unwrap_err().contains("整数"));
+        // **不要求最外层**：可以参与运算
+        assert_eq!(eval_mathio("2*gcd(12,18)").unwrap(), "12");
+        assert_eq!(eval_mathio("lcm(3,5)*2").unwrap(), "30");
+        assert_eq!(eval_mathio("gcd(12,18)+lcm(4,6)").unwrap(), "18");
+    }
+
+    #[test]
+    fn primefac_is_outermost_only_and_strict() {
+        let mut ev = Evaluator::new();
+        // 认领（求值在解析期完成）：字面量、含运算的表达式、负号
+        for good in [
+            "primefac(12)",
+            "primefac(-12)",
+            "primefac( 2+3 )",
+            "primefac(-2^2)",
+        ] {
+            assert!(
+                matches!(parse_and_eval(good, &mut ev), Ok(EvalResult::PrimeFac(_))),
+                "{good} 应被认领"
+            );
+        }
+        // 只能作用于最外层
+        for bad in [
+            "2*primefac(12)",
+            "primefac(12)+1",
+            "-primefac(12)",
+            "sin(primefac(12))",
+        ] {
+            let err = perr(bad, &mut ev);
+            assert!(err.contains("最外层"), "{bad} → {err}");
+        }
+        // 严格参数：小数 / 0 / 非整数一律拒绝
+        for bad in ["primefac(0)", "primefac(2.5)", "primefac(1/2)", "primefac(1e-3)"] {
+            assert!(perr(bad, &mut ev).contains("非零整数"), "{bad}");
+        }
+        // 缺括号 / 缺参数
+        assert!(perr("primefac 12", &mut ev).contains("需要参数"));
+        assert!(perr("primefac(12", &mut ev).contains("右括号"));
+        // fac / factor 的整数入参也走素因数分解，但**仍解析为 Factor**（由 handle_factor 分流）
+        assert!(matches!(
+            parse_and_eval("fac(12)", &mut ev),
+            Ok(EvalResult::Factor(_))
+        ));
+        assert!(matches!(
+            parse_and_eval("factor(-12)", &mut ev),
+            Ok(EvalResult::Factor(_))
         ));
     }
 

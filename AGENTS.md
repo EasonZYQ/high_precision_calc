@@ -53,6 +53,7 @@ cargo test           # 62 项单元测试
 | `solver_fit.rs`       | 多项式函数拟合：坐标 → 解析式（2 点一次、3 点二次…）；大写 `P` 为顶点；模板可带未知参数，欠定则输出参数关系 |
 | `solver_triangle.rs`  | 三角形求解：`triangle(a=3 b=4 c=5)` / `triangle(a=3, b=4, c=5)`（括号内空白或逗号分隔，**只能是整个表达式的最外层函数**）→ 三边三角三高 + 面积周长两半径；SSS/SAS/ASA/AAS/SSA 走解析解，其余数值兜底，SSA 可给两解 |
 | `solver_factor.rs`    | 多项式因式分解（单/多元，按模式区分实数域/有理数域）                                                            |
+| `primefac.rs`         | 整数素因数分解：u64/BigInt 双路试除 + 试除预算护栏（Fast 上限 10^6），格式化成 `12 = 2^2 * 3`（负数 `-12 = -2^2 * 3`）；带单元测试 |
 | `solve_aux.rs`        | `=`/`≈` 前缀、周期通式、根收集等辅助工具                                                               |
 | `state.rs`            | 会话状态持久化：显示/角度/计算模式 + `/let` 变量 + `/set` 颜色的读写（`~/.hipercalc_state`）                              |
 | `main.rs`             | REPL、`/` 指令、`/help` 正文与着色器、颜色配置（`/set` 持久化）、rustyline 实时高亮、变量存储、历史持久化、运算计时（`Timing`） |
@@ -127,6 +128,22 @@ cargo test           # 62 项单元测试
   `bigint_ext::div` 是截断除法（余数符号随被除数）、`Number::div` 是有理数精确除法。改动任何一个都要看 `mod_and_idiv_are_euclidean` 测试。
 - `bigint_ext::is_prime` 是小素数试除 + Miller-Rabin；试除循环里**必须**有 `if p >= n { break }`，
   否则 n 本身会被自己的试除判成合数（会让 `isprime(101)` 返回 0、`nextprime` 死循环）。
+- **`gcd`/`lcm` 的参数必须是非零整数**（`is_zero()` 先拦，再 `as_int`），返回值统一 `.abs()`
+  ⇒ **恒为非负**（`lcm(-4,-6) = 12`）；两者**不要求最外层**，可参与运算（`2*gcd(12,18)`）。
+  注意 `num_integer` 的 `lcm` 对负数虽已给非负值，但显式 `.abs()` 是防回归的。
+- **素因数分解 `primefac`（`primefac.rs`）**三条硬约定：
+  1. **只能是整个表达式的最外层函数**，判定与 `triangle` 同一套（`contains_ident` 词边界 + 右括号后无内容），
+     认领失败**不回落**；
+  2. **在解析期求值并校验**成非零整数（`parse_primefac` 里 `evaluator.evaluate` + `as_int` + `is_zero` 拦截），
+     所以 `EvalResult::PrimeFac` 直接携带 `Number`，**不要**为它新增 `Expr` 变体
+     （`Expr` 有 12 处穷尽 match，牵一发动全身）；
+  3. **试除必须有预算**：`TRIAL_MAX_FAST = 10^6`（与 `solver_factor::int_divisors` 一致），
+     预算用尽且剩余部分是合数时**必须报错**（`素因数分解超出试除预算…`），
+     绝不能把"没分解完的部分"当素数输出。u64 能装下就走 u64 试除（debug 下比 BigInt 取模快两个数量级）。
+  负数把负号顶在最前（`-12 = -2^2 * 3`），指数为 1 时省略 `^1`，`±1` 输出 `1 = 1` / `-1 = -1`。
+- `fac`/`factor` 的整数入参复用素因数分解：`handle_factor` 先 `eval_nonzero_integer`，
+  命中就走 `handle_primefac`，否则回落多项式分解——**必须保持"非零整数"这个条件**，
+  否则 `fac(0)`/`fac(2.5)` 的既有行为（`= 0`/`= 2.5`）会被改掉。
 - 命令行 `--lang` 与 `-q/--no-timing` 都是**会话级覆盖**：只改 `i18n` 的当前语言 / `calc_mode::timing_enabled()`，
   **不写状态文件**；要落盘必须走 `set_language()`（同时更新 `AppState::lang_base`）或 `/timing on|off`
   （同时更新 `AppState::timing_base`）。`persist_state` 只写 `lang_base` 与 `timing_for_persist(state)`。

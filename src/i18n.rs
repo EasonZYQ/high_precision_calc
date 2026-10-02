@@ -637,6 +637,13 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("组合数参数过大", "組合數參數過大", "nCr argument too large"),
     ("排列数参数过大", "排列數參數過大", "nPr argument too large"),
     ("gcd/lcm 需要整数参数", "gcd/lcm 需要整數參數", "gcd/lcm require integer arguments"),
+    ("gcd/lcm 的参数不能为 0", "gcd/lcm 的參數不能為 0", "gcd/lcm arguments must be non-zero"),
+    // ---- 素因数分解 ----
+    ("primefac 的参数必须是非零整数", "primefac 的參數必須是非零整數", "primefac requires a non-zero integer argument"),
+    ("primefac() 必须是整个表达式的最外层函数，不能参与其它运算", "primefac() 必須是整個算式的最外層函式，不能參與其它運算", "primefac() must be the outermost function of the whole expression; it cannot take part in other operations"),
+    ("primefac 函数需要参数: primefac(12)", "primefac 函式需要參數: primefac(12)", "primefac needs an argument: primefac(12)"),
+    ("素因数分解超出试除预算（Fast 模式试除上限 10^6）；如确认需要继续，请先执行 /mode deep", "質因數分解超出試除預算（Fast 模式試除上限 10^6）；如確認需要繼續，請先執行 /mode deep", "prime factorization exceeded the trial-division budget (Fast mode limit 10^6); run /mode deep to continue"),
+    ("0 没有素因数分解", "0 沒有質因數分解", "0 has no prime factorization"),
     ("isprime 需要整数参数", "isprime 需要整數參數", "isprime requires an integer argument"),
     ("nextprime 需要整数参数", "nextprime 需要整數參數", "nextprime requires an integer argument"),
     ("素性判定参数过大（上限 10^24，/mode deep 可取消限制）", "素性判定參數過大（上限 10^24，/mode deep 可取消限制）", "primality argument too large (limit 10^24; /mode deep removes it)"),
