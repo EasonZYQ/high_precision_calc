@@ -660,7 +660,7 @@ Supports **简体中文 / 繁體中文 / English**:
 - Examples: `/set functions green`, `/set operators yellow`;
 - Settings **write immediately** to `~/.hipercalc_state` and persist; invalid category/color reports and doesn't write.
 
-The REPL highlights keywords **live** (functions green, operators yellow, commands cyan, brackets magenta, constants blue, …); `/help` body, command usage hints and result output share the same palette (`colorize_text`): the same keyword is the same color on the input line, in the help list, and in the hints. Commands are recognized only at the **line start** (whitespace allowed); a `/` mid-line is division (`1/2`, `1/x` are not commands).
+The REPL highlights keywords **live** (functions green, operators yellow, commands cyan, brackets magenta, constants blue, …); **results use the very same highlighting** (`colorize_result`): `=`/`≈` take the operator color, digits the number color, `sqrt` etc. the function color, `( )` the bracket color, and everything else (variable names, Chinese labels, commas) is painted with the `result` color as a base. So a result line looks just as "structured" as the line you typed, instead of being one flat color. The `/help` body and command usage hints share the same palette (`colorize_text`): the same keyword is the same color on the input line, in results, in the help list, and in the hints. Commands are recognized only at the **line start** (whitespace allowed); a `/` mid-line is division (`1/2`, `1/x` are not commands).
 
 ## 12. Special-Angle Exact Values
 
@@ -965,7 +965,9 @@ pub struct TriangleSolution { /* three sides, three angles (radians), three heig
 ### Color Highlighting (main.rs)
 
 - `ColorConfig` holds the colors of 9 categories (functions/operators/commands/brackets/constants/numbers/prompt/result/error), with `set_category`/`get_category`/`to_pairs` shared by `/set` and the state file; category and color names live in two constant tables `COLOR_CATEGORIES` / `COLOR_OPTIONS` (English name + Chinese annotation + color value), used for both parsing and reverse lookup;
-- `colorize_text(line, colors, command_anywhere)` is the single colorizer: the REPL input line (`command_anywhere=false`, only a line-start `/xxx` is a command), the `/help` body and usage hints (`true`) all share it, so the same keyword is the same color everywhere;
+- `colorize_text(line, colors, command_anywhere)` and `colorize_result(line, colors)` are the only two coloring entry points; both share the underlying `colorize_impl(line, colors, command_anywhere, base)`. The REPL input line (`command_anywhere=false`, only a line-start `/xxx` is a command), the `/help` body and the usage hints (`true`) pass `base=None` (unrecognized text is emitted verbatim); a **result line** goes through `colorize_result` (`base=Some(colors.result)`, unrecognized text painted with the result color). So the same keyword has the same color on the input line and in results;
+- Painting a whole result line with a single `result` color is the old behavior — it looked unhighlighted and has been dropped;
+- Besides `+ - * / ^ ! =`, `OPS` also holds `≈ × ·` — the latter three only ever appear in **results** (the `≈` prefix, the `×` of scientific notation, the `k·π` of a general form);
 - `/help` is a compact no-border version (the `HELP_TEXT` constant): `【…】` section titles use the result color bolded, the body goes through `colorize_text`;
 - Bare `/set` prints usage (categories and colors with Chinese annotations) then the current colors (each name in its own color).
 

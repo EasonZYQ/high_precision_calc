@@ -692,8 +692,10 @@ a = 4, b = 5, c ≈ 1.2076280197229941309
 - 设置**立即写入 `~/.hipercalc_state`**，重启后保持；非法类别/颜色会提示且不写入。
 
 程序在 REPL 中按关键词**实时高亮**（函数绿色、运算符黄色、指令青色、括号洋红、常量蓝色等），
-`/help` 正文、各指令的用法提示与结果输出共用同一套着色调色板（`colorize_text`）：
-同一关键词在输入行、帮助列表与提示信息里颜色一致；指令只在**行首**（忽略空白）识别，
+**结果输出用的是同一套高亮**（`colorize_result`）：`=`/`≈` 按运算符上色、数字按数字色、`sqrt` 等按函数色、
+`( )` 按括号色，其余文字（变量名、中文标签、逗号）用 `result` 颜色打底——所以结果行看起来和输入行一样"有结构"，
+而不是整行一个颜色。`/help` 正文与各指令的用法提示共用同一套调色板（`colorize_text`）：
+同一关键词在输入行、结果行、帮助列表与提示信息里颜色一致；指令只在**行首**（忽略空白）识别，
 行内的 `/` 是除法运算符（`1/2`、`1/x` 不被当成指令）。
 
 ## 12. 特殊角度精确值
@@ -1062,8 +1064,13 @@ pub struct TriangleSolution { /* 三边、三角（弧度）、三高、面积�
 - `ColorConfig` 持有 9 个类别（functions/operators/commands/brackets/constants/numbers/prompt/result/error）的颜色，
   `set_category`/`get_category`/`to_pairs` 供 `/set` 与状态文件读写共用；类别与颜色名集中在
   `COLOR_CATEGORIES` / `COLOR_OPTIONS` 两张常量表（英文名 + 中文标注 + 颜色值），解析与反查都走它们；
-- `colorize_text(line, colors, command_anywhere)` 是唯一的着色器：REPL 输入行（`command_anywhere=false`，
-  只有行首 `/xxx` 算指令）、`/help` 正文与各用法提示（`true`）共用，保证同一关键词各处同色；
+- `colorize_text(line, colors, command_anywhere)` 与 `colorize_result(line, colors)` 是仅有的两个着色入口，
+  二者共用底层 `colorize_impl(line, colors, command_anywhere, base)`：REPL 输入行（`command_anywhere=false`，
+  只有行首 `/xxx` 算指令）与 `/help` 正文、各用法提示（`true`）走 `base=None`（未识别文本原样输出）；
+  **结果行**走 `colorize_result`（`base=Some(colors.result)`，未识别文本用 result 色打底）。
+  这样同一关键词在输入行与结果行颜色一致；
+- 结果行**整行只用单一 result 色**是旧行为，看起来和没高亮一样，已废弃；
+- `OPS` 里除 `+ - * / ^ ! =` 还有 `≈ × ·`——后三个只出现在**结果**串里（`≈` 前缀、科学计数法的 `×`、通式的 `k·π`）；
 - `/help` 为无边框简版（`HELP_TEXT` 常量）：`【…】` 小节标题用 result 颜色加粗，正文交给 `colorize_text`；
 - 仅输入 `/set` 时先打印用法（类别、颜色都带中文标注）再列出当前颜色（颜色名用各自的颜色显示）。
 

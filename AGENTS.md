@@ -374,12 +374,25 @@ cargo test           # 62 项单元测试
   类别与颜色名的唯一来源是 `COLOR_CATEGORIES` / `COLOR_OPTIONS` 两张表（英文名 + 中文标注 + 颜色值），
   `/set` 解析、当前颜色列表与状态文件读写都走 `parse_color` / `color_name` / `ColorConfig::{set_category,get_category,to_pairs}`，
   **不要在别处再写一份 match 颜色名**。
-- 文本着色统一走 `colorize_text(line, colors, command_anywhere)`（输入行 `false`：只有行首 `/xxx` 是指令，
-  行内 `/` 是除法；`/help` 与用法提示 `true`）。**不要另起着色函数**——否则同一关键词在输入行/帮助/提示里颜色不一致。
+- 文本着色只有两个入口，共用底层 `colorize_impl(line, colors, command_anywhere, base)`：
+  - `colorize_text(line, colors, command_anywhere)` → `base=None`，未识别文本**原样**输出。
+    输入行传 `false`（只有行首 `/xxx` 是指令，行内 `/` 是除法）、`/help` 与用法提示传 `true`。
+  - `colorize_result(line, colors)` → `base=Some(colors.result)`，未识别文本用 result 色打底。
+    **所有计算结果都必须走它**（`format_result_line`、`handle_factor`、`handle_equation`、`handle_system`、
+    `handle_fit`、`handle_triangle`、`format_solutions`、`/let` 与 `/var` 的值显示）。
+  两点不能忘：
+  ① **不要**回到"整行刷单一 `result` 颜色"（`line.color(colors.result).bold()`）——那样结果看起来和没高亮一样，
+     用户明确要求结果与输入用同一套高亮；
+  ② 底色**不要加粗**：`result` 默认 `BrightWhite`，加了 bold 会把同行的数字（`number` 默认 `White`，且
+     `colorize_impl` 里的数字分支不 bold）衬得过暗，纯白加粗标签 / 灰白数字的对比很刺眼。
+  多行/多段结果要**整体着色**后再拼接（如 `format_solutions` 是 `colorize_result(&parts.join(", "))`），
+  否则分隔用的 `, ` 会掉出底色。
   `/help` 正文是 `HELP_TEXT` 常量（无边框简版），`【…】` 小节标题用 result 颜色加粗；仅输入 `/set` 时
   `print_set_usage` 先给用法（类别、颜色均带中文标注）再列当前颜色（颜色名用各自的颜色显示）。
-  `OPS` 含 `!` 与 `=`，`CONSTANTS` 含 `π`；`/mode`、`/let`、`/del` 的用法提示用 `colorize_text` 生成，
+  `OPS` 含 `!`/`=` 以及**只在结果里出现**的 `≈`/`×`/`·`，`CONSTANTS` 含 `π`；`/mode`、`/let`、`/del` 的用法提示用 `colorize_text` 生成，
   「用法/提示」标签用 `prompt` 颜色，未知指令/模式/颜色用 `error` 颜色。
+  验证颜色**必须**加 `CLICOLOR_FORCE=1`（`colored` 在非 TTY 下自动关闭颜色，管道里看不到 ANSI，
+  这也意味着纯文本输出与着色改造前逐字节一致）。
 - `sd(x)`（`EvalResult::SdValue`）的前缀**按互换后的显示模式**判定：MathIO→小数用 `result_prefix(_, LineIO)`、
   LineIO→符号用 `result_prefix(_, MathIO)`；不能无条件写 `≈`（旧实现把 `sd(1/2)` 的精确结果标成 `≈ 0.5`）。
 - 变量存储：`/let`（名须全大写，含 `_`）、`/var`（列出）、`/del A`（删单个）、`/del all`（清空，**严格匹配小写 `all`**），存于 `Evaluator.vars`；

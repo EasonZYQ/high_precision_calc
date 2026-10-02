@@ -70,7 +70,9 @@ const SIGNATURES: &[(&str, &str)] = &[
 /// 函数白名单（高亮用）：直接引用 `parser::FUNCTIONS`，避免多处数组不同步
 const VALID_FUNCTIONS: &[&str] = parser::FUNCTIONS;
 const CONSTANTS: &[&str] = &["pi", "π", "e", "tau", "phi", "φ", "i"];
-const OPS: &[char] = &['+', '-', '*', '/', '^', '!', '='];
+/// 运算符（输入行与结果行共用）：后三个只出现在**结果**串里（`≈` 前缀、科学计数法的 `×`、
+/// 通式里的 `k·π`），补进来是为了让结果行也能把运算符一并点亮。
+const OPS: &[char] = &['+', '-', '*', '/', '^', '!', '=', '≈', '×', '·'];
 const BRACKETS: &[char] = &['(', ')', '|'];
 
 /// /set 可设置的类别（英文类别名, 中文标注）
@@ -471,9 +473,43 @@ fn highlight_input(line: &str, colors: &ColorConfig) -> String {
 /// `command_anywhere = true` 时文本中任意位置的 `/xxx` 都按指令着色（/help 列表场景），
 /// 为 false 时只认行首指令（输入行场景）。
 fn colorize_text(line: &str, colors: &ColorConfig, command_anywhere: bool) -> String {
+    colorize_impl(line, colors, command_anywhere, None)
+}
+
+/// 结果行着色：与输入行**共用同一套** token 着色（函数/运算符/括号/常量/数字各按类别上色），
+/// 未被识别的部分（变量名、中文标签、逗号等）用 `result` 颜色打底。
+/// 于是结果既保留了"这是结果"的整体色感，又能一眼看出表达式结构。
+/// （旧实现把整行刷成单一的 `result` 颜色，看起来和没高亮一样。）
+fn colorize_result(line: &str, colors: &ColorConfig) -> String {
+    colorize_impl(line, colors, false, Some(colors.result))
+}
+
+/// `colorize_text` / `colorize_result` 的公共实现。
+/// `base` 为 `None` 时未识别文本原样输出（输入行场景，行为与颜色改造前逐字节一致）；
+/// 为 `Some(c)` 时用颜色 `c` 打底（结果行场景）。
+/// 底色**不加粗**：否则纯白加粗的标签会把同行的数字（number 用普通白）衬得过暗。
+fn colorize_impl(
+    line: &str,
+    colors: &ColorConfig,
+    command_anywhere: bool,
+    base: Option<Color>,
+) -> String {
     let chars: Vec<char> = line.chars().collect();
     let len = chars.len();
     let mut result = String::new();
+    // 累积"未识别文本"，遇到已着色的 token 时按底色一次性刷出（缓冲可减少 ANSI 转义序列数量）
+    let mut plain = String::new();
+    macro_rules! flush_plain {
+        () => {
+            if !plain.is_empty() {
+                match base {
+                    Some(c) => result.push_str(&plain.color(c).to_string()),
+                    None => result.push_str(&plain),
+                }
+                plain.clear();
+            }
+        };
+    }
     let mut i = 0;
     let mut seen_non_space = false; // 行首判定（command_anywhere = false 时用）
 
@@ -490,6 +526,7 @@ fn colorize_text(line: &str, colors: &ColorConfig, command_anywhere: bool) -> St
                 i += 1;
             }
             let cmd: String = chars[start..i].iter().collect();
+            flush_plain!();
             result.push_str(&cmd.color(colors.command).bold().to_string());
             seen_non_space = true;
             continue;
@@ -501,6 +538,7 @@ fn colorize_text(line: &str, colors: &ColorConfig, command_anywhere: bool) -> St
 
         // 括号
         if BRACKETS.contains(&chars[i]) {
+            flush_plain!();
             result.push_str(&style_char(chars[i], colors.bracket).to_string());
             i += 1;
             continue;
@@ -508,6 +546,7 @@ fn colorize_text(line: &str, colors: &ColorConfig, command_anywhere: bool) -> St
 
         // 运算符
         if OPS.contains(&chars[i]) {
+            flush_plain!();
             result.push_str(&style_char(chars[i], colors.operator).bold().to_string());
             i += 1;
             continue;
@@ -523,13 +562,16 @@ fn colorize_text(line: &str, colors: &ColorConfig, command_anywhere: bool) -> St
 
             // 仅完整匹配才着色
             if VALID_FUNCTIONS.contains(&word.as_str()) {
+                flush_plain!();
                 result.push_str(&word.color(colors.function).bold().to_string());
             } else if CONSTANTS.contains(&word.as_str()) {
+                flush_plain!();
                 result.push_str(&word.color(colors.constant).bold().to_string());
             } else if word == "ans" {
+                flush_plain!();
                 result.push_str(&word.color(colors.number).to_string());
             } else {
-                result.push_str(&word);
+                plain.push_str(&word);
             }
             continue;
         }
@@ -559,15 +601,17 @@ fn colorize_text(line: &str, colors: &ColorConfig, command_anywhere: bool) -> St
                 }
             }
             let num: String = chars[start..i].iter().collect();
+            flush_plain!();
             result.push_str(&num.color(colors.number).to_string());
             continue;
         }
 
         // 其他字符
-        result.push(chars[i]);
+        plain.push(chars[i]);
         i += 1;
     }
 
+    flush_plain!();
     result
 }
 
@@ -1404,7 +1448,7 @@ fn run_line(input: &str, state: &mut AppState) -> (String, bool) {
                 ),
             };
             (
-                format!("{}", format!("{} {}", prefix, output).color(state.colors.result).bold()),
+                colorize_result(&format!("{} {}", prefix, output), &state.colors),
                 false,
             )
         }
@@ -1442,14 +1486,14 @@ fn format_result_line(result: &Number, state: &AppState) -> String {
         DisplayMode::LineIO => display::format_lineio(result),
     };
     let prefix = solve_aux::result_prefix(result, state.evaluator.display_mode);
-    format!("{}", format!("{} {}", prefix, output).color(state.colors.result).bold())
+    colorize_result(&format!("{} {}", prefix, output), &state.colors)
 }
 
 /// 处理 factor(表达式)：按当前显示模式（MathIO→实数域，LineIO→有理数域）因式分解
 fn handle_factor(expr: &parser::Expr, state: &mut AppState) -> String {
     let mode = state.evaluator.display_mode;
     match solver_factor::factor_expr(&state.evaluator, expr, mode) {
-        Ok(output) => format!("{}", format!("= {}", output).color(state.colors.result).bold()),
+        Ok(output) => colorize_result(&format!("= {}", output), &state.colors),
         Err(e) => format!("{}: {}", "错误".color(state.colors.error).bold(), e),
     }
 }
@@ -1471,7 +1515,7 @@ fn handle_triangle(tri: &solver_triangle::TriangleInput, state: &mut AppState) -
             }
             lines
                 .into_iter()
-                .map(|l| format!("{}", l.color(state.colors.result).bold()))
+                .map(|l| colorize_result(&l, &state.colors))
                 .collect::<Vec<_>>()
                 .join("\n")
         }
@@ -1509,7 +1553,7 @@ fn handle_fit(fit: &solver_fit::FitInput, state: &mut AppState) -> String {
             }
             lines
                 .into_iter()
-                .map(|l| format!("{}", l.color(state.colors.result).bold()))
+                .map(|l| colorize_result(&l, &state.colors))
                 .collect::<Vec<_>>()
                 .join("\n")
         }
@@ -1550,10 +1594,7 @@ fn handle_equation(left: &parser::Expr, right: &parser::Expr, state: &mut AppSta
         if let Some(coeffs) = solver_poly::extract_polynomial(&state.evaluator, &eq_expr, var) {
             // 恒等式：所有系数为 0（如 x-x=0、5=5）
             if coeffs.iter().all(|c| c.is_zero()) {
-                return format!(
-                    "{}",
-                    "恒等式：对变量的任意取值均成立".color(state.colors.result).bold()
-                );
+                return colorize_result("恒等式：对变量的任意取值均成立", &state.colors);
             }
             if coeffs.len() == 2 {
                 // bx + c = 0 一次方程
@@ -1583,10 +1624,13 @@ fn handle_equation(left: &parser::Expr, right: &parser::Expr, state: &mut AppSta
                     _ => {
                         if let Some(root) = newton_with_guesses(&state.evaluator, &eq_expr, var) {
                             let sol = solver_poly::PolySolution::Real(Number::Approx(root));
-                            return format!("{} 的一个解: {} = {}",
-                                variables.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(","),
-                                var,
-                                solver_poly::format_solution(&sol, state.evaluator.display_mode).color(state.colors.result).bold()
+                            return colorize_result(
+                                &format!("{} 的一个解: {} = {}",
+                                    variables.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(","),
+                                    var,
+                                    solver_poly::format_solution(&sol, state.evaluator.display_mode)
+                                ),
+                                &state.colors,
                             );
                         } else {
                             return format!("{}", "未能找到实数根".color(state.colors.error).bold());
@@ -1604,7 +1648,7 @@ fn handle_equation(left: &parser::Expr, right: &parser::Expr, state: &mut AppSta
     } else if let Some(spec) =
         solve_aux::format_periodic_roots(&roots, var, state.evaluator.angle_mode)
     {
-        format!("{}", spec.color(state.colors.result).bold())
+        colorize_result(&spec, &state.colors)
     } else {
         // 近似根：与简单分数/整数足够接近时回填精确值并按显示模式输出
         // （MathIO `1 / 2` 带 `=`；LineIO `0.5` 带 `=`、循环小数则 `≈`）
@@ -1638,7 +1682,7 @@ fn handle_equation(left: &parser::Expr, right: &parser::Expr, state: &mut AppSta
                 }
             })
             .collect();
-        format!("{}", parts.join(", ").color(state.colors.result).bold())
+        colorize_result(&parts.join(", "), &state.colors)
     }
 }
 
@@ -1732,7 +1776,7 @@ fn handle_let(input: &str, state: &mut AppState) {
             persist_state(state);
             lprint!(
                 "{}",
-                format!("{} {}", name, value_str).color(state.colors.result).bold()
+                colorize_result(&format!("{} {}", name, value_str), &state.colors)
             );
         }
         Ok(_) => {
@@ -1755,7 +1799,7 @@ fn handle_vars(state: &AppState) {
         lprint!(
             "{} {}",
             name.color(state.colors.constant).bold(),
-            value_str.color(state.colors.result).bold()
+            colorize_result(&value_str, &state.colors)
         );
     }
 }
@@ -1934,7 +1978,7 @@ fn handle_system(equations: &[(Box<parser::Expr>, Box<parser::Expr>)], state: &m
                     &solution,
                     state.evaluator.display_mode,
                 );
-                out.push(format!("{}", output.color(state.colors.result).bold()));
+                out.push(colorize_result(&output, &state.colors));
             }
         } else {
             out.push(format!("{}", "方程组无解".color(state.colors.error).bold()));
@@ -1986,7 +2030,7 @@ fn handle_system(equations: &[(Box<parser::Expr>, Box<parser::Expr>)], state: &m
                 )
             })
             .collect();
-        lines.push(format!("{}", parts.join(", ").color(state.colors.result).bold()));
+        lines.push(colorize_result(&parts.join(", "), &state.colors));
     }
     lines.join("\n")
 }
@@ -2155,7 +2199,7 @@ fn extract_var_name(expr: &parser::Expr) -> Option<char> {
 
 fn format_solutions(solutions: &[solver_poly::PolySolution], var: char, state: &AppState) -> String {
     if solutions.is_empty() {
-        return format!("{}", "无实数解".color(state.colors.result).bold());
+        return colorize_result("无实数解", &state.colors);
     }
     let mode = state.evaluator.display_mode;
     let parts: Vec<String> = solutions.iter().map(|s| {
@@ -2163,9 +2207,9 @@ fn format_solutions(solutions: &[solver_poly::PolySolution], var: char, state: &
         // 的有限小数/整数才是 `=`（如 sqrt(2) 的小数展开应标 `≈`）
         let sign = solution_prefix(s, mode);
         format!("{} {} {}", var, sign, solver_poly::format_solution(s, mode))
-            .color(state.colors.result).bold().to_string()
     }).collect();
-    format!("{}", parts.join(", "))
+    // 整体着色（而不是逐个根着色后再拼接）：这样分隔用的 `, ` 也会落在 result 底色上
+    colorize_result(&parts.join(", "), &state.colors)
 }
 
 /// 根的精确度前缀：所有分量按显示模式都"能精确呈现"才是 `=`，否则 `≈`
