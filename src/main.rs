@@ -2523,9 +2523,10 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   x^2-4=0            單方程：多項式精確/數值求全部根（含複數），三角方程給 k·π 通式
   x+y=5, 2x-y=1      逗號分隔方程組（線性高斯消去、非線性多維牛頓）
 
-【因式分解與顯示轉換】（須為最外層函數）
+【因式分解 / 顯示轉換 / 三角形】（須為最外層函數）
   fac(x^2-4)         因式分解（factor 等價）；MathIO 實數域、LineIO 有理數域
   sd(1/3)            顯示轉換：MathIO 轉小數、LineIO 轉符號
+  triangle(a=3 b=4 c=5)  三角形求解：邊/角/高 → 全部量（可逗號分隔；只能最外層）
 
 【變數儲存】
   /let A = 5         儲存變數（全大寫名），在算式、方程、fac 中自動取值
@@ -2573,9 +2574,10 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   x^2-4=0            single equation: exact/numeric roots (incl. complex); trig equations get a k·π family
   x+y=5, 2x-y=1      comma-separated system (Gaussian elimination, multi-dim Newton)
 
-[Factoring & display conversion] (must be the outermost function)
+[Factoring / display conversion / triangle] (must be the outermost function)
   fac(x^2-4)         factor (same as factor); MathIO over the reals, LineIO over the rationals
   sd(1/3)            display conversion: MathIO -> decimal, LineIO -> symbolic
+  triangle(a=3 b=4 c=5)  triangle solver: sides/angles/heights -> everything (commas OK; outermost only)
 
 [Variables]
   /let A = 5         store a variable (UPPERCASE name), usable in expressions, equations and fac
@@ -2631,9 +2633,10 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   x^2-4=0            单方程：多项式精确/数值求全部根（含复数），三角方程给 k·π 通式
   x+y=5, 2x-y=1      逗号分隔方程组（线性高斯消元、非线性多维牛顿）
 
-【因式分解与显示转换】（须为最外层函数）
+【因式分解 / 显示转换 / 三角形】（须为最外层函数）
   fac(x^2-4)         因式分解（factor 等价）；MathIO 实数域、LineIO 有理数域
   sd(1/3)            显示转换：MathIO 转小数、LineIO 转符号
+  triangle(a=3 b=4 c=5)  三角形求解：边/角/高 → 全部量（可逗号分隔；只能最外层）
 
 【变量存储】
   /let A = 5         存储变量（全大写名），在表达式、方程、fac 中自动取值

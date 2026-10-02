@@ -749,7 +749,7 @@ mod tests {
     #[test]
     fn complex_domain_seeds_do_not_panic() {
         // 回归：初值 -1 会让 ln(-1) 落入复数域，`newton_solve` 直接取实部近似曾 panic
-        let mut ev = Evaluator::new();
+        let ev = Evaluator::new();
         let roots = collect_all_roots(&ev, &eq_expr("ln(x)=1"), 'x');
         assert!(!roots.is_empty(), "ln(x)=1 应找到 e");
         let roots = collect_all_roots(&ev, &eq_expr("sqrt(x)=2"), 'x');

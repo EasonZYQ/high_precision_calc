@@ -577,6 +577,8 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("坐标重复或退化，无法唯一确定多项式", "座標重複或退化，無法唯一確定多項式", "duplicate or degenerate points — the polynomial is not unique"),
     ("坐标/参数过多（{0} 个，Fast 模式上限 {1}）；如确认需要继续，请先执行 /mode deep", "座標/參數過多（{0} 個，Fast 模式上限 {1}）；如確認需要繼續，請先執行 /mode deep", "too many points/parameters ({0}; Fast limit {1}); run /mode deep to continue"),
     // ---- 三角形求解 ----
+    ("triangle() 必须是整个表达式的最外层函数，不能参与其它运算", "triangle() 必須是整個算式的最外層函式，不能參與其它運算", "triangle() must be the outermost function of the whole expression; it cannot take part in other operations"),
+    ("triangle 函数需要参数: triangle(a=3 b=4 c=5)", "triangle 函式需要參數: triangle(a=3 b=4 c=5)", "triangle needs arguments: triangle(a=3 b=4 c=5)"),
     ("三角形记号格式错误: {0}", "三角形記號格式錯誤: {0}", "bad triangle notation: {0}"),
     ("三角形记号格式错误", "三角形記號格式錯誤", "bad triangle notation"),
     ("未知的三角形记号: {0}", "未知的三角形記號: {0}", "unknown triangle notation: {0}"),

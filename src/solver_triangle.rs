@@ -1260,6 +1260,16 @@ mod tests {
     use super::*;
     use crate::parser::{parse_and_eval, EvalResult};
 
+    /// 测试辅助：把裸的"已知量"包成新的 `triangle(...)` 调用形式。
+    /// 这样各个用例仍可只写 `a=3 b=4 c=5`，但实际走的是**新语法**（旧裸写法已移除）。
+    fn tri(input: &str) -> String {
+        if input.trim_start().starts_with("triangle(") {
+            input.to_string()
+        } else {
+            format!("triangle({})", input)
+        }
+    }
+
     /// 跑一行三角形输入，按 `handle_triangle` 的规则拼装输出行
     fn run_with(
         input: &str,
@@ -1269,7 +1279,7 @@ mod tests {
         let mut ev = Evaluator::new();
         ev.display_mode = mode;
         ev.angle_mode = angle_mode;
-        match parse_and_eval(input, &mut ev)? {
+        match parse_and_eval(&tri(input), &mut ev)? {
             EvalResult::Triangle(t) => {
                 let sols = solve_triangle(&t, &ev)?;
                 let mut lines = Vec::new();
@@ -1428,10 +1438,23 @@ mod tests {
         // 这些输入不能被当作三角形：必须仍走原有语义
         let mut ev = Evaluator::new();
         ev.display_mode = DisplayMode::MathIO;
-        for bad in ["a=3", "a=3, b=4, c=5", "x=1 y=2", "(1,2) (3,4)"] {
+        for bad in [
+            "a=3",
+            "a=3, b=4, c=5",
+            "x=1 y=2",
+            "(1,2) (3,4)",
+            // 旧版的裸写三角形形式已移除 ⇒ 现在必须报错，不能再被认领
+            "a=3 b=4 c=5",
+            "A=30 a=3 b=4",
+        ] {
             let parsed = parse_and_eval(bad, &mut ev);
             let is_triangle = matches!(parsed, Ok(EvalResult::Triangle(_)));
             assert!(!is_triangle, "{bad} 被误判为三角形输入");
         }
+        // 新语法仍能正常认领
+        assert!(matches!(
+            parse_and_eval("triangle(a=3 b=4 c=5)", &mut ev),
+            Ok(EvalResult::Triangle(_))
+        ));
     }
 }

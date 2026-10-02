@@ -460,29 +460,29 @@ y = (2 - b)*x^2 + b*x + 1
 
 Example: `/let A=2` then `(0,1) (1,3) y = A*x + b` ⇒ `b = 1` and `y = 2*x + 1` (`A` known, only `b` solved).
 
-### Triangle Solver (type sides / angles / heights to get everything)
+### Triangle Solver (`triangle(...)` gives you everything)
 
-Type **whitespace-separated assignments**; given some sides/angles/heights, it computes the full triangle:
+Put the known sides / angles / heights inside `triangle(...)` and it computes the full triangle:
 
 ```
-> a=3 b=4 c=5
+> triangle(a=3 b=4 c=5)
 a = 3, b = 4, c = 5
 A ≈ 36.869897645844021297, B ≈ 53.130102354155978703, C = 90
 hA = 4, hB = 3, hC = 12 / 5
 面积 = 6, 周长 = 12
 外接圆半径 = 5 / 2, 内切圆半径 = 1
 
-> A=30 b=5 C=60
+> triangle(A=30, b=5, C=60)        ← commas work too
 a = 5 / 2, b = 5, c = 5*sqrt(3) / 2
 A = 30, B = 90, C = 60
 hA = 5*sqrt(3) / 2, …
 
-> hA=4 a=3 b=4                  ← height + base → area, then reduces to SAS
+> triangle(hA=4 a=3 b=4)           ← height + base → area, then reduces to SAS
 a = 3, b = 4, c = 5
 A ≈ 36.869897645844021297, B ≈ 53.130102354155978703, C = 90
 …
 
-> a=4 b=5 A=30                  ← SSA two solutions, listed separately
+> triangle(a=4 b=5 A=30)           ← SSA two solutions, listed separately
 解 1:
 a = 4, b = 5, c ≈ 7.4526260181213923367
 …
@@ -490,23 +490,24 @@ a = 4, b = 5, c ≈ 7.4526260181213923367
 a = 4, b = 5, c ≈ 1.2076280197229941309
 …
 
-> hA=2 hB=3 hC=4
+> triangle(hA=2 hB=3 hC=4)
 错误: 已知信息不足，无法确定三角形（形状已确定 a : b : c = 6 : 4 : 3，仅缺一个长度）
 ```
 
 | Rule | Description |
 |---|---|
-| Input | `a=3 b=4 c=5` (**space-separated**, no parentheses, compact `name=value`; `a = 3` is not supported) |
+| Input | `triangle(a=3 b=4 c=5)`; inside the parentheses, `<notation>=<value>` items separated by **whitespace or commas** (a comma that belongs to a function call, e.g. `log(2,8)`, is not a separator) |
+| **Outermost only** | Same convention as `sd(...)`/`fac(...)`: `triangle(...)` must be the outermost function of the whole expression. `2*triangle(...)` or `triangle(...)+1` errors with "must be the outermost function of the whole expression" |
 | Notation | sides `a,b,c`; angles `A,B,C` (`A` opposite `a`); heights `hA,hB,hC` (`hA` is the height onto side `a` = BC) |
 | Angle unit | follows `/mode deg\|rad`: `deg` → `A=30` is 30°; `rad` → write `A=pi/6` (writing `A=30` errors because 30 radians > 180°) |
 | Values | any expression: `a=1/2`, `b=sqrt(2)`, `hA=3*sin(30)` |
 | Strategy | SSS/SAS/ASA/AAS/SSA and "height-reducible" cases go through **formula solutions**; the rest fall back to **numeric solving** |
 | Height reduction | `hA·a = 2S` (height×base→area), `hA = b·sinC = c·sinB` (height×adjacent angle→side), `a·hA = b·hB` (two heights→side ratio) |
 | Multiple solutions | `SSA` (`b·sinA < a < b`) and "two sides + area" give two solutions, listed as `解 1:` / `解 2:` |
-| Exactness | `a=3 b=4 c=5` gives `C = 90` (exact), `面积 = 6`, `R = 5 / 2`, `r = 1`; non-special angles get `≈` |
+| Exactness | `triangle(a=3 b=4 c=5)` gives `C = 90` (exact), `面积 = 6`, `R = 5 / 2`, `r = 1`; non-special angles get `≈` |
 | Known-first | after verification, known values are written back verbatim (`A=30` shows `30`, not `29.9999…`) |
 | Validation | triangle inequality, angle sum, over-determination consistency are all checked; contradictions report clearly |
-| No conflict | `a=3` (equation), `a=3, b=4, c=5` (system), `x=1 y=2` etc. keep their existing behavior |
+| No conflict | `a=3` (equation), `a=3, b=4, c=5` (system), `x=1 y=2` etc. keep their existing behavior; the old **bare** form `a=3 b=4 c=5` was removed (it now reports "多余的字符"), so it can never be confused with systems or implicit multiplication |
 
 ### Complex Number Support
 
@@ -944,7 +945,7 @@ pub struct TriangleSolution { /* three sides, three angles (radians), three heig
 - `Equation` → `handle_equation`: collect variables and **filter out stored uppercase variables** → single unknown goes through the `newton_with_guesses` / `solve_poly_full` hybrid path → `solve_aux::collect_all_roots` merges multiple solutions, then `format_periodic_roots` tries the **periodic general form**;
 - `System` → `handle_system`: first check all-linear (Gaussian elimination), else multi-dimensional Newton;
 - `Fit` → `handle_fit`: `solver_fit::solve_polynomial_fit` solves params/coefficients, outputs `y = …` (quadratics append the vertex form). Recognition entry is `parser::parse_and_eval` → `looks_like_polynomial_fit` (line-start `(` / `P(` / `p(` + top-level comma + trailing-character whitelist) then `Parser::parse_fit`, before the `sd(…)` check to avoid clashing with function calls.
-- `Triangle` → `handle_triangle`: `solver_triangle::solve_triangle`, outputs 5 lines (`解 N:` sections when multiple). Recognition entry is `parser::looks_like_triangle` (**whitespace-split** + each token shaped `<记号>=<non-empty RHS>`, RHS without `,` or `=`, notation strictly in `a,b,c,A,B,C,hA,hB,hC`, token count ≥ 2), intercepted **before** `parse_system` — otherwise `a=3 b=4 c=5` would parse as `a = 3*b` and error "多余字符".
+- `Triangle` → `handle_triangle`: `solver_triangle::solve_triangle`, outputs 5 lines (`解 N:` sections when multiple). Recognition entry is `parser::parse_triangle_call`, handling the `triangle(… )` function form: the parentheses are split by **top-level commas or whitespace** (`split_triangle_items` is depth-aware, so the comma in `log(2,8)` is not a separator) and each item is `<notation>=<expression>`. Like `sd`/`fac` it **must be the outermost function of the whole expression**: if `triangle` appears anywhere else (`2*triangle(...)`) or anything follows the closing `)`, it errors with "must be the outermost function of the whole expression" and does **not** fall back to the normal grammar (which would give a misleading message).
 
 ### Session Persistence (state.rs)
 
@@ -1005,7 +1006,7 @@ main.rs: Timing::begin()（start the \r dynamic timing thread on a terminal）
   ▼
 parse_and_eval (parser.rs)
   ├── looks_like_polynomial_fit → parse_fit (points + optional template)
-  ├── looks_like_triangle → parse_triangle (whitespace-separated assignments)
+  ├── triangle(...) → parse_triangle_call (outermost function; whitespace/comma-separated assignments)
   ├── sd(...) / fac(...) top-level recognition
   ├── parse_system → parse_equation → expression parsing
   │      └── scale guards query calc_mode::is_deep(): Fast errors over limit / Deep allows

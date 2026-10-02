@@ -51,7 +51,7 @@ cargo test           # 62 项单元测试
 | `solver_poly.rs`      | 多项式求根：系数提取、二次精确解、Durand-Kerner 全复根、单根牛顿                                                |
 | `solver_nonlinear.rs` | 非线性方程组两阶段多维牛顿（粗扫 + 精收敛）                                                                |
 | `solver_fit.rs`       | 多项式函数拟合：坐标 → 解析式（2 点一次、3 点二次…）；大写 `P` 为顶点；模板可带未知参数，欠定则输出参数关系 |
-| `solver_triangle.rs`  | 三角形求解：空白分隔的 `a=3 b=4 c=5` / `A=30 b=5 C=60` / `hA=4 a=3 b=4` → 三边三角三高 + 面积周长两半径；SSS/SAS/ASA/AAS/SSA 走解析解，其余数值兜底，SSA 可给两解 |
+| `solver_triangle.rs`  | 三角形求解：`triangle(a=3 b=4 c=5)` / `triangle(a=3, b=4, c=5)`（括号内空白或逗号分隔，**只能是整个表达式的最外层函数**）→ 三边三角三高 + 面积周长两半径；SSS/SAS/ASA/AAS/SSA 走解析解，其余数值兜底，SSA 可给两解 |
 | `solver_factor.rs`    | 多项式因式分解（单/多元，按模式区分实数域/有理数域）                                                            |
 | `solve_aux.rs`        | `=`/`≈` 前缀、周期通式、根收集等辅助工具                                                               |
 | `state.rs`            | 会话状态持久化：显示/角度/计算模式 + `/let` 变量 + `/set` 颜色的读写（`~/.hipercalc_state`）                              |
@@ -303,11 +303,16 @@ cargo test           # 62 项单元测试
 
 ### 三角形求解（solver_triangle.rs）
 
-- **识别在 `parser::looks_like_triangle`，必须排在 `parse_system` 之前**（插在拟合守卫之后）。
-  规则是"按**空白**切 token + token 数 ≥ 2 + 每个 token 形如 `<记号>=<非空 RHS>` +
-  RHS 不含 `,`/`=` + 记号严格属于 `a,b,c,A,B,C,hA,hB,hC`"。三条排除线各有其用，缺一不可：
-  单个 `a=3` 是**合法方程**、`a=3, b=4, c=5`（含逗号）是**合法方程组**、`x=1 y=2` 名字不在记号表。
-  只支持紧凑写法 `a=3`，**不支持 `a = 3`**（`=` 两侧空格的切分与项分隔符同形，无法区分）。
+- **输入形式是 `triangle(a=3 b=4 c=5)` 函数调用，识别在 `parser::parse_triangle_call`，必须排在 `parse_system` 之前**
+  （插在拟合守卫之前/之后都可以，两者首字符不同、不冲突）。**旧版的裸写 `a=3 b=4 c=5` 已取消**，
+  原因：那种写法与"方程组 / 隐式乘法"边界太近（`a=3 b=4 c=5` 本会被读成 `a = 3*b`），很容易误解，
+  改用显式函数调用后语义一目了然（`a=3 b=4 c=5` 现在回到"位置 5 处多余的字符"）。
+- **与 `sd`/`fac` 同一约定：只能是整个表达式的最外层函数**。判定分两层，缺一不可：
+  ① `triangle` 标识符必须出现在**输入开头**（`contains_triangle_ident` 做词边界匹配，别处出现即报"必须是整个表达式的最外层函数"）；
+  ② 配对右括号之后**不能再有内容**（否则同样报最外层错误）。认领后失败**不回落**——回落只会给出误导性提示。
+  注意 `EvalResult` 没有实现 `Debug`，测试里取错误串要用自写的 `perr()` 而不是 `unwrap_err()`。
+- **括号内的分隔符是"顶层逗号**或**空白"**（`split_triangle_items` 做深度感知，`log(2,8)` 里的逗号不会被切开）。
+  旧的 `looks_like_triangle` 因为要避开 `,`（方程组）才禁止 RHS 含逗号，改成函数形式后这个限制消失了。
 - **内部角度一律弧度**：输入用 `angle_to_radians` 按 `Evaluator::angle_mode` 换算（`deg` 时乘 `π/180`，
   保精确），输出用 `parser::radians_to_degrees` 精确转回（`Pi(coeff) → Rational(coeff*180)` ⇒ `π/2` 显示 `90`）。
   **反三角必须先走 `trig::try_exact_*` 再转换**，顺序反了 `arccos(0)` 就退化成 `≈ 90`。

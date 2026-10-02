@@ -16,7 +16,7 @@ pub const VALID_VARIABLES: &str = "xyzabcdefghjklmnopqrstuvwABCDEFGHIJKLMNOPQRST
 /// 新增函数时只需改这里 + `Evaluator::eval_function` 两处（旧实现有三份重复数组，易漏改）。
 pub const FUNCTIONS: &[&str] = &[
     "sqr", "sqrt", "sin", "cos", "tan", "cot", "sec", "csc", "arcsin", "arccos", "arctan",
-    "arccot", "arcsec", "arccsc", "abs", "sd", "factor", "fac", "ln", "exp", "log", "log10",
+    "arccot", "arcsec", "arccsc", "abs", "sd", "factor", "fac", "triangle", "ln", "exp", "log", "log10",
     "log2", "floor", "ceil", "round", "frac", "sign", "sinh", "cosh", "tanh", "coth", "sech",
     "csch", "arcsinh", "arccosh", "arctanh", "cbrt", "nroot", "mod", "idiv", "nCr", "nPr",
     "gcd", "lcm", "isprime", "nextprime", "re", "im", "conj", "arg",
@@ -1762,16 +1762,126 @@ fn parse_fit_template(tail: &str) -> Result<Option<crate::solver_fit::FitTemplat
     Ok(Some(crate::solver_fit::FitTemplate { rhs, var: 'x' }))
 }
 
-/// 解析"三角形赋值行"：空白分隔的 `<记号>=<表达式>`（调用方已用 `looks_like_triangle` 确认语法）。
+/// 三角形求解入口：`triangle(a=3 b=4 c=5)` / `triangle(a=3, b=4, c=5)`。
+///
+/// 与 `sd` / `fac` 同一约定：**必须是整个表达式的最外层函数**，不能参与其它运算。
+/// 括号内是按空白**或**逗号分隔的 `<记号>=<表达式>`（逗号在括号内，如 `log(2,8)`，不会被当分隔符）。
+///
+/// - `Ok(Some(..))`：认领，交给求解阶段；
+/// - `Ok(None)`：这条输入与 `triangle` 无关，继续走常规文法；
+/// - `Err(..)`：用户显然想用 `triangle` 但写法不对（不是最外层 / 缺括号 / 内容非法），直接报错不回落。
+///
+/// 说明：旧版允许裸写 `a=3 b=4 c=5`，那与"方程组/隐式乘法"的边界很容易混淆
+/// （`a=3 b=4 c=5` 本会被读成 `a = 3*b`），故改为显式函数调用。
+pub fn parse_triangle_call(
+    input: &str,
+) -> Result<Option<crate::solver_triangle::TriangleInput>, String> {
+    const OUTERMOST: &str = "triangle() 必须是整个表达式的最外层函数，不能参与其它运算";
+    let trimmed = input.trim();
+    // 是否以独立的 `triangle` 标识符开头（后面不能紧跟标识符字符）
+    let starts_with_ident = trimmed.as_bytes().starts_with(b"triangle")
+        && trimmed
+            .as_bytes()
+            .get("triangle".len())
+            .map_or(true, |b| !is_ident_byte(*b));
+    if !starts_with_ident {
+        // 别处出现了 triangle ⇒ 用在了非最外层
+        if contains_triangle_ident(trimmed) {
+            return Err(OUTERMOST.to_string());
+        }
+        return Ok(None);
+    }
+    let after = trimmed["triangle".len()..].trim_start();
+    if !after.starts_with('(') {
+        return Err("triangle 函数需要参数: triangle(a=3 b=4 c=5)".to_string());
+    }
+    let (body, tail) = match split_paren_group(after) {
+        Some(v) => v,
+        None => return Err("缺少右括号 ')'".to_string()),
+    };
+    if !tail.trim().is_empty() {
+        return Err(OUTERMOST.to_string());
+    }
+    let parts = parse_triangle_items(body)?;
+    Ok(Some(crate::solver_triangle::TriangleInput { parts }))
+}
+
+/// 标识符字符（字母/数字/下划线）
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// 串里是否出现**独立的** `triangle` 标识符（前后都不是标识符字符）
+fn contains_triangle_ident(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let needle = b"triangle";
+    (0..bytes.len()).any(|i| {
+        bytes[i..].starts_with(needle)
+            && (i == 0 || !is_ident_byte(bytes[i - 1]))
+            && (i + needle.len() >= bytes.len() || !is_ident_byte(bytes[i + needle.len()]))
+    })
+}
+
+/// 从形如 `( … )尾巴` 的串里切出括号内容与尾巴；深度感知，支持嵌套括号。
+/// 字节下标只在 ASCII 括号处切分，因此多字节 UTF-8 内容安全。
+fn split_paren_group(s: &str) -> Option<(&str, &str)> {
+    let b = s.as_bytes();
+    if b.first() != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (i, &c) in b.iter().enumerate() {
+        match c {
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some((&s[1..i], &s[i + 1..]));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 按"顶层逗号**或**空白"切分括号内内容：括号里的逗号/空白（如 `log(2,8)`）不切分
+fn split_triangle_items(body: &str) -> Vec<&str> {
+    let b = body.as_bytes();
+    let mut out: Vec<&str> = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for i in 0..b.len() {
+        match b[i] {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b',' | b' ' | b'\t' | b'\n' | b'\r' if depth == 0 => {
+                if start < i {
+                    out.push(&body[start..i]);
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < b.len() {
+        out.push(&body[start..]);
+    }
+    out
+}
+
+/// 解析 `triangle(...)` 括号内的各项 `<记号>=<表达式>`。
 /// 每个右端表达式用独立 `Parser` 解析（支持 `1/2`、`sqrt(2)`、`pi/6`），求值延迟到求解阶段。
-pub fn parse_triangle(input: &str) -> Result<crate::solver_triangle::TriangleInput, String> {
+fn parse_triangle_items(
+    body: &str,
+) -> Result<Vec<(crate::solver_triangle::TriPart, Expr)>, String> {
     let mut parts: Vec<(crate::solver_triangle::TriPart, Expr)> = Vec::new();
-    for token in input.split_whitespace() {
-        let eq = match token.find('=') {
+    for item in split_triangle_items(body) {
+        let eq = match item.find('=') {
             Some(i) => i,
-            None => return Err(format!("三角形记号格式错误: {0}", token)),
+            None => return Err(format!("三角形记号格式错误: {0}", item)),
         };
-        let (lhs, rhs) = (&token[..eq], &token[eq + 1..]);
+        let (lhs, rhs) = (&item[..eq], &item[eq + 1..]);
         let part = match crate::solver_triangle::tri_part_from_name(lhs) {
             Some(p) => p,
             None => return Err(format!("未知的三角形记号: {0}", lhs)),
@@ -1790,38 +1900,7 @@ pub fn parse_triangle(input: &str) -> Result<crate::solver_triangle::TriangleInp
     if parts.is_empty() {
         return Err("三角形记号格式错误".to_string());
     }
-    Ok(crate::solver_triangle::TriangleInput { parts })
-}
-
-/// 判断一行是否"看起来是三角形赋值行"。
-///
-/// 只在**现有文法必然报错**的空白区认领（实测：`a=3 b=4 c=5` 现报"位置 5 处多余的字符"）：
-/// - 按空白切分，token 数必须 ≥ 2（单个 `a=3` 是合法方程，不能抢）；
-/// - 每个 token 必须形如 `<名>=<RHS>`，RHS 非空且**不含 `,`**（`a=3, b=4, c=5` 是合法方程组）；
-/// - `<名>` 必须严格属于 `a,b,c,A,B,C,hA,hB,hC`（大小写敏感）。
-///
-/// 因此 `a=3`、`a=3, b=4, c=5`、`x=1 y=2`、`h=1 a=2 b=3`、`(1,2) (3,4)`、`3+4`
-/// 都**不会**被认领，行为与旧版一致。也不支持 `a = 3`（`=` 两侧的空格与项分隔符同形）。
-pub fn looks_like_triangle(input: &str) -> bool {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    let mut count = 0usize;
-    for token in trimmed.split_whitespace() {
-        let Some(eq) = token.find('=') else {
-            return false;
-        };
-        let (lhs, rhs) = (&token[..eq], &token[eq + 1..]);
-        if rhs.is_empty() || rhs.contains('=') || rhs.contains(',') {
-            return false;
-        }
-        if crate::solver_triangle::tri_part_from_name(lhs).is_none() {
-            return false;
-        }
-        count += 1;
-    }
-    count >= 2
+    Ok(parts)
 }
 
 /// 解析并求值顶层输入
@@ -1836,6 +1915,12 @@ pub fn parse_and_eval(
         return Err("空表达式".to_string());
     }
 
+    // 三角形求解：triangle(已知量)，与 sd/fac 同属"必须最外层"的顶层函数。
+    // 放在最前面：① 与拟合/方程组无冲突（都以 `t` 开头）；② 用错位置时能立刻给出明确提示。
+    if let Some(tri) = parse_triangle_call(input)? {
+        return Ok(EvalResult::Triangle(Box::new(tri)));
+    }
+
     // 先尝试解析为"多项式拟合"（坐标 + 可选解析式）：
     // 只在现有文法必然报错的空白区认领（见 looks_like_polynomial_fit），认领后失败即报错、不回落
     if looks_like_polynomial_fit(input) {
@@ -1846,14 +1931,6 @@ pub fn parse_and_eval(
             return Err(format!("位置 {} 处多余的字符", fit_parser.pos));
         }
         return Ok(EvalResult::Fit(Box::new(fit)));
-    }
-
-    // 再尝试解析为"三角形求解"（空白分隔的赋值）。
-    // 与拟合同理：只在现有文法必然报错的空白区认领，认领后失败即报错、不回落。
-    // 必须在 `parse_system` 之前拦截，否则 `a=3 b=4 c=5` 会被读成 `a = 3*b` 后报"多余字符"。
-    if looks_like_triangle(input) {
-        let tri = parse_triangle(input)?;
-        return Ok(EvalResult::Triangle(Box::new(tri)));
     }
 
     // 先尝试解析为 sd 表达式
@@ -2123,17 +2200,31 @@ mod func_tests {
         assert!(eval_lineio("i2").is_err());
     }
 
+    /// 取 `parse_and_eval` 的报错文案（`EvalResult` 未实现 `Debug`，不能直接用 `unwrap_err`）
+    fn perr(input: &str, ev: &mut Evaluator) -> String {
+        match parse_and_eval(input, ev) {
+            Err(e) => e,
+            Ok(_) => panic!("{input} 应当报错"),
+        }
+    }
+
     #[test]
-    fn triangle_guard_claims_only_blank_areas() {
-        // 会被认领（现有文法必然报错）
+    fn triangle_call_is_parsed_and_outermost_only() {
+        let mut ev = Evaluator::new();
+        // 会被认领：空白分隔与逗号分隔都支持
         for good in [
-            "a=3 b=4 c=5",
-            "A=30 a=3 b=4",
-            "hA=4 a=3 b=4",
-            "a=1/2 b=sqrt(2) c=1",
-            "a=3   b=4",
+            "triangle(a=3 b=4 c=5)",
+            "triangle(a=3, b=4, c=5)",
+            "triangle(A=30 a=3 b=4)",
+            "triangle(hA=4 a=3 b=4)",
+            "triangle(a=1/2 b=sqrt(2) c=1)",
+            "triangle( a=3   b=4 )",
+            "triangle(a=log(2,8) b=4 c=5)", // 括号内的逗号是函数参数，不是项分隔符
         ] {
-            assert!(looks_like_triangle(good), "{good} 应被认领");
+            assert!(
+                matches!(parse_triangle_call(good), Ok(Some(_))),
+                "{good} 应被认领"
+            );
         }
         // 绝不能认领：这些在现有文法里有别的含义（合法或另有报错）
         for bad in [
@@ -2153,16 +2244,51 @@ mod func_tests {
             if bad == "a=3 b=4+" {
                 continue; // 这一条属于"空白区认领后解析报错"，单独验证
             }
-            assert!(!looks_like_triangle(bad), "{bad} 不应被认领");
+            assert!(
+                !matches!(parse_triangle_call(bad), Ok(Some(_))),
+                "{bad} 不应被认领"
+            );
         }
-        // 认领后解析失败 ⇒ 报错而不是回落
-        assert!(looks_like_triangle("a=3 b=4+"));
-        let mut ev = Evaluator::new();
-        assert!(parse_and_eval("a=3 b=4+", &mut ev).is_err());
+
+        // 只能作用于最外层：参与其它运算一律明确报错（不回落、不给误导性提示）
+        for bad in [
+            "2*triangle(a=3 b=4 c=5)",
+            "triangle(a=3 b=4 c=5)+1",
+            "triangle(a=3 b=4 c=5)*2",
+            "-triangle(a=3 b=4 c=5)",
+            "sin(triangle(a=3 b=4 c=5))",
+        ] {
+            let err = perr(bad, &mut ev);
+            assert!(err.contains("最外层"), "{bad} → {err}");
+        }
+
+        // 缺括号 / 内容非法
+        assert!(perr("triangle a=3 b=4", &mut ev).contains("需要参数"));
+        assert!(perr("triangle(a=3 b=4", &mut ev).contains("右括号"));
+        assert!(perr("triangle()", &mut ev).contains("记号格式错误"));
+        assert!(perr("triangle(x=1 a=2)", &mut ev).contains("未知的三角形记号"));
+        assert!(parse_and_eval("triangle(a=3 b=4+)", &mut ev).is_err());
+
         // 认领成功后确实得到三角形变体
         assert!(matches!(
-            parse_and_eval("a=3 b=4 c=5", &mut ev),
+            parse_and_eval("triangle(a=3 b=4 c=5)", &mut ev),
             Ok(EvalResult::Triangle(_))
+        ));
+    }
+
+    #[test]
+    fn bare_triangle_assignments_are_gone() {
+        // 旧版裸写 `a=3 b=4 c=5` 已移除：行为回到原有语义（这里是"多余字符"报错），不再被当作三角形
+        let mut ev = Evaluator::new();
+        assert!(parse_and_eval("a=3 b=4 c=5", &mut ev).is_err());
+        // 既有语义不受影响：单个 `a=3` 仍是方程，逗号分隔仍是方程组
+        assert!(matches!(
+            parse_and_eval("a=3", &mut ev),
+            Ok(EvalResult::Equation(_, _))
+        ));
+        assert!(matches!(
+            parse_and_eval("a=3, b=4, c=5", &mut ev),
+            Ok(EvalResult::System(_))
         ));
     }
 
