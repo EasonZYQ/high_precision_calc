@@ -9,8 +9,7 @@
 支持方程与方程组求解、多项式因式分解与函数拟合、三角形求解、素因数分解，
 自带语法高亮的交互 REPL，界面支持简体中文 / 繁體中文 / English。
 
-<!-- 演示 GIF：录好后把文件放到 docs/demo.gif，然后删掉下面这行的注释即可 -->
-<!-- ![HiPerCalc 演示](docs/demo.gif) -->
+![HiPerCalc 演示](docs/demo.gif)
 
 ## 快速开始
 
