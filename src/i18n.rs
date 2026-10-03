@@ -642,7 +642,7 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("primefac 的参数必须是非零整数", "primefac 的參數必須是非零整數", "primefac requires a non-zero integer argument"),
     ("primefac() 必须是整个表达式的最外层函数，不能参与其它运算", "primefac() 必須是整個算式的最外層函式，不能參與其它運算", "primefac() must be the outermost function of the whole expression; it cannot take part in other operations"),
     ("primefac 函数需要参数: primefac(12)", "primefac 函式需要參數: primefac(12)", "primefac needs an argument: primefac(12)"),
-    ("素因数分解超出试除预算（Fast 模式试除上限 10^6）；如确认需要继续，请先执行 /mode deep", "質因數分解超出試除預算（Fast 模式試除上限 10^6）；如確認需要繼續，請先執行 /mode deep", "prime factorization exceeded the trial-division budget (Fast mode limit 10^6); run /mode deep to continue"),
+    ("素因数分解超出预算（Fast 模式 Pollard 迭代上限 2^17）；如确认需要继续，请先执行 /mode deep", "質因數分解超出預算（Fast 模式 Pollard 迭代上限 2^17）；如確認需要繼續，請先執行 /mode deep", "prime factorization exceeded the budget (Fast mode Pollard iteration limit 2^17); run /mode deep to continue"),
     ("0 没有素因数分解", "0 沒有質因數分解", "0 has no prime factorization"),
     ("isprime 需要整数参数", "isprime 需要整數參數", "isprime requires an integer argument"),
     ("nextprime 需要整数参数", "nextprime 需要整數參數", "nextprime requires an integer argument"),

@@ -365,9 +365,16 @@ Splits an integer into a product of primes and prints it as an equation `x = …
 - The argument **must be a non-zero integer**: decimals and `0` error out (an evaluable expression like `2+3` is fine);
 - Factors are printed in **ascending** order, repeated factors use **exponents**, and `^1` is omitted;
 - **Negatives put the minus sign at the very front**: `-12 = -2^2 * 3`; `1`/`-1` have no prime factors, so they print `1 = 1` / `-1 = -1`;
-- **Scale guard**: in Fast mode the trial divisor never exceeds `10^6`; if the remaining cofactor is still composite
-  (i.e. it has a prime factor > 10^6) it reports `素因数分解超出试除预算…请先执行 /mode deep` instead of returning a
-  partial factorization; `/mode deep` removes the budget (possibly very slow).
+- **Algorithm**: small-prime table (168 primes below 1000) → `6k±1` trial division (limit `10^6`) → **a primality test first**
+  (a prime is accepted immediately, no need to trial-divide up to `√n`) → if still composite, **Pollard's rho** (Brent's variant)
+  finds a factor and both halves are factored recursively. Semiprimes **up to 10^18** (a product of two large primes) are
+  therefore solved instantly: `primefac(1000003*1000033)` → `1000036000099 = 1000003 * 1000033`.
+  The primality test is a 12-base Miller-Rabin, which is **deterministic** over the whole `u64` range.
+- **Scale guard**: `/mode fast` gives Pollard an iteration budget of `2^17` (a 10^18 semiprime needs ~`3×10^4` on average,
+  so there is 4× headroom); only when that is exhausted does it report `素因数分解超出预算…请先执行 /mode deep`.
+  `/mode deep` raises the budget to `2^24` (reaching the 10^24 range). **The trial-division limit is the same in both modes** —
+  beyond `10^6` Pollard is simply faster, and trial-dividing all the way to `√n` is pure waste
+  (that was exactly why an earlier version made Deep *slower* than Fast on the same input).
 
 ```
 > primefac(12)
@@ -382,6 +389,12 @@ Splits an integer into a product of primes and prints it as an equation `x = …
 5 = 5
 > primefac(-2^2)         ← -2^2 = -(2^2) = -4
 -4 = -2^2
+> primefac(1000003*1000033)      ← a product of two large primes: trial division cannot reach them, Pollard splits it
+1000036000099 = 1000003 * 1000033
+> primefac(999999937*1000000007)
+999999943999999559 = 999999937 * 1000000007
+> primefac(1345676543465434567)  ← a large prime: the primality test short-circuits, no trial division to √n
+1345676543465434567 = 1345676543465434567
 > primefac(0)
 错误: primefac 的参数必须是非零整数
 > primefac(2.5)
