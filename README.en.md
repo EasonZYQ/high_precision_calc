@@ -12,8 +12,7 @@ Simplified Chinese / Traditional Chinese / English UI.
 
 ## Demo
 
-<!-- English demo GIF: drop the file at docs/demo-en.gif, then delete the two comment lines below -->
-<!-- ![HiPerCalc demo](docs/demo-en.gif) -->
+![HiPerCalc demo](docs/demo.en.gif)
 
 ```
 > 1/3+1/6
