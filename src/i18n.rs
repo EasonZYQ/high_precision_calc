@@ -358,9 +358,14 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// 从 `at` 起匹配字面量 `lit`，**允许中间夹 ANSI 转义序列**；返回结束字节位置
-fn match_lit_at(hay: &str, at: usize, lit: &str) -> Option<usize> {
-    let mut i = skip_ansi(hay, at);
+/// 从 `at` 起匹配字面量 `lit`，**允许中间夹 ANSI 转义序列**。
+///
+/// 返回 `(正文起点, 结束字节位置)`：**起点刻意取第一个正文字符的位置**，把开头的颜色码
+/// 留在匹配区间之外——否则替换会把整段开头的颜色码一并丢掉，症状是"翻译后这一行的颜色没了"
+/// （实测：计时行的 `\x1b[2m` 被吞掉后 `Time: <1s` 从灰色变成白色、启动横幅标题同理）。
+fn match_lit_at(hay: &str, at: usize, lit: &str) -> Option<(usize, usize)> {
+    let text_start = skip_ansi(hay, at);
+    let mut i = text_start;
     for c in lit.chars() {
         i = skip_ansi(hay, i);
         let ch = hay[i..].chars().next()?;
@@ -369,11 +374,11 @@ fn match_lit_at(hay: &str, at: usize, lit: &str) -> Option<usize> {
         }
         i += ch.len_utf8();
     }
-    Some(i)
+    Some((text_start, i))
 }
 
-/// 在 `hay` 中从 `from` 起查找字面量 `lit`，匹配时跳过 ANSI 转义序列；
-/// 返回 `(起始字节位置, 结束字节位置)`，区间内可能夹着颜色码。
+/// 在 `hay` 中从 `from` 起查找字面量 `lit`（匹配时跳过 ANSI 转义序列），
+/// 返回 `(正文起点, 结束字节位置)`，区间内可能夹着颜色码。
 ///
 /// **这是结果行能整句翻译的关键**：结果按 token 着色后，颜色码会把一句话切成很多段，
 /// 带占位符的词条（`{0} = {1}，k 为整数`、`解 {0}:`）若只按"段"匹配就永远匹配不上，
@@ -384,8 +389,8 @@ fn find_lit(hay: &str, from: usize, lit: &str) -> Option<(usize, usize)> {
     }
     let mut i = from;
     while i < hay.len() {
-        if let Some(end) = match_lit_at(hay, i, lit) {
-            return Some((i, end));
+        if let Some(found) = match_lit_at(hay, i, lit) {
+            return Some(found);
         }
         let n = ansi_len(hay, i);
         if n > 0 {
@@ -475,7 +480,7 @@ fn match_in(run: &str, zh: &str) -> Option<(usize, usize, Vec<(usize, usize, Str
 #[rustfmt::skip]
 static TABLE: &[(&str, &str, &str)] = &[
     // ---- 启动/横幅/计时 ----
-    ("超高精度命令行计算器 (HiPerCalc) v1.0", "超高精度命令列計算器 (HiPerCalc) v1.0", "HiPerCalc — Ultra-Precision CLI Calculator v1.0"),
+    ("超高精度命令行计算器 (HiPerCalc) v1.1", "超高精度命令列計算器 (HiPerCalc) v1.1", "HiPerCalc — Ultra-Precision CLI Calculator v1.1"),
     ("当前模式: {0}", "目前模式: {0}", "Current modes: {0}"),
     ("输入 {0} 查看帮助，输入表达式进行计算，{1} 退出", "輸入 {0} 查看說明，輸入算式進行計算，{1} 離開", "Type {0} for help, enter an expression to compute, {1} to quit"),
     ("已恢复上次会话设置，含 {0} 个存储变量（/var 查看，/del all 清空）", "已還原上次工作階段設定，含 {0} 個儲存變數（/var 檢視，/del all 清除）", "Restored previous session: {0} stored variables (/var to list, /del all to clear)"),
@@ -570,7 +575,11 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("无解", "無解", "No solution"),
     ("{0} 的一个解: {1} = {2}", "{0} 的一個解: {1} = {2}", "One solution of {0}: {1} = {2}"),
     // ---- 周期通式 / 结果后缀 ----
-    ("{0} = {1}，k 为整数", "{0} = {1}，k 為整數", "{0} = {1}, k ∈ ℤ"),
+    // 周期通式只保留**尾段**词条，不写 `{0} = {1}，k 为整数` 那种整句模板：
+    // 整句模板里的字面量 ` = ` 正好夹在"变量（结果底色）"与"数字（数字色）"之间，
+    // 替换时该字面量区间内的颜色码会被丢掉，症状是英文模式下 `=` 从黄色变成白色。
+    // 尾段 `，k 为整数` 本身是连续的一段纯文本，单独翻译既不丢颜色也用不到占位符。
+    ("，k 为整数", "，k 為整數", ", k ∈ ℤ"),
     ("  或  ", "  或  ", " or "),
     ("（候选枚举超出规模上限，结果可能不完整）", "（候選枚舉超出規模上限，結果可能不完整）", " (candidate enumeration hit the size limit; result may be incomplete)"),
     ("（有理数域内不可再分解）", "（有理數域內不可再分解）", " (irreducible over the rationals)"),
