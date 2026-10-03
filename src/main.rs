@@ -2564,10 +2564,22 @@ mod rawkey {
     }
 }
 
-/// 非 Windows：无原始按键支持，一律走文本输入路径
+/// 非 Windows：无原始按键支持，一律走文本输入路径。
+///
+/// **`Key` 的变体必须与 Windows 版保持完全一致**——`lang_menu_raw` 是两份实现共享的，
+/// 里面要匹配 `Key::Up/Down/Enter/Esc`。早先这里只声明了 `Other`，于是所有非 Windows 平台
+/// 都在 `lang_menu_raw` 处报 `error[E0599]: no variant ... named Up`，
+/// CI 上 Linux/macOS 五个目标全挂、只有 Windows 通过（Windows 分支的变体是全的）。
 #[cfg(not(windows))]
 mod rawkey {
+    /// 与 Windows 版同名的变体。本平台 `read_key` 恒返回 `None`，因此这些变体永远不会被构造，
+    /// 但类型必须存在，否则共享的 `lang_menu_raw` 无法编译。
+    #[allow(dead_code)]
     pub enum Key {
+        Up,
+        Down,
+        Enter,
+        Esc,
         Other,
     }
     pub fn enter_raw() -> Option<u32> {

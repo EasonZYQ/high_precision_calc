@@ -153,7 +153,7 @@ pub fn t(s: &str) -> String {
             }
             // 先把前面的纯文本段翻译掉
             let plain = &s[plain_start..i];
-            out.push_str(&translate_run(plain, 1));
+            out.push_str(&translate_plain(plain));
             out.push_str(&s[i..j]);
             i = j;
             plain_start = j;
@@ -161,7 +161,28 @@ pub fn t(s: &str) -> String {
         }
         i += 1;
     }
-    out.push_str(&translate_run(&s[plain_start..], 1));
+    out.push_str(&translate_plain(&s[plain_start..]));
+    out
+}
+
+/// 翻译一段纯文本（可能跨多行）。
+///
+/// **必须逐行翻译**：`translate_run` 的替换有轮数上限，而管道/重定向下没有颜色码，
+/// 一整块多行输出会落进**同一个**纯文本段——里面的可翻译片段动辄十几个（多解三角形一行就有
+/// `面积`/`周长`/`外接圆半径`/`内切圆半径` 四个，两解就是八个），会被上限截断，
+/// 表现为"英文模式下前半行翻好了、后半行还留着中文"（实测 `周长` 漏译）。
+/// 按 `\n` 拆开之后，每行的片段数远小于上限，且翻译本来就是面向整行的。
+fn translate_plain(seg: &str) -> String {
+    if !seg.contains('\n') {
+        return translate_run(seg, 1);
+    }
+    let mut out = String::with_capacity(seg.len() + 16);
+    for (i, line) in seg.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&translate_run(line, 1));
+    }
     out
 }
 
@@ -226,14 +247,16 @@ fn pick(row: &(&'static str, &'static str, &'static str), lang: Lang) -> &'stati
 
 /// 在一个纯文本段内做模式匹配翻译（depth 用于限制递归，避免相互展开）。
 /// 一段里可能有多处可翻译片段（例如 `"错误: 除以零错误"`：标签与消息各是一条词条），
-/// 因此反复取"最优匹配"替换，直到没有可替换项（上限 8 轮，防止词条互相包含时死循环）。
+/// 因此反复取"最优匹配"替换，直到没有可替换项（上限 32 轮，防止词条互相包含时死循环）。
+///
+/// 注意调用方应先按 `\n` 拆行（见 `translate_plain`）：本函数的轮数上限是按**单行**估的。
 fn translate_run(run: &str, depth: usize) -> String {
     if run.is_empty() || depth == 0 || get() == Lang::ZhCn {
         return run.to_string();
     }
     let lang = get();
     let mut cur = run.to_string();
-    for _ in 0..8 {
+    for _ in 0..32 {
         match replace_best(&cur, lang, depth) {
             Some(next) => cur = next,
             None => break,
