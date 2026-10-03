@@ -133,45 +133,24 @@ unsafe extern "system" {
 }
 
 /// 翻译一段文本（可含 ANSI 颜色码）。简体中文直接返回原文。
+///
+/// 行内**不再**按 ANSI 切段：`match_in` 匹配字面量时会自己跳过颜色码，
+/// 于是带占位符的整行词条可以跨颜色边界匹配（旧实现按段翻译，
+/// `x = 90 + k·180，k 为整数` 只翻得出前半句）。
 pub fn t(s: &str) -> String {
     if get() == Lang::ZhCn {
         return s.to_string();
     }
-    let mut out = String::with_capacity(s.len() + 16);
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    let mut plain_start = 0;
-    while i < bytes.len() {
-        // ANSI 转义序列：ESC [ ... 字母
-        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-            let mut j = i + 2;
-            while j < bytes.len() && !bytes[j].is_ascii_alphabetic() {
-                j += 1;
-            }
-            if j < bytes.len() {
-                j += 1;
-            }
-            // 先把前面的纯文本段翻译掉
-            let plain = &s[plain_start..i];
-            out.push_str(&translate_plain(plain));
-            out.push_str(&s[i..j]);
-            i = j;
-            plain_start = j;
-            continue;
-        }
-        i += 1;
-    }
-    out.push_str(&translate_plain(&s[plain_start..]));
-    out
+    translate_plain(s)
 }
 
-/// 翻译一段纯文本（可能跨多行）。
+/// 翻译一段文本（可能跨多行）——按 `\n` 逐行翻译。
 ///
-/// **必须逐行翻译**：`translate_run` 的替换有轮数上限，而管道/重定向下没有颜色码，
-/// 一整块多行输出会落进**同一个**纯文本段——里面的可翻译片段动辄十几个（多解三角形一行就有
-/// `面积`/`周长`/`外接圆半径`/`内切圆半径` 四个，两解就是八个），会被上限截断，
-/// 表现为"英文模式下前半行翻好了、后半行还留着中文"（实测 `周长` 漏译）。
-/// 按 `\n` 拆开之后，每行的片段数远小于上限，且翻译本来就是面向整行的。
+/// **必须逐行**：`translate_run` 的替换有轮数上限，而一整块多行输出里的可翻译片段动辄十几个
+/// （多解三角形一解就有 `面积`/`周长`/`外接圆半径`/`内切圆半径` 四个，两解就八个），
+/// 会被上限截断，表现为"前半行翻好了、后半行还留着中文"（实测 `周长` 漏译）。
+/// 按行拆开之后每行片段数远小于上限，且翻译本来就是面向整行的。
+/// 行内不再按 ANSI 切段（见 `find_lit`）。
 fn translate_plain(seg: &str) -> String {
     if !seg.contains('\n') {
         return translate_run(seg, 1);
@@ -266,7 +245,13 @@ fn translate_run(run: &str, depth: usize) -> String {
 }
 
 /// 在 `run` 中找最优词条并替换一处；返回 None 表示没有可替换片段。
-/// "最优"= 字面部分总长度最长者优先（更具体的词条优先于泛化词条）。
+/// "最优"= 字面部分总长度最长者优先（更具体的词条优先于泛化词条）；
+/// **长度相同则靠左者优先**。
+///
+/// 那条平局规则不是可有可无的：`未知类别: bogus` 会同时命中 `未知类别` 与 `类别: {0}`，
+/// 两者字面长度都是 4，若只按"严格更长"比较、先遍历到谁就选谁，`类别: {0}` 会抢先匹配，
+/// 结果把 `未知` 剩在匹配区之外 ⇒ 翻出 `未知Categories: bogus`。
+/// 靠左优先则让整词条 `未知类别` 胜出 ⇒ `unknown category: bogus`。
 fn replace_best(run: &str, lang: Lang, depth: usize) -> Option<String> {
     let mut best: Option<(usize, usize, usize, Vec<(usize, usize, String)>, usize)> = None;
     for (idx, row) in TABLE.iter().enumerate() {
@@ -278,7 +263,9 @@ fn replace_best(run: &str, lang: Lang, depth: usize) -> Option<String> {
         if let Some((start, end, values, literal_len)) = match_in(run, zh) {
             let better = match &best {
                 None => true,
-                Some((_, _, _, _, best_len)) => literal_len > *best_len,
+                Some((_, best_start, _, _, best_len)) => {
+                    literal_len > *best_len || (literal_len == *best_len && start < *best_start)
+                }
             };
             if better {
                 best = Some((idx, start, end, values, literal_len));
@@ -327,6 +314,89 @@ fn replace_best(run: &str, lang: Lang, depth: usize) -> Option<String> {
     Some(out)
 }
 
+/// ANSI 转义序列（`ESC [ … 字母`）的长度；`i` 处不是转义序列开头时返回 0
+fn ansi_len(s: &str, i: usize) -> usize {
+    let b = s.as_bytes();
+    if i < b.len() && b[i] == 0x1b && i + 1 < b.len() && b[i + 1] == b'[' {
+        let mut j = i + 2;
+        while j < b.len() && !b[j].is_ascii_alphabetic() {
+            j += 1;
+        }
+        if j < b.len() {
+            j += 1;
+        }
+        return j - i;
+    }
+    0
+}
+
+/// 跳过 `i` 处连续的 ANSI 转义序列，返回其后的位置
+fn skip_ansi(s: &str, mut i: usize) -> usize {
+    loop {
+        let n = ansi_len(s, i);
+        if n == 0 {
+            return i;
+        }
+        i += n;
+    }
+}
+
+/// 去掉全部 ANSI 转义序列
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < s.len() {
+        let n = ansi_len(s, i);
+        if n > 0 {
+            i += n;
+            continue;
+        }
+        let c = s[i..].chars().next().unwrap();
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
+}
+
+/// 从 `at` 起匹配字面量 `lit`，**允许中间夹 ANSI 转义序列**；返回结束字节位置
+fn match_lit_at(hay: &str, at: usize, lit: &str) -> Option<usize> {
+    let mut i = skip_ansi(hay, at);
+    for c in lit.chars() {
+        i = skip_ansi(hay, i);
+        let ch = hay[i..].chars().next()?;
+        if ch != c {
+            return None;
+        }
+        i += ch.len_utf8();
+    }
+    Some(i)
+}
+
+/// 在 `hay` 中从 `from` 起查找字面量 `lit`，匹配时跳过 ANSI 转义序列；
+/// 返回 `(起始字节位置, 结束字节位置)`，区间内可能夹着颜色码。
+///
+/// **这是结果行能整句翻译的关键**：结果按 token 着色后，颜色码会把一句话切成很多段，
+/// 带占位符的词条（`{0} = {1}，k 为整数`、`解 {0}:`）若只按"段"匹配就永远匹配不上，
+/// 症状是"英文模式下半句英文、半句中文"（实测 `x = 90 + k·180，k 为整数`）。
+fn find_lit(hay: &str, from: usize, lit: &str) -> Option<(usize, usize)> {
+    if lit.is_empty() {
+        return Some((from, from));
+    }
+    let mut i = from;
+    while i < hay.len() {
+        if let Some(end) = match_lit_at(hay, i, lit) {
+            return Some((i, end));
+        }
+        let n = ansi_len(hay, i);
+        if n > 0 {
+            i += n;
+            continue;
+        }
+        i += hay[i..].chars().next()?.len_utf8();
+    }
+    None
+}
+
 /// 在 `run` 中匹配模板 `zh`（含 `{n}` 占位符）。
 /// 返回 (匹配起止字节位置, 各占位符捕获的内容, 字面部分总长度)。
 fn match_in(run: &str, zh: &str) -> Option<(usize, usize, Vec<(usize, usize, String)>, usize)> {
@@ -358,34 +428,28 @@ fn match_in(run: &str, zh: &str) -> Option<(usize, usize, Vec<(usize, usize, Str
     }
     literals.push(cur);
     let literal_len: usize = literals.iter().map(|l| l.chars().count()).sum();
-    // 单字词条（颜色名"红/绿/"等）只允许**整段精确匹配**，否则会在任意文本里到处替换；
+    // 单字词条（颜色名"红/绿"等）只允许**整段精确匹配**，否则会在任意文本里到处替换；
     // 两字及以上允许行内匹配（例如"错误: "、"（有理数域内不可再分解）"这类拼接片段）
     if literal_len <= 1 {
-        if run == zh {
+        if strip_ansi(run) == zh {
             return Some((0, run.len(), Vec::new(), literal_len));
         }
         return None;
     }
 
-    // 定位：逐段按顺序查找
+    // 定位：逐段按顺序查找（匹配时跳过 ANSI，见 `find_lit`）
     let mut positions: Vec<(usize, usize)> = Vec::with_capacity(literals.len());
     let mut from = 0usize;
-    for (i, lit) in literals.iter().enumerate() {
+    for lit in literals.iter() {
         if lit.is_empty() {
             positions.push((from, from));
             continue;
         }
-        let is_last = i == literals.len() - 1;
-        let found = if is_last {
-            run[from..].find(lit.as_str()).map(|p| from + p)
-        } else {
-            run[from..].find(lit.as_str()).map(|p| from + p)
-        };
-        let Some(pos) = found else {
+        let Some((pos, end)) = find_lit(run, from, lit) else {
             return None;
         };
-        positions.push((pos, pos + lit.len()));
-        from = pos + lit.len();
+        positions.push((pos, end));
+        from = end;
     }
     // 首段必须是整体匹配的起点或出现在行内（允许前缀，如颜色码分割后的 ": "）
     let start = positions.first().map(|p| p.0).unwrap_or(0);
@@ -688,9 +752,116 @@ static TABLE: &[(&str, &str, &str)] = &[
         "Usage: hipercalc [-e <expr>] [-f <file>] [--stdin] [--lang <code>] [-q]",
     ),
     ("读取文件失败: {0}", "讀取檔案失敗: {0}", "failed to read file: {0}"),
+    // 文件读写失败的原因（由 `main::io_reason` 归纳，不走操作系统的区域化文案）
+    ("文件不存在", "檔案不存在", "file not found"),
+    ("没有访问权限", "沒有存取權限", "permission denied"),
+    ("文件内容不是有效的文本", "檔案內容不是有效的文字", "the file is not valid text"),
+    ("无法访问该文件", "無法存取該檔案", "cannot access the file"),
     // ---- 语言切换（自身） ----
     ("语言 / Language:", "語言 / Language:", "Language:"),
     ("↑/↓ 选择，回车确认（也可直接输入序号或 /lang <代码>）", "↑/↓ 選擇，Enter 確認（也可直接輸入序號或 /lang <代碼>）", "↑/↓ to choose, Enter to confirm (or type the index / `/lang <code>`)"),
     ("已切换语言：{0}（仅对后续输出生效）", "已切換語言：{0}（僅對後續輸出生效）", "Language switched to {0} (applies to subsequent output only)"),
     ("{0}: 无法识别的语言，可选: 1 简体中文 / 2 繁體中文 / 3 English", "{0}: 無法識別的語言，可選: 1 简体中文 / 2 繁體中文 / 3 English", "{0}: unknown language; choose 1 简体中文 / 2 繁體中文 / 3 English"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 是否含 CJK 表意文字或中日韩标点（英文/繁体界面里不该出现的东西）
+    fn has_cjk(s: &str) -> bool {
+        s.chars()
+            .any(|c| matches!(c as u32, 0x3000..=0x303F | 0x4E00..=0x9FFF | 0xFF00..=0xFFEF))
+    }
+
+    /// 简体**专用**字（繁体写法不同、繁体文本里绝不出现）。只取确定无疑的，宁可漏检不可误报。
+    const SIMPLIFIED_ONLY: &str = "为个这说读对时错误认边线门关开进过还将无须见体现实务组织级显术标纪录师\
+页码确认语让归键应该们与从会变图数据结设简单独转选输长内层则处决规统记运达观览择环节复杂织";
+
+    /// 语言名按设计用**母语写法**展示（`简体中文` / `繁體中文` 在任何界面里都写自己那一份），
+    /// 检查前先剔除，避免把它们当成漏译。
+    fn strip_language_names(s: &str) -> String {
+        s.replace("简体中文", "").replace("繁體中文", "")
+    }
+
+    fn with_lang<T>(lang: Lang, f: impl FnOnce() -> T) -> T {
+        let prev = get();
+        set(lang);
+        let r = f();
+        set(prev);
+        r
+    }
+
+    #[test]
+    fn english_column_has_no_chinese() {
+        // 词条表三列必须同进同退：英文列里混进中文，英文界面就会冒中文。
+        for (zh, _tw, en) in TABLE {
+            let rest = strip_language_names(en);
+            assert!(!has_cjk(&rest), "英文列残留中文: {zh:?} -> {en:?}");
+        }
+    }
+
+    #[test]
+    fn traditional_column_has_no_simplified_only_chars() {
+        for (zh, tw, _en) in TABLE {
+            let rest = strip_language_names(tw);
+            let hit: String = rest
+                .chars()
+                .filter(|c| SIMPLIFIED_ONLY.contains(*c))
+                .collect();
+            assert!(hit.is_empty(), "繁体列残留简体字「{hit}」: {zh:?} -> {tw:?}");
+        }
+    }
+
+    /// 模拟"结果行按 token 着色后"的形态：颜色码会把一句话切成很多段。
+    /// 词条匹配必须**跳过颜色码**（见 `find_lit`），否则带占位符的长词条
+    /// （`{0} = {1}，k 为整数`、`解 {0}:`）永远匹配不上，英文模式只翻前半句。
+    /// 这是真实发生过的 bug（用户实测 `x = 90 + k·180，k 为整数`），用本测试守住。
+    const A: &str = "\x1b[97m"; // 结果底色
+    const O: &str = "\x1b[1;33m"; // 运算符
+    const N: &str = "\x1b[37m"; // 数字
+    const R: &str = "\x1b[0m"; // 复位
+
+    #[test]
+    fn translations_survive_color_codes() {
+        with_lang(Lang::En, || {
+            // 角度模式的周期通式
+            let line = format!(
+                "{A}x {R}{O}={R}{A} {R}{N}90{R}{A} {R}{O}+{R}{A} k{R}{O}·{R}{N}180{R}{A}，k 为整数{R}"
+            );
+            let out = t(&line);
+            assert!(!has_cjk(&out), "周期通式未整体翻译: {out:?}");
+            assert!(out.contains("k ∈ ℤ"), "{out:?}");
+
+            // 多解三角形的分节标题（断言前先去掉颜色码：翻译**不会**动原文本里的颜色码，
+            // 所以 `solution ` 与 `1:` 之间仍夹着数字色，直接 contains 会误判）
+            let line = format!("{A}解 {R}{N}1{R}{A}:{R}");
+            let out = t(&line);
+            assert!(!has_cjk(&out), "分节标题未翻译: {out:?}");
+            assert!(strip_ansi(&out).contains("solution 1:"), "{out:?}");
+
+            // `未知类别` 与 `类别: {0}` 的字面长度相同 ⇒ 必须靠左优先，才能整词条翻译
+            let line = format!("\x1b[1;31m未知类别{R}{A}: {R}bogus");
+            let out = t(&line);
+            assert!(!has_cjk(&out), "未知类别未整词条翻译: {out:?}");
+            assert!(strip_ansi(&out).contains("unknown category"), "{out:?}");
+
+            // 带颜色码的多行块也要逐行翻全（旧实现按 ANSI 切段 + 轮数上限会漏尾巴）
+            let line = format!(
+                "{A}解 {R}{N}1{R}{A}:{R}\n{A}面积 {R}{O}={R}{A} {R}{N}6{R}{A}, 周长 {R}{O}={R}{A} {R}{N}12{R}"
+            );
+            let out = t(&line);
+            assert!(!has_cjk(&out), "多行块未逐行翻全: {out:?}");
+            assert!(strip_ansi(&out).contains("perimeter"), "{out:?}");
+        });
+    }
+
+    #[test]
+    fn chinese_mode_is_passthrough() {
+        let line = "x = 90 + k·180，k 为整数";
+        assert_eq!(with_lang(Lang::ZhCn, || t(line)), line);
+        // 简体原文在简体模式下原样返回（含颜色码）
+        let colored = format!("{A}x {R}{O}={R}{A} 1{R}");
+        assert_eq!(with_lang(Lang::ZhCn, || t(&colored)), colored);
+    }
+}

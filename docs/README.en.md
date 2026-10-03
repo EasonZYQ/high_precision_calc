@@ -1032,7 +1032,8 @@ pub struct TriangleSolution { /* three sides, three angles (radians), three heig
 ### UI Language Implementation (i18n.rs)
 
 - The entry table is keyed by the **Simplified Chinese source text**: `(zh-Hans, zh-Hant, English)`, and the runtime pattern-matches **whole output lines** to translate (`{0}`/`{1}` mark interpolation spots; the interpolated parts are extracted first and filled into the target-language template, so word order can vary per language);
-- Lines may contain ANSI color codes: before translating, split into segments on escape sequences, translate only the pure-text segments, then reassemble — so concatenations like `"错误".red() + ": " + message` translate correctly; when a segment has multiple translatable spans, loop the replacement (up to 8 rounds);
+- Lines may contain ANSI color codes: **matching skips them**, so a concatenation like `"错误".red() + ": " + message` translates correctly, and so does a long line that the token colorizer chopped into a dozen segments (`x = 90 + k·180，k 为整数`, the `解 1:` header of a multi-solution triangle). Translation runs per line (split on `\n`, to bound the replacement rounds); a line is no longer split on escape sequences;
+- Best match = longest literal wins; **on a tie, the leftmost wins** (otherwise `未知类别` loses to `类别: {0}` and yields `未知Categories`);
 - Single-character entries (color names) only match a whole segment exactly, to avoid replacing everywhere; Simplified Chinese is the default and returns verbatim (zero cost);
 - Unmatched strings are kept as-is, **never erroring** — to add new text, add the simplified source into `TABLE`;
 - All console output in `main.rs` goes through the `lprint!` / `leprint!` / `lprint_inline!` macros (which call `i18n::t` internally); the `/help` body switches wholesale per language (`help_text()`).

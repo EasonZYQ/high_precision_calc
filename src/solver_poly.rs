@@ -98,7 +98,13 @@ pub fn newton_solve(
         );
         let derivative = BigFloat::div(&df, &two_h, bigfloat::precision());
 
-        if derivative.value.abs() <= BigInt::from(1) && derivative.precision >= 60 {
+        // 导数为零 ⇒ 该初值不可用。**必须显式判零**：`BigFloat::div` 内部是 `assert!`，除数为零会
+        // 直接把进程 panic 掉（实测 `/mode prec 40` 下 `sin(x)=0` 崩溃）。
+        // 下面那条"导数极小"的判断带 `precision >= 60` 的精度闸门，是按默认精度 80 调的，
+        // 在 prec < 60 时恒不成立，**不能**指望它兜住精确零。
+        if derivative.is_zero()
+            || (derivative.value.abs() <= BigInt::from(1) && derivative.precision >= 60)
+        {
             return None; // 导数为零
         }
 

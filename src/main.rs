@@ -703,7 +703,7 @@ fn run_non_interactive(opts: &Options, state: &mut AppState) -> i32 {
             let text = match std::fs::read_to_string(path) {
                 Ok(t) => t,
                 Err(e) => {
-                    println!("{}", i18n::t(&format!("读取文件失败: {0}", e)));
+                    println!("{}", i18n::t(&format!("读取文件失败: {0}", io_reason(&e))));
                     return 2;
                 }
             };
@@ -1160,7 +1160,7 @@ fn handle_save(parts: &[&str], state: &AppState) {
         Err(e) => lprint!(
             "{}: {}",
             "错误".color(state.colors.error).bold(),
-            format!("保存文件失败: {0}", e)
+            format!("保存文件失败: {0}", io_reason(&e))
         ),
     }
 }
@@ -1202,7 +1202,7 @@ fn handle_load(parts: &[&str], state: &mut AppState) {
         Err(e) => lprint!(
             "{}: {}",
             "错误".color(state.colors.error).bold(),
-            format!("读取文件失败: {0}", e)
+            format!("读取文件失败: {0}", io_reason(&e))
         ),
     }
 }
@@ -1518,6 +1518,22 @@ fn eval_nonzero_integer(expr: &parser::Expr, evaluator: &mut Evaluator) -> Optio
         Some(Number::from_bigint(r.to_integer()))
     } else {
         None
+    }
+}
+
+/// 把 `io::Error` 归纳成**可翻译**的一句话。
+///
+/// **不要**直接用 `Display` / `Debug`：`Display` 带操作系统区域设置——中文 Windows 上恒为中文，
+/// 于是英文界面里会突然冒出一句中文（`failed to read file: 系统找不到指定的文件。 (os error 2)`）；
+/// `Debug` 还会把 `Os { code: 2, kind: NotFound, .. }` 一大串原样打给用户。
+/// 返回的是**简体原文**，由输出边界统一翻译（`println!` 那条要自己套 `i18n::t`）。
+fn io_reason(err: &std::io::Error) -> &'static str {
+    use std::io::ErrorKind::*;
+    match err.kind() {
+        NotFound => "文件不存在",
+        PermissionDenied => "没有访问权限",
+        InvalidData => "文件内容不是有效的文本",
+        _ => "无法访问该文件",
     }
 }
 
