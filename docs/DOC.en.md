@@ -1,6 +1,6 @@
 # HiPerCalc — Ultra-Precision CLI Calculator
 
-[Home](../README.md) · [简体中文](README.zh-CN.md) · **English**
+[Home](../README.en.md) · [简体中文](DOC.zh-CN.md) · **English**
 
 HiPerCalc is an interactive command-line calculator written in Rust, with **arbitrary-precision decimals**, **exact symbolic arithmetic**, **equation / system solving**, **polynomial factorization**, and more. It uses 80 decimal digits internally, displays 20 significant digits, and ships with a syntax-highlighted REPL with live highlighting.
 

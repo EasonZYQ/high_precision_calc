@@ -847,7 +847,7 @@ fn main() {
 
     lprint!(
         "{}",
-        "超高精度命令行计算器 (HiPerCalc) v1.0"
+        "超高精度命令行计算器 (HiPerCalc) v1.1"
             .color(state.colors.prompt)
             .bold()
     );

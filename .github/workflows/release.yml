@@ -90,6 +90,48 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      # 每次发布都带**中英双语**说明（下方表头 + 中英文正文），不要只写一种语言
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
+          name: HiPerCalc ${{ github.ref_name }}
+          body: |
+            ## 中文
+
+            各平台二进制见下方 Assets：
+
+            | 平台 | 文件 |
+            |---|---|
+            | Windows x86_64 | `hipercalc-x86_64-pc-windows-msvc.zip` |
+            | Linux x86_64 (glibc) | `hipercalc-x86_64-unknown-linux-gnu.tar.gz` |
+            | Linux x86_64 (musl，静态) | `hipercalc-x86_64-unknown-linux-musl.tar.gz` |
+            | Linux aarch64 | `hipercalc-aarch64-unknown-linux-gnu.tar.gz` |
+            | macOS Intel | `hipercalc-x86_64-apple-darwin.tar.gz` |
+            | macOS Apple Silicon | `hipercalc-aarch64-apple-darwin.tar.gz` |
+
+            解压后直接运行 `hipercalc`（Windows 为 `hipercalc.exe`）；Linux / macOS 可能需要先
+            `chmod +x hipercalc`。模块化的 musl 版本不依赖系统 glibc。
+
+            - 完整文档：[docs/DOC.zh-CN.md](https://github.com/${{ github.repository }}/blob/main/docs/DOC.zh-CN.md)
+            - 更新内容见下方自动生成的提交列表。
+
+            ## English
+
+            Per-platform binaries are attached below:
+
+            | Platform | File |
+            |---|---|
+            | Windows x86_64 | `hipercalc-x86_64-pc-windows-msvc.zip` |
+            | Linux x86_64 (glibc) | `hipercalc-x86_64-unknown-linux-gnu.tar.gz` |
+            | Linux x86_64 (musl, static) | `hipercalc-x86_64-unknown-linux-musl.tar.gz` |
+            | Linux aarch64 | `hipercalc-aarch64-unknown-linux-gnu.tar.gz` |
+            | macOS Intel | `hipercalc-x86_64-apple-darwin.tar.gz` |
+            | macOS Apple Silicon | `hipercalc-aarch64-apple-darwin.tar.gz` |
+
+            Unpack and run `hipercalc` (`hipercalc.exe` on Windows); on Linux / macOS you may need
+            `chmod +x hipercalc` first. The musl build is statically linked and needs no system glibc.
+
+            - Full documentation: [docs/DOC.en.md](https://github.com/${{ github.repository }}/blob/main/docs/DOC.en.md)
+            - See the auto-generated commit list below for what changed.
+          generate_release_notes: true
