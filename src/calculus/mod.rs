@@ -28,6 +28,7 @@ pub mod diff;
 pub mod integrate;
 pub mod limit;
 pub mod series;
+pub mod sumprod;
 pub mod normalize;
 pub mod render;
 
@@ -49,6 +50,12 @@ const LIMIT_NUM_ITERS_FAST: usize = 60;
 const LIMIT_NUM_ITERS_DEEP: usize = 200;
 const TAYLOR_MAX_DEGREE_FAST: usize = 50;
 const TAYLOR_MAX_DEGREE_DEEP: usize = 1000;
+const SUM_MAX_TERMS_FAST: usize = 2000;
+const SUM_MAX_TERMS_DEEP: usize = 100_000;
+const SUM_EXACT_MAX_TERMS_FAST: usize = 200;
+const SUM_EXACT_MAX_TERMS_DEEP: usize = 2000;
+const PROD_MAX_TERMS_FAST: usize = 1000;
+const PROD_MAX_TERMS_DEEP: usize = 20_000;
 
 /// 规范化后项数上限
 pub fn max_terms() -> usize {
@@ -95,6 +102,36 @@ pub fn max_taylor_degree() -> usize {
     }
 }
 
+/// 逐项求和的项数上限（整数项）
+pub fn max_sum_terms() -> usize {
+    if crate::calc_mode::is_deep() {
+        SUM_MAX_TERMS_DEEP
+    } else {
+        SUM_MAX_TERMS_FAST
+    }
+}
+
+/// 逐项求和的项数上限（**含除法/负幂**的项：有理数分母会爆炸，预算收紧）
+pub fn max_sum_exact_terms() -> usize {
+    if crate::calc_mode::is_deep() {
+        SUM_EXACT_MAX_TERMS_DEEP
+    } else {
+        SUM_EXACT_MAX_TERMS_FAST
+    }
+}
+
+/// 逐项求积的项数上限（阶乘型输出位数增长极快，单独收紧）
+pub fn max_prod_terms() -> usize {
+    if crate::calc_mode::is_deep() {
+        PROD_MAX_TERMS_DEEP
+    } else {
+        PROD_MAX_TERMS_FAST
+    }
+}
+
+/// 阶乘闭式允许的最大 n（`10000!` 有三万多位数）
+pub const FACTORIAL_MAX: i64 = 10_000;
+
 /// 洛必达的最大轮数
 pub const LIMIT_LHOPITAL_MAX: usize = 6;
 
@@ -137,12 +174,17 @@ pub const ERROR_TAYLOR_POINT: &str = "泰勒展开点必须是常数（不得含
 pub const ERROR_TAYLOR_ORDER: &str = "泰勒展开阶数必须是非负整数（上限 {0}，/mode deep 可放宽）";
 pub const ERROR_TAYLOR_TOO_LARGE: &str = "泰勒展开式过大（/mode deep 可放宽）";
 pub const ERROR_TAYLOR_SINGULAR: &str = "泰勒展开点在函数或其导数的奇点上";
+// 求和 / 求积
+pub const ERROR_SUM_VAR: &str = "求和/求积的变量必须是单个变量（如 k）";
+pub const ERROR_SUM_BOUND: &str = "求和/求积的上下限必须是常数整数";
+pub const ERROR_SUM_NO_CLOSED_FORM: &str = "求和/求积范围过大且无闭式（/mode deep 可放宽）";
+pub const ERROR_SUM_COMPLEX: &str = "求和/求积需求出实数（本次得到复数）";
 
 /* ---------------- 注册表 ---------------- */
 
 /// 高等数学函数名（与 `parser::FUNCTIONS` 同步；顺序无关）。
 /// 每新增一项，必须同时补 `CALCULUS_ARITIES` 与对应实现。
-pub const CALCULUS_ARITIES: &[(&str, &[usize])] = &[("diff", &[2]), ("int", &[2, 4]), ("lim", &[3]), ("taylor", &[4])];
+pub const CALCULUS_ARITIES: &[(&str, &[usize])] = &[("diff", &[2]), ("int", &[2, 4]), ("lim", &[3]), ("taylor", &[4]), ("sum", &[4]), ("prod", &[4])];
 
 /// 允许 `inf` 出现的位置：`(函数名, 允许 inf 的参数下标)`。
 /// 其余位置出现 `inf` 要在这里就报错 —— 否则会落到求值路径报"未定义变量: inf"，误导用户。
@@ -330,6 +372,14 @@ fn dispatch(ev: &Evaluator, name: &str, args: Vec<Expr>) -> Result<Expr, String>
             let n = as_order(ev, &args[3])?;
             series::taylor(ev, &args[0], &var, &args[2], n)
         }
+        "sum" => {
+            let var = as_variable_name_or(&args[1], ERROR_SUM_VAR)?;
+            sumprod::sum(ev, &args[0], &var, &args[2], &args[3])
+        }
+        "prod" => {
+            let var = as_variable_name_or(&args[1], ERROR_SUM_VAR)?;
+            sumprod::prod(ev, &args[0], &var, &args[2], &args[3])
+        }
         _ => Err(format!("未知函数: {}", name)),
     }
 }
@@ -404,10 +454,14 @@ fn as_order(ev: &Evaluator, e: &Expr) -> Result<usize, String> {
 
 /// 第二个参数必须是单个变量名
 fn as_variable_name(e: &Expr) -> Result<String, String> {
+    as_variable_name_or(e, ERROR_DIFF_VAR)
+}
+
+fn as_variable_name_or(e: &Expr, msg: &str) -> Result<String, String> {
     match e {
         // 解析器把单个字母（含大写）收成 Variable；`ans` 也是 Variable
         Expr::Variable(v) => Ok(v.clone()),
-        _ => Err(ERROR_DIFF_VAR.to_string()),
+        _ => Err(msg.to_string()),
     }
 }
 

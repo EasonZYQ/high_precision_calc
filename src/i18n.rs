@@ -771,6 +771,11 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("泰勒展开阶数必须是非负整数（上限 {0}，/mode deep 可放宽）", "泰勒展開階數必須是非負整數（上限 {0}，/mode deep 可放寬）", "the Taylor order must be a non-negative integer (max {0}; /mode deep to relax)"),
     ("泰勒展开式过大（/mode deep 可放宽）", "泰勒展開式過大（/mode deep 可放寬）", "the Taylor expansion is too large (/mode deep to relax)"),
     ("泰勒展开点在函数或其导数的奇点上", "泰勒展開點在函數或其導數的奇點上", "the expansion point is a singularity of the function or one of its derivatives"),
+    // ---- 高等数学：求和 / 求积 ----
+    ("求和/求积的变量必须是单个变量（如 k）", "求和/求積的變數必須是單個變數（如 k）", "the summation/product variable must be a single variable (e.g. k)"),
+    ("求和/求积的上下限必须是常数整数", "求和/求積的上下限必須是常數整數", "the summation/product bounds must be constant integers"),
+    ("求和/求积范围过大且无闭式（/mode deep 可放宽）", "求和/求積範圍過大且無閉式（/mode deep 可放寬）", "the summation/product range is too large with no closed form (/mode deep to relax)"),
+    ("求和/求积需求出实数（本次得到复数）", "求和/求積需求出實數（本次得到複數）", "summation/product must produce real values (got a complex one here)"),
     ("isprime 需要整数参数", "isprime 需要整數參數", "isprime requires an integer argument"),
     ("nextprime 需要整数参数", "nextprime 需要整數參數", "nextprime requires an integer argument"),
     ("素性判定参数过大（上限 10^24，/mode deep 可取消限制）", "素性判定參數過大（上限 10^24，/mode deep 可取消限制）", "primality argument too large (limit 10^24; /mode deep removes it)"),
