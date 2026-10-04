@@ -56,6 +56,12 @@ const SUM_EXACT_MAX_TERMS_FAST: usize = 200;
 const SUM_EXACT_MAX_TERMS_DEEP: usize = 2000;
 const PROD_MAX_TERMS_FAST: usize = 1000;
 const PROD_MAX_TERMS_DEEP: usize = 20_000;
+// 数值逐项（每项转 BigFloat 再累加，规避有理数分母爆炸）。
+// **按实测标定**：release 下 `sum(1/k^3,…)` 每项约 18µs（含一次幂与一次除法，80 位精度）
+// ⇒ Fast 2e4 项约 0.35s、Deep 1e6 项约 18s（Deep 本来就声明了"极端输入可能长时间无响应"，
+// 交互时还有动态计时行）。Fast 的取值刻意压到"不打断输入节奏"的量级。
+const SUM_NUMERIC_FAST: usize = 20_000;
+const SUM_NUMERIC_DEEP: usize = 1_000_000;
 
 /// 规范化后项数上限
 pub fn max_terms() -> usize {
@@ -120,6 +126,19 @@ pub fn max_sum_exact_terms() -> usize {
     }
 }
 
+/// **数值**逐项求和的项数上限。
+///
+/// 精确逐项在含分数时会有理数分母爆炸（`sum(1/k^3,k,1,10^6)` 的分母是 `lcm(1..10^6)^3`，
+/// 约 260 万位），所以超过精确预算后改为**数值累加**：每项先转 BigFloat 再相加。
+/// 实测每项 2~4µs ⇒ Fast 10 万项约 0.3 秒、Deep 200 万项约 6 秒（交互时有动态计时行）。
+pub fn max_sum_numeric_terms() -> usize {
+    if crate::calc_mode::is_deep() {
+        SUM_NUMERIC_DEEP
+    } else {
+        SUM_NUMERIC_FAST
+    }
+}
+
 /// 逐项求积的项数上限（阶乘型输出位数增长极快，单独收紧）
 pub fn max_prod_terms() -> usize {
     if crate::calc_mode::is_deep() {
@@ -178,6 +197,8 @@ pub const ERROR_TAYLOR_SINGULAR: &str = "泰勒展开点在函数或其导数的
 pub const ERROR_SUM_VAR: &str = "求和/求积的变量必须是单个变量（如 k）";
 pub const ERROR_SUM_BOUND: &str = "求和/求积的上下限必须是常数整数";
 pub const ERROR_SUM_NO_CLOSED_FORM: &str = "求和/求积范围过大且无闭式（/mode deep 可放宽）";
+/// 已经在 Deep 模式下仍然超限时用这条：**不能再提示"可放宽"**（用户会以为 Deep 能解决）
+pub const ERROR_SUM_TOO_LARGE_DEEP: &str = "求和/求积范围过大且无闭式（已超过 Deep 模式上限）";
 pub const ERROR_SUM_COMPLEX: &str = "求和/求积需求出实数（本次得到复数）";
 
 /* ---------------- 注册表 ---------------- */

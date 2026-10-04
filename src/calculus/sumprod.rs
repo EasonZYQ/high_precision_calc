@@ -23,8 +23,8 @@ use crate::number::Number;
 use crate::parser::{BinOp, Expr};
 
 use super::{
-    max_prod_terms, max_sum_exact_terms, max_sum_terms, ERROR_SUM_BOUND, ERROR_SUM_COMPLEX,
-    ERROR_SUM_NO_CLOSED_FORM,
+    max_prod_terms, max_sum_exact_terms, max_sum_numeric_terms, max_sum_terms, ERROR_SUM_BOUND,
+    ERROR_SUM_COMPLEX, ERROR_SUM_NO_CLOSED_FORM, ERROR_SUM_TOO_LARGE_DEEP,
 };
 
 /// 多项式（`coeffs[i]` 是 `n^i` 的系数），仅本模块内部使用
@@ -52,7 +52,7 @@ pub fn sum(
     if let Some(v) = closed_form_sum(ev, f, var, a, b)? {
         return Ok(Expr::Number(v));
     }
-    // 2) 逐项（预算内）
+    // 2) 精确逐项（预算内）
     if count <= budget as u128 {
         let mut acc = Number::from_int(0);
         for k in a..=b {
@@ -61,7 +61,50 @@ pub fn sum(
         }
         return Ok(Expr::Number(acc));
     }
-    Err(ERROR_SUM_NO_CLOSED_FORM.to_string())
+    // 3) 数值逐项：**含分数时精确累加会让分母爆炸**（`sum(1/k^3,k,1,10^6)` 的分母约 260 万位），
+    //    所以每项先转 BigFloat 再相加 —— 结果是近似值（显示时会带 `≈`），但能算出来。
+    if count <= max_sum_numeric_terms() as u128 {
+        return Ok(Expr::Number(numeric_sum(ev, f, var, a, b)?));
+    }
+    Err(too_large_error())
+}
+
+/// 超限时的文案：已经在 Deep 下就**不能**再提示"可放宽"
+fn too_large_error() -> String {
+    if crate::calc_mode::is_deep() {
+        ERROR_SUM_TOO_LARGE_DEEP.to_string()
+    } else {
+        ERROR_SUM_NO_CLOSED_FORM.to_string()
+    }
+}
+
+/// 数值逐项求和：每项先 `to_approx` 再累加（避免有理数分母随项数爆炸）
+fn numeric_sum(
+    ev: &crate::parser::Evaluator,
+    f: &Expr,
+    var: &str,
+    a: i64,
+    b: i64,
+) -> Result<Number, String> {
+    let prec = crate::bigfloat::precision();
+    let mut acc = crate::bigfloat::BigFloat::from_u64(0);
+    for k in a..=b {
+        // 先用**近似**整数 k 求值：这样整条链走 BigFloat（每项 ~2µs），
+        // 而用精确 k 会全程走有理数运算（含 gcd 化简，实测每项 ~23µs，慢十倍多）。
+        // 近似 k 是 `from_u64(k)` —— 表示成 Approx 但数值精确，`floor`/`frac` 之类结果不变。
+        let approx_k = Number::Approx(crate::bigfloat::BigFloat::from_u64(k.max(0) as u64));
+        let approx_k = if k < 0 { approx_k.neg() } else { approx_k };
+        let v = match ev.evaluate_with_var(f, var, &approx_k) {
+            Ok(v) => v,
+            // 回退：`isprime`/`gcd`/`nCr` 这类**必须精确整数参数**的函数
+            Err(_) => eval_at(ev, f, var, k)?,
+        };
+        if v.is_complex() {
+            return Err(ERROR_SUM_COMPLEX.to_string());
+        }
+        acc = crate::bigfloat::BigFloat::add(&acc, &v.to_approx(), prec);
+    }
+    Ok(Number::Approx(acc))
 }
 
 pub fn prod(
@@ -88,7 +131,7 @@ pub fn prod(
         }
         return Ok(Expr::Number(acc));
     }
-    Err(ERROR_SUM_NO_CLOSED_FORM.to_string())
+    Err(too_large_error())
 }
 
 /* ---------------- 闭式 ---------------- */

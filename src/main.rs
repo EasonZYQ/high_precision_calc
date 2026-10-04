@@ -3241,6 +3241,21 @@ mod cli_tests {
         }
     }
 
+    /// 回归：**没有闭式、又超出精确预算**的求和应当**数值累加**出结果（而不是直接拒绝）。
+    ///
+    /// 取 3000 项是有讲究的：它同时超过 Fast（200）与 **Deep（2000）**的分数项精确预算，
+    /// 所以**无论当前是哪个模式**都会走数值路径 —— `/mode` 是进程级全局，测试并行时
+    /// 不能假设自己处于 Fast（第一版就因为这点误判了）。
+    #[test]
+    fn large_sums_fall_back_to_numeric() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        let (out, is_err) = run_line("sum(1/k^3,k,1,3000)", &mut st);
+        assert!(!is_err, "{out}");
+        assert!(out.contains("≈"), "数值结果应标 ≈（精确值不会带 ≈）: {out}");
+        // Σ_{k=1}^{3000} 1/k^3 = ζ(3) − 约 5.6e-8 ⇒ 前缀 1.2020568 足够抓住算错的情况
+        assert!(out.contains("1.2020568"), "数值累加结果不对: {out}");
+    }
+
     #[test]
     fn calculus_prefix_follows_display_mode() {
         // MathIO：精确分数算精确 ⇒ `=`

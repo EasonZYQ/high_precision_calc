@@ -288,5 +288,6 @@
   "语言 / Language:": "Language:",
   "↑/↓ 选择，回车确认（也可直接输入序号或 /lang <代码>）": "↑/↓ to choose, Enter to confirm (or type the index / `/lang <code>`)",
   "已切换语言：{0}（仅对后续输出生效）": "Language switched to {0} (applies to subsequent output only)",
-  "{0}: 无法识别的语言，可选: 1 简体中文 / 2 繁體中文 / 3 English": "{0}: unknown language; choose 1 简体中文 / 2 繁體中文 / 3 English"
+  "{0}: 无法识别的语言，可选: 1 简体中文 / 2 繁體中文 / 3 English": "{0}: unknown language; choose 1 简体中文 / 2 繁體中文 / 3 English",
+  "求和/求积范围过大且无闭式（已超过 Deep 模式上限）": "the summation/product range is too large with no closed form (beyond the Deep-mode limit)"
 }
