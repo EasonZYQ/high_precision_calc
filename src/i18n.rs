@@ -755,6 +755,13 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("函数 {0} 需要 {1} 个参数", "函數 {0} 需要 {1} 個參數", "function {0} takes {1} argument(s)"),
     ("此处不能使用无穷（inf）", "此處不能使用無窮（inf）", "infinity (inf) is not allowed here"),
     ("等式不能出现在符号运算中", "等式不能出現在符號運算中", "equations cannot appear in symbolic computation"),
+    // ---- 高等数学：积分 ----
+    ("积分上下限必须是常数（可为 inf）", "積分上下限必須是常數（可為 inf）", "the integration bounds must be constants (may be inf)"),
+    ("被积函数在积分区间内出现奇点或非有限值", "被積函數在積分區間內出現奇點或非有限值", "the integrand is singular or non-finite on the interval"),
+    ("积分求值次数超出预算（/mode deep 可放宽）", "積分求值次數超出預算（/mode deep 可放寬）", "integration evaluation budget exceeded (run /mode deep to relax)"),
+    ("无穷限积分需要能求出原函数并收敛（本次无法判定）", "無窮限積分需要能求出原函數並收斂（本次無法判定）", "an infinite integral needs a convergent antiderivative (could not be determined here)"),
+    ("无法求出初等原函数（可改用定积分做数值积分）", "無法求出初等原函數（可改用定積分做數值積分）", "no elementary antiderivative found (use a definite integral for numeric integration)"),
+    ("初等原函数表未覆盖该形态（可用定积分做数值积分）", "初等原函數表未覆蓋該形態（可用定積分做數值積分）", "the antiderivative table does not cover this form (use a definite integral for numeric integration)"),
     ("isprime 需要整数参数", "isprime 需要整數參數", "isprime requires an integer argument"),
     ("nextprime 需要整数参数", "nextprime 需要整數參數", "nextprime requires an integer argument"),
     ("素性判定参数过大（上限 10^24，/mode deep 可取消限制）", "素性判定參數過大（上限 10^24，/mode deep 可取消限制）", "primality argument too large (limit 10^24; /mode deep removes it)"),

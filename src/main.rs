@@ -68,6 +68,7 @@ const SIGNATURES: &[(&str, &str)] = &[
     ("nextprime", "(n)"),
     ("cbrt", "(x)"),
     ("diff", "(f, x)"),
+    ("int", "(f, x) 或 (f, x, a, b)"),
 ];
 
 /// 函数白名单（高亮用）：直接引用 `parser::FUNCTIONS`，避免多处数组不同步
@@ -2655,6 +2656,8 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
 
 【高等數學】（可參與運算：diff(x^2,x)+1 合法；精確值給 =，數值回退給 ≈）
   diff(f, x)         求導：diff(x^2, x) → 2*x、diff(sin(x), x) → cos(x)（變數須為單個字母）
+  int(f, x)          不定積分：int(x^2, x) → 1 / 3 * x^3（省略積分常數）
+  int(f, x, a, b)    定積分：int(x^2, x, 0, 1) → 1 / 3；無初等原函數時自動數值積分（上下限可寫 inf）
 
 【變數儲存】
   /let A = 5         儲存變數（全大寫名），在算式、方程、fac 中自動取值
@@ -2711,6 +2714,8 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
 
 [Calculus] (usable inside expressions, e.g. diff(x^2,x)+1; exact gives =, numeric fallback gives ~)
   diff(f, x)         derivative: diff(x^2, x) -> 2*x, diff(sin(x), x) -> cos(x) (single-letter variable)
+  int(f, x)          antiderivative: int(x^2, x) -> 1 / 3 * x^3 (integration constant omitted)
+  int(f, x, a, b)    definite integral: int(x^2, x, 0, 1) -> 1 / 3; numeric fallback when needed (bounds may be inf)
 
 [Variables]
   /let A = 5         store a variable (UPPERCASE name), usable in expressions, equations and fac
@@ -2775,6 +2780,8 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
 
 【高等数学】（可参与运算：diff(x^2,x)+1 合法；精确值给 =，数值回退给 ≈）
   diff(f, x)         求导：diff(x^2, x) → 2*x、diff(sin(x), x) → cos(x)（变量须为单个字母）
+  int(f, x)          不定积分：int(x^2, x) → 1 / 3 * x^3（省略积分常数）
+  int(f, x, a, b)    定积分：int(x^2, x, 0, 1) → 1 / 3；无初等原函数时自动数值积分（上限可写 inf）
 
 【变量存储】
   /let A = 5         存储变量（全大写名），在表达式、方程、fac 中自动取值
@@ -3023,6 +3030,41 @@ mod cli_tests {
         assert!(is_err && out.contains("未定义变量"), "x+1 → {out}");
         let (out, is_err) = run_line("1+2*3", &mut st);
         assert!(!is_err && out.contains("= 7"), "1+2*3 → {out}");
+    }
+
+    #[test]
+    fn calculus_integrate_end_to_end() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        st.evaluator.display_mode = parser::DisplayMode::MathIO;
+        for (input, want) in [
+            ("int(x^2,x)", "1 / 3 * x^3"),
+            ("int(1/x,x)", "ln(abs(x))"),
+            ("int(sin(x),x)", "-cos(x)"),
+            ("int(x^2,x,0,1)", "1 / 3"),
+            ("int(x,x,0,2)", "2"),
+            ("int(1/(1+x^2),x)", "arctan(x)"),
+        ] {
+            let (out, is_err) = run_line(input, &mut st);
+            assert!(!is_err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 `{want}`");
+        }
+        // 报错路径
+        for (bad, want) in [
+            ("int(tan(x),x)", "未覆盖"),
+            ("int(exp(-x^2),x)", "初等原函数"),
+            ("int(x^2)", "需要"),
+            ("int(x^2,x,x,1)", "常数"),
+        ] {
+            let (out, is_err) = run_line(bad, &mut st);
+            assert!(is_err, "{bad} 应当报错，实得: {out}");
+            assert!(out.contains(want), "{bad} → {out}；期望含 `{want}`");
+        }
+        // 无穷限：原函数在 ∞ 处收敛到 0（低于显示精度 ⇒ 按精确 0 处理），
+        // 所以 ∫₀^∞ e^{-x}dx 的值就是 1（前缀可能是 ≈：另一端的 exp(0) 本身是近似值）
+        st.evaluator.display_mode = parser::DisplayMode::MathIO;
+        let (out, _) = run_line("int(exp(-x),x,0,inf)", &mut st);
+        assert!(out.trim_end().ends_with('1'), "{out}");
+        assert!(!out.contains("0.9999"), "不应出现 0.999… 的截断: {out}");
     }
 
     #[test]

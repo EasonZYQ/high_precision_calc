@@ -25,6 +25,7 @@
 //! 因此既有输入的行为完全不变。
 
 pub mod diff;
+pub mod integrate;
 pub mod normalize;
 pub mod render;
 
@@ -38,6 +39,10 @@ const CALC_EXPR_MAX_TERMS_FAST: usize = 4096;
 const CALC_EXPR_MAX_TERMS_DEEP: usize = 65536;
 const CALC_DIFF_MAX_DEPTH_FAST: usize = 64;
 const CALC_DIFF_MAX_DEPTH_DEEP: usize = 256;
+const INT_MAX_EVALS_FAST: usize = 2000;
+const INT_MAX_EVALS_DEEP: usize = 200_000;
+const INT_MAX_DEPTH_FAST: usize = 16;
+const INT_MAX_DEPTH_DEEP: usize = 40;
 
 /// 规范化后项数上限
 pub fn max_terms() -> usize {
@@ -57,25 +62,51 @@ pub fn max_diff_depth() -> usize {
     }
 }
 
+/// 数值积分的被积函数求值次数上限
+pub fn max_int_evals() -> usize {
+    if crate::calc_mode::is_deep() {
+        INT_MAX_EVALS_DEEP
+    } else {
+        INT_MAX_EVALS_FAST
+    }
+}
+
+/// 数值积分的二分递归深度上限
+pub fn max_int_depth() -> usize {
+    if crate::calc_mode::is_deep() {
+        INT_MAX_DEPTH_DEEP
+    } else {
+        INT_MAX_DEPTH_FAST
+    }
+}
+
 /* ---------------- 文案（必须与 i18n::TABLE 的简体列逐字一致） ---------------- */
 
 pub const ERROR_TOO_MANY_TERMS: &str = "求导结果规模过大（/mode deep 可放宽）";
 pub const ERROR_DIFF_DEPTH: &str = "求导展开嵌套过深（/mode deep 可放宽）";
 pub const ERROR_DIFF_VAR: &str = "求导变量必须是单个变量（如 x）";
 pub const ERROR_NO_SYMBOLIC_EQ: &str = "等式不能出现在符号运算中";
+pub const ERROR_SUM_SHADOWED: &str = "求导变量被求和绑定变量遮蔽";
 pub const ERROR_CALC_IN_WRAPPER: &str = "高等数学函数 {0} 不能出现在此处（fac/sd/triangle/primefac 内部）";
 pub const ERROR_CALC_ARITY: &str = "函数 {0} 需要 {1} 个参数";
 pub const ERROR_INF_POSITION: &str = "此处不能使用无穷（inf）";
+// 积分
+pub const ERROR_INT_BOUND: &str = "积分上下限必须是常数（可为 inf）";
+pub const ERROR_INT_SINGULAR: &str = "被积函数在积分区间内出现奇点或非有限值";
+pub const ERROR_INT_BUDGET: &str = "积分求值次数超出预算（/mode deep 可放宽）";
+pub const ERROR_INT_INF_CONVERGE: &str = "无穷限积分需要能求出原函数并收敛（本次无法判定）";
+pub const ERROR_NO_ANTIDERIVATIVE: &str = "无法求出初等原函数（可改用定积分做数值积分）";
+pub const ERROR_TABLE_NOT_COVERED: &str = "初等原函数表未覆盖该形态（可用定积分做数值积分）";
 
 /* ---------------- 注册表 ---------------- */
 
 /// 高等数学函数名（与 `parser::FUNCTIONS` 同步；顺序无关）。
 /// 每新增一项，必须同时补 `CALCULUS_ARITIES` 与对应实现。
-pub const CALCULUS_ARITIES: &[(&str, &[usize])] = &[("diff", &[2])];
+pub const CALCULUS_ARITIES: &[(&str, &[usize])] = &[("diff", &[2]), ("int", &[2, 4])];
 
 /// 允许 `inf` 出现的位置：`(函数名, 允许 inf 的参数下标)`。
 /// 其余位置出现 `inf` 要在这里就报错 —— 否则会落到求值路径报"未定义变量: inf"，误导用户。
-pub const CALCULUS_INF_ALLOWED: &[(&str, &[usize])] = &[];
+pub const CALCULUS_INF_ALLOWED: &[(&str, &[usize])] = &[("int", &[2, 3])];
 
 /// 从注册表导出函数名列表（仅测试用于一致性断言）
 #[cfg(test)]
@@ -227,9 +258,20 @@ fn dispatch(ev: &Evaluator, name: &str, args: Vec<Expr>) -> Result<Expr, String>
         "diff" => {
             let var = as_variable_name(&args[1])?;
             if contains_var_name(&args[0], &var) && binds_same_var(&args[0], &var) {
-                return Err(format!("求导变量被求和绑定变量遮蔽"));
+                return Err(ERROR_SUM_SHADOWED.to_string());
             }
             diff::diff(ev, &args[0], &var)
+        }
+        "int" => {
+            let var = as_variable_name(&args[1])?;
+            if args.len() == 2 {
+                // 不定积分：返回原函数（符号结果；**不写 +C**，文档已说明省略积分常数）
+                integrate::antiderivative(ev, &args[0], &var)
+            } else {
+                // 定积分：返回数值（精确优先，数值兜底）
+                let r = integrate::definite(ev, &args[0], &var, &args[2], &args[3])?;
+                Ok(Expr::Number(r))
+            }
         }
         _ => Err(format!("未知函数: {}", name)),
     }
@@ -242,11 +284,14 @@ fn check_arity(name: &str, got: usize) -> Result<(), String> {
     if allowed.contains(&got) {
         return Ok(());
     }
-    let want = allowed
-        .iter()
-        .map(|n| n.to_string())
-        .collect::<Vec<_>>()
-        .join("/");
+    let want = match allowed.len() {
+        1 => allowed[0].to_string(),
+        _ => allowed
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(" 或 "),
+    };
     Err(ERROR_CALC_ARITY
         .replace("{0}", name)
         .replace("{1}", &want))
