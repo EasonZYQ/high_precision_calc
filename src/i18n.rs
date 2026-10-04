@@ -841,6 +841,23 @@ mod tests {
     }
 
     #[test]
+    fn table_columns_are_consistent() {
+        // 三列必须同进同退：占位符数量与编号要能对上，否则翻译时 {1} 会落空
+        // （新增词条漏填一列是这套 i18n 最容易犯的错）
+        for (zh, tw, en) in TABLE {
+            let count = |s: &str| s.matches('{').count();
+            let n = count(zh);
+            assert_eq!(n, count(tw), "占位符数量不一致: {zh:?} / {tw:?}");
+            assert_eq!(n, count(en), "占位符数量不一致: {zh:?} / {en:?}");
+            for i in 0..n {
+                let ph = format!("{{{i}}}");
+                assert!(tw.contains(&ph), "繁体列缺占位符 {ph}: {zh:?}");
+                assert!(en.contains(&ph), "英文列缺占位符 {ph}: {zh:?}");
+            }
+        }
+    }
+
+    #[test]
     fn english_column_has_no_chinese() {
         // 词条表三列必须同进同退：英文列里混进中文，英文界面就会冒中文。
         for (zh, _tw, en) in TABLE {

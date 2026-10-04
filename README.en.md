@@ -7,8 +7,9 @@
 
 An **ultra-precision command-line calculator** (a single Rust crate): 80 decimal digits of internal precision,
 arbitrary-precision decimals plus exact symbolic arithmetic, equation / system solving, polynomial factorization,
-function fitting, triangle solving, prime factorization — with a syntax-highlighted REPL and a
-Simplified Chinese / Traditional Chinese / English UI.
+function fitting, triangle solving, prime factorization — and **higher mathematics** (derivative `diff`,
+limit `lim`, integral `int`, Taylor series `taylor`, sums and products `sum`/`prod`, all composable) —
+with a syntax-highlighted REPL and a Simplified Chinese / Traditional Chinese / English UI.
 
 ## Demo
 

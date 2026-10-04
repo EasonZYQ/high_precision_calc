@@ -41,6 +41,7 @@ cargo test           # 62 项单元测试
 | `bigfloat.rs`         | 任意精度浮点：值 = BigInt 尾数 / 10^precision；PRECISION=80、DISPLAY_DIGITS=20。四则/开方/幂/exp/ln/三角级数 + 规模保护 |
 | `bigint_ext.rs`       | 大整数补充运算：按规模分派的自带长除法（绕开 num-bigint 的 BZ 断言缺陷）+ 自带整数平方根；带单元测试 |
 | `calc_mode.rs`        | 计算模式开关：Fast（默认，超限给提示）/ Deep（死算，取消规模上限 + 完整精度输出）；低层护栏统一查 `is_deep()` |
+| `calculus/`           | 高等数学：重写通路（mod）+ 化简（normalize）+ 渲染（render）+ 求导/积分/极限/泰勒/求和求积；护栏统一受 `/mode deep` 放宽 |
 | `i18n.rs`             | 界面语言（简/繁/英）：以简体原文为键的词条表 + 运行期整行模式翻译 + 系统语言探测（Win32 `GetUserDefaultUILanguage`） |
 | `number.rs`           | `Number::{Exact, Approx}` 双重表示，运算先精确后数值回退                                              |
 | `parser.rs`           | 递归下降解析 + 求值器 + `parse_and_eval`（返回 `EvalResult`）；绝对值/阶乘/多参函数                           |
@@ -454,3 +455,34 @@ cargo test           # 62 项单元测试
 - 历史持久化：`history_path()`（`%USERPROFILE%/.hipercalc_history`），启动 `load_history`、退出 `save_history`，每行 `add_history_entry`。
 - 新增 `src/*.rs` 模块要在 `main.rs` 顶部加 `mod` 声明。
 - 改动任何功能/输出后同步更新 `README.md`（第一部分功能手册 + 第二部分代码架构）。
+
+### 高等数学（src/calculus/）
+
+- **架构：解析完成后、分类/求值前插一层 AST 重写**（`parse_and_eval` 里调 `expand_calculus`），
+  把 `diff`/`lim`/`int`/`taylor`/`sum`/`prod` 节点**就地展开**成普通 `Expr`。好处：①不必给 `Parser`
+  加生命周期；②不新增 `Expr` 变体（避开 12 处穷尽 match）；③展开结果天然能参与运算
+  （`diff(x^2,x)+1`、`diff(x^2,x)=2` 直接解出 `x = 1`）。
+- **零行为变化是硬要求**：入口先做字符串子串预扫描（函数名两侧标识符边界 + 后跟 `(`），未命中原样返回。
+  改这段必须确认既有输入（`x+1` 仍报未定义变量、`1+2*3` 仍是 7）不受影响。
+- **职责边界**：`expand_calculus` 递归替换普通节点，但**遇 `Factor`/`Sd` 不进入**、在递归前检查内部并报错；
+  `parse_factor`/`parse_sd` 两个分支返回前也各走一次重写，好让 `fac(diff(x^3,x))` 给出真正原因
+  （否则会报"无法因式分解"）。`eval_function` 里的同名拦截**只是兜底**。
+- **顶层就是一次高数调用时不做整体化简**：这样 `taylor(...)` 能保留自己拼好的**升序**；
+  与别的运算组合后再交给通用化简（次数降序，与 fac 一致）。
+- **化简器（normalize.rs）四个坑**（每个都有回归测试守着）：
+  1. 嵌套幂必须合并（`((1-x)^2)^2 → (1-x)^4`），否则两个底字面不同、同底指数永远合不上；
+  2. **只有单项底才展开整数幂** —— 多顶底的 `(1-x)^4` 要保留为原子幂，展开会让反复求导的项数指数膨胀；
+  3. **除数含多项时不拆分子**（`(a+b)/c` 保持一项），同理；
+  4. 负幂只在**单项底**上"逐项取倒数"，多顶底必须保留指数（否则会算出 `1 - 1/x` 这种垃圾）。
+- **数值复核是硬要求**：极限的结构解（**包括直接代入**）与积分求得的原函数都要过数值验证。
+  `lim(abs(x)/x,x,0)` 若不复核就会采信洛必达给出的 0（实际左右极限是 ∓1、极限不存在）。
+  教训：**"代入/求导能算出一个数" ≠ "它就是答案"**，不连续点只有数值证据才算数。
+- **误差归因要准**：`lim(sin(x),x,inf)` 的数值探测若一路加大就会撞上 `check_trig_range` 的
+  `10^(precision-2)` 护栏、把错误报成"三角函数参数过大"。探测指数封顶 `LIMIT_INF_K_MAX = 30` 就是为此。
+- **数值积分用"计算节点"的 Gauss–Legendre**，不要硬编码 GK 常数：自适应 Simpson 在 1e-25 容差下
+  需要上万次求值、直接撞穿预算。节点由 Newton 迭代现算，可用"对 2n-1 次多项式精确"验证。
+- **泰勒系数的精确化**：求值器对 `cos(0)`/`sin(0)` 返回 `Approx`，必须经 `snap_exact` 还原成精确值
+  （十进制还原 + 约分，分母 ≤ 10⁶ 才认），否则会输出 `1.0000000000…*x`。
+- **新增一个高数函数要同步**：`CALCULUS_ARITIES`、`FUNCTIONS`、`SIGNATURES`、`/help` **三份**、
+  `i18n::TABLE`、`docs/DOC.zh-CN.md` + `docs/DOC.en.md`。`CALCULUS_INF_ALLOWED` 决定 `inf` 能出现在哪个参数位
+  —— 不登记就会落到求值路径报"未定义变量: inf"，误导用户。

@@ -645,6 +645,11 @@ Scientific notation disabled (large numbers printed in full)
 | `nCr(n, r)` / `nPr(n, r)` | combination / permutation; arguments must be non-negative integers; `r > n` gives `0`; Fast mode `n ≤ 10000` (Deep lifts it) |
 | `gcd(a, b)` / `lcm(a, b)` | greatest common divisor / least common multiple; arguments must be **non-zero integers** (decimals and `0` error); the **result is never negative**, and it can take part in other operations (`2*gcd(12,18)` → `= 12`) |
 | `primefac(n)` | **prime factorization**; must be the outermost function (see §9): `primefac(12)` → `12 = 2^2 * 3` |
+| `diff(f, x)` | derivative, composable: `diff(x^2, x)` → `= 2*x` (see §13) |
+| `lim(f, x, a)` | limit (`a` may be `inf`): `lim(sin(x)/x, x, 0)` → `≈ 1` |
+| `int(f, x)` / `int(f, x, a, b)` | indefinite / definite integral: `int(x^2, x, 0, 1)` → `= 1 / 3` |
+| `taylor(f, x, a, n)` | Taylor series (`n` = highest degree, no remainder): `taylor(sin(x), x, 0, 5)` |
+| `sum(f, k, a, b)` / `prod(f, k, a, b)` | summation / product: `sum(k, k, 1, 100)` → `= 5050` |
 | `isprime(n)` | primality test, returns `1`/`0` (small-prime trial division + 12-base Miller-Rabin; deterministic for `n < 3.3×10^24`) |
 | `nextprime(n)` | smallest prime greater than `n` (`nextprime(0)` → `2`) |
 
@@ -728,17 +733,184 @@ The REPL highlights keywords **live** (functions green, operators yellow, comman
 
 Non-special angles go through 80-digit numeric computation.
 
+## 13. Higher Mathematics: derivative / limit / integral / Taylor series / sums and products
+
+All six functions use **function-call syntax** and **can take part in further computation** (write them inside
+an expression and the result keeps being evaluated). The shared strategy is **exact first**: give an exact
+value (`=`) whenever possible, and fall back to 80-digit numeric (`≈`) otherwise.
+
+### 13.1 Derivative `diff(f, x)`
+
+```
+> diff(x^2, x)
+= 2*x
+> diff(x^2, x) + 1          <- composable
+= 2*x + 1
+> diff(sin(x), x)
+= cos(x)
+> diff(x^2*sin(x), x)
+= x^2*cos(x) + 2*x*sin(x)
+> diff(1/x, x)
+= -1 / x^2
+> diff(x^x, x)
+= x^x * (ln(x) + 1)
+> diff(diff(x^3, x), x)
+= 6*x
+> diff(x^2, x) = 2          <- also works inside an equation
+x = 1
+```
+
+Covers the four operations, the quotient rule, constant powers and general powers (logarithmic
+differentiation), plus the chain rule for every elementary trigonometric / inverse-trigonometric /
+hyperbolic / logarithmic function; `log(b, x)` is rewritten as `ln(x)/ln(b)` first.
+
+Functions that cannot be differentiated (`mod`, `idiv`, `nCr`, `nPr`, `gcd`, `lcm`, `isprime`,
+`nextprime`, `floor`, `ceil`, `round`, `frac`, `sign`, `re`, `im`, `conj`, `arg`) report
+"function X cannot be differentiated"; the variable must be a **single letter**.
+
+### 13.2 Limit `lim(f, x, a)`
+
+`a` may be a constant or `inf`:
+
+```
+> lim(x^2, x, 2)
+= 4
+> lim((x^2-1)/(x-1), x, 1)      <- 0/0, L'Hopital
+= 2
+> lim(sin(x)/x, x, 0)
+~ 1
+> lim(1/x, x, inf)              <- inf/inf, leading-term comparison
+= 0
+> lim((2*x^2+1)/(x^2-3), x, inf)
+= 2
+> lim(x^3/(x^2+1), x, inf)
+= inf
+> lim(abs(x)/x, x, 0)
+Error: one-sided limits differ; the limit does not exist
+> lim(sin(x), x, inf)
+Error: cannot determine the limit (structural analysis failed and the numeric approximation did not converge)
+```
+
+The pipeline is **direct substitution -> structural analysis (L'Hopital / degree comparison) ->
+numeric two-sided approximation**. Every structural answer must pass a **numeric cross-check**
+(sampling at `a +- h`), which is why `lim(abs(x)/x, x, 0)` does not trust the 0 that L'Hopital
+produces, and instead reports "one-sided limits differ"; `lim(floor(x), x, 0)` behaves the same way.
+
+> **Angle mode affects trigonometric limits**: in Degree mode `lim(sin(x)/x, x, 0) = pi/180 ~ 0.0174533`
+> (not 1), because the derivative of `sin` in Degree mode carries a pi/180 factor.
+
+### 13.3 Integral `int(f, x)` / `int(f, x, a, b)`
+
+```
+> int(x^2, x)                 <- indefinite (integration constant omitted)
+= 1 / 3 * x^3
+> int(1/x, x)
+= ln(abs(x))
+> int(1/(1+x^2), x)
+= arctan(x)
+> int(x^2, x, 0, 1)           <- definite: antiderivative found => Newton-Leibniz, exact
+= 1 / 3
+> int(sin(x), x, 0, pi)
+~ 2
+> int(exp(-x), x, 0, inf)     <- infinite bound
+~ 1
+> int(1/x, x, 1, 2)           <- ln 2, correct to 19 digits
+~ 0.69314718055994530942
+> int(exp(-x^2), x, 0, 1)     <- no elementary antiderivative => numeric integration
+~ 0.7468241328124270254
+```
+
+Symbolic antiderivatives cover linearity, powers (linear base, any rational exponent) and a
+linear-substitution table (`exp/sin/cos` of `u = ax+b`, `u^-1`, `1/(1+u^2)`, `1/sqrt(1-u^2)`, `sec^2 u`).
+When no antiderivative is found, a **definite** integral automatically goes numeric (adaptive
+Gauss-Legendre, 10 points, exact for degree-19 polynomials), while an **indefinite** one reports an
+error and distinguishes the two reasons:
+
+- `int(tan(x), x)` -> "the antiderivative table does not cover this form" — an antiderivative exists,
+  this build simply does not implement it;
+- `int(exp(-x^2), x)` -> "no elementary antiderivative found" — none exists mathematically.
+
+An interval containing a singularity is rejected (e.g. `int(1/x, x, -1, 1)`). A found antiderivative is
+**verified by differentiating it back**, so a wrong rule table cannot silently produce a wrong answer.
+
+### 13.4 Taylor series `taylor(f, x, a, n)`
+
+`n` is the **highest degree** (not the number of terms); `a = 0` gives the Maclaurin series. The output is
+the degree-n Taylor **polynomial** — **no remainder term**.
+
+```
+> taylor(sin(x), x, 0, 5)
+= x - 1 / 6 * x^3 + 1 / 120 * x^5
+> taylor(cos(x), x, 0, 4)
+= 1 - 1 / 2 * x^2 + 1 / 24 * x^4
+> taylor(exp(x), x, 0, 4)
+= 1 + x + 1 / 2 * x^2 + 1 / 6 * x^3 + 1 / 24 * x^4
+> taylor(1/(1-x), x, 0, 10)
+= 1 + x + x^2 + ... + x^10
+> taylor(x^2, x, 1, 2)          <- expanded about x = 1
+= 1 + 2 * (x - 1) + (x - 1)^2
+```
+
+Coefficients are **exact rationals**: `cos(0)` is snapped back to the exact `1` rather than
+`1.0000000000...`. A variable expansion point, a negative or non-integer order, or a singular expansion
+point (e.g. `taylor(1/x, x, 0, 3)`) are all reported explicitly.
+
+### 13.5 Sums and products `sum(f, k, a, b)` / `prod(f, k, a, b)`
+
+```
+> sum(k, k, 1, 100)
+= 5050
+> sum(k^2, k, 1, 10)
+= 385
+> sum(k, k, 1, 1000000)      <- closed form (Faulhaber), instant
+= 500000500000
+> sum(2^k, k, 0, 10)         <- geometric closed form
+= 2047
+> sum(1/k, k, 1, 5)          <- exact rational
+= 137 / 60
+> prod(k, k, 1, 10)
+= 3628800
+```
+
+**Closed form first, term-by-term second**: polynomials use Faulhaber, geometric series use the standard
+formula, `prod` uses factorials; term-by-term accumulation is used only when no closed form is recognised
+and the term count is within budget; otherwise an explicit error is reported (no large-scale numeric
+accumulation). `a > b` gives an empty sum (0) / empty product (1); a product whose range contains 0 is 0.
+
+### 13.6 Shared conventions
+
+- **Composable**: `diff(x^2,x)+1`, `sum(k,k,1,10)+diff(x^2,x)` and `diff(x^2,x)=2` all work;
+- a **symbolic result is not written to `ans`** (`ans` only holds numbers) — after `diff(x^2, x)`, `ans`
+  is still the previous numeric result;
+- they cannot appear inside `fac`/`sd`/`triangle`/`primefac` ("calculus function X cannot be used here");
+- `inf` is only allowed at the limit point of `lim` and the bounds of `int`;
+- every size guard is relaxed by `/mode deep`:
+
+| Guard | Fast | Deep |
+|---|---|---|
+| terms after simplification | 4096 | 65536 |
+| differentiation recursion depth | 64 | 256 |
+| numeric limit iterations | 60 | 200 |
+| integrand evaluations | 2000 | 200000 |
+| Taylor order limit | 50 | 1000 |
+| term-by-term sum (integer terms) | 2000 | 100000 |
+| term-by-term sum (fractional terms) | 200 | 2000 |
+| term-by-term product | 1000 | 20000 |
+
 ---
 
 # Part 2: Code Walkthrough
 
-## 13. Module Overview
+## 14. Module Overview
 
 ```
 src/
 ├── bigfloat.rs       arbitrary-precision float (the numeric core: +−×÷/root/power/exp/ln/trig series + scale guards)
 ├── bigint_ext.rs     big-integer helpers (own long division + integer sqrt, bypassing num-bigint's BZ defect)
 ├── calc_mode.rs      calc mode switch (Fast has scale guards / Deep brute-forces)
+├── calculus/         higher mathematics (derivative/limit/integral/Taylor/sums and products):
+│                     mod.rs rewrite pass + registry, normalize.rs simplification, render.rs printing,
+│                     diff.rs, integrate.rs, limit.rs, series.rs, sumprod.rs
 ├── i18n.rs           UI language (zh-Hans/zh-Hant/English table + runtime whole-line translation + system language detection)
 ├── number.rs         dual representation: symbolic exact + numeric approximate
 ├── parser.rs         recursive-descent parser + evaluator + top-level entry + function whitelist constants
@@ -757,7 +929,7 @@ src/
 └── main.rs           REPL, commands, /help, color config (/set persistence), history, highlighting, timing
 ```
 
-## 14. Core Data Structures
+## 15. Core Data Structures
 
 ### BigFloat (bigfloat.rs)
 
@@ -903,7 +1075,7 @@ pub enum EvalResult {
 
 First tries the two top-level function forms `sd(...)`, `fac/factor(...)`, then parses a system/equation, and finally falls back to evaluating an ordinary expression (including identity detection and "both sides simplify to equal").
 
-## 15. Solver Logic
+## 16. Solver Logic
 
 ### trig.rs — Special-Angle Exact Values
 
@@ -993,7 +1165,7 @@ pub struct TriangleSolution { /* three sides, three angles (radians), three heig
 
 `format_triangle_solution` renders a fixed 5 lines (sides / angles / heights / area+perimeter / two radii); each value's `=`/`≈` is decided by `solve_aux::result_prefix`; angles are converted with `parser::radians_to_degrees` (exact `Pi(coeff)` → exact degrees) before output. Multiple solutions are sectioned with `solution N:` by `handle_triangle`.
 
-## 16. Main Equation Handling (main.rs)
+## 17. Main Equation Handling (main.rs)
 
 `handle_input_result` dispatches on `EvalResult`:
 
@@ -1056,7 +1228,7 @@ When piped/redirected, stdout is not a terminal (`std::io::IsTerminal`), so the 
 - `best_rational` / `pi_ratio`: pick the closest fraction with denominator ≤ 12 (replacing the old fixed candidate tables, so table-missing angles like `5π/3` are covered); `deg_str` renders `(p,q)` as exact degrees (`(1,6)→30`, `(1,8)→22.5`);
 - `collect_all_roots`: multiple initial guesses + two-phase Newton (coarse 1e-8 → fine 1e-12) collect and dedup; when the equation contains a trig function of the unknown and the mode is degrees, guesses scale by `×180/π` (see `equation::has_trig_of_var`).
 
-## 17. Data-Flow Overview
+## 18. Data-Flow Overview
 
 ```
 User input
@@ -1070,6 +1242,8 @@ parse_and_eval (parser.rs)
   ├── triangle(...) → parse_triangle_call (outermost function; whitespace/comma-separated assignments)
   ├── sd(...) / fac(...) top-level recognition
   ├── parse_system → parse_equation → expression parsing
+  ├── calculus::expand_calculus (after parsing, before dispatching: expands the calculus functions
+  │      in place; returns the input unchanged when none are present => zero behaviour change)
   │      └── scale guards query calc_mode::is_deep(): Fast errors over limit / Deep allows
   │
   ▼
@@ -1079,6 +1253,7 @@ EvalResult dispatch (main.rs)
   ├── Equation ─► filter stored vars → polynomial/Newton root-finding → general-form recognition → output
   ├── Fit ────► solver_fit::solve_polynomial_fit (general form + vertex form)
   ├── Triangle ► solver_triangle::solve_triangle (analytic / numeric fallback)
+  ├── Symbolic ► handle_symbolic (symbolic result rendered per display mode; **not stored in ans**)
   └── System ──► linear ? solver_linear (Gaussian elimination)
                     : solver_nonlinear (multi-dimensional Newton)
   │
