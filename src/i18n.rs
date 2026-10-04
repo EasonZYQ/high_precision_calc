@@ -178,10 +178,10 @@ fn translate_plain(seg: &str) -> String {
 /// 模板必须与词条表里的简体原文逐字一致（含占位符编号）；参数会先各自过一遍 `t()`。
 pub fn fmt(template: &str, args: &[&str]) -> String {
     let lang = get();
-    let target = TABLE
+    let target = crate::language::get(lang.code())
         .iter()
-        .find(|row| row.0 == template)
-        .map(|row| pick(row, lang))
+        .find(|(k, _)| k == template)
+        .map(|(_, v)| v.as_str())
         .unwrap_or(template);
     let values: Vec<String> = args.iter().map(|a| t(a)).collect();
     fill(target, &values)
@@ -220,15 +220,6 @@ fn fill(template: &str, values: &[String]) -> String {
     out
 }
 
-/// 取某一行的目标语言文本
-fn pick(row: &(&'static str, &'static str, &'static str), lang: Lang) -> &'static str {
-    match lang {
-        Lang::ZhCn => row.0,
-        Lang::ZhTw => row.1,
-        Lang::En => row.2,
-    }
-}
-
 /// 在一个纯文本段内做模式匹配翻译（depth 用于限制递归，避免相互展开）。
 /// 一段里可能有多处可翻译片段（例如 `"错误: 除以零错误"`：标签与消息各是一条词条），
 /// 因此反复取"最优匹配"替换，直到没有可替换项（上限 32 轮，防止词条互相包含时死循环）。
@@ -258,12 +249,11 @@ fn translate_run(run: &str, depth: usize) -> String {
 /// 结果把 `未知` 剩在匹配区之外 ⇒ 翻出 `未知Categories: bogus`。
 /// 靠左优先则让整词条 `未知类别` 胜出 ⇒ `unknown category: bogus`。
 fn replace_best(run: &str, lang: Lang, depth: usize) -> Option<String> {
+    // 词条来自 `src/language/<代码>.json`（编译期内嵌、按语言缓存一次）
     let mut best: Option<(usize, usize, usize, Vec<(usize, usize, String)>, usize)> = None;
-    for (idx, row) in TABLE.iter().enumerate() {
-        let zh = row.0;
-        let target = pick(row, lang);
+    for (idx, (zh, target)) in crate::language::get(lang.code()).iter().enumerate() {
         if target == zh {
-            continue; // 该行无需翻译（如纯符号）
+            continue; // 该条无需翻译（纯符号，或两种语言写法相同）
         }
         if let Some((start, end, values, literal_len)) = match_in(run, zh) {
             let better = match &best {
@@ -278,7 +268,7 @@ fn replace_best(run: &str, lang: Lang, depth: usize) -> Option<String> {
         }
     }
     let (idx, start, end, values, _) = best?;
-    let target = pick(&TABLE[idx], lang);
+    let target = &crate::language::get(lang.code())[idx].1;
     let mut filled = String::with_capacity(target.len() + 16);
     let mut chars = target.chars().peekable();
     while let Some(c) = chars.next() {
@@ -483,331 +473,7 @@ fn match_in(run: &str, zh: &str) -> Option<(usize, usize, Vec<(usize, usize, Str
 /// 文案表：(`简体中文原文`, `繁體中文`, `English`)。
 /// 简体中文一列必须与代码里的字面量**逐字一致**（含 `{n}` 占位符），否则该条不生效。
 #[rustfmt::skip]
-static TABLE: &[(&str, &str, &str)] = &[
-    // ---- 启动/横幅/计时 ----
-    ("超高精度命令行计算器 (HiPerCalc) v1.1", "超高精度命令列計算器 (HiPerCalc) v1.1", "HiPerCalc — Ultra-Precision CLI Calculator v1.1"),
-    ("当前模式: {0}", "目前模式: {0}", "Current modes: {0}"),
-    ("输入 {0} 查看帮助，输入表达式进行计算，{1} 退出", "輸入 {0} 查看說明，輸入算式進行計算，{1} 離開", "Type {0} for help, enter an expression to compute, {1} to quit"),
-    ("已恢复上次会话设置，含 {0} 个存储变量（/var 查看，/del all 清空）", "已還原上次工作階段設定，含 {0} 個儲存變數（/var 檢視，/del all 清除）", "Restored previous session: {0} stored variables (/var to list, /del all to clear)"),
-    ("\r用时：{0}秒", "\r耗時：{0}秒", "\rTime: {0}s"),
-    ("用时：{0}秒", "耗時：{0}秒", "Time: {0}s"),
-    ("用时：<1秒", "耗時：<1秒", "Time: <1s"),
-    ("读取错误", "讀取錯誤", "Read error"),
-    ("创建 readline 编辑器失败", "建立 readline 編輯器失敗", "Failed to create the readline editor"),
-    // ---- 模式 ----
-    ("已切换到数学显示模式 (MathIO)", "已切換到數學顯示模式 (MathIO)", "Display mode: MathIO (symbolic)"),
-    ("已切换到线性显示模式 (LineIO)", "已切換到線性顯示模式 (LineIO)", "Display mode: LineIO (decimal)"),
-    ("已切换到角度模式 (Degree)", "已切換到角度模式 (Degree)", "Angle mode: Degree"),
-    ("已切换到弧度模式 (Radian)", "已切換到弧度模式 (Radian)", "Angle mode: Radian"),
-    ("已切换到快速模式 (Fast)：规模超限时直接返回提示，输出 20 位有效数字（大数用科学计数法）", "已切換到快速模式 (Fast)：規模超限時直接回報提示，輸出 20 位有效數字（大數用科學記號）", "Calc mode: Fast — oversized results are refused with a hint; 20 significant digits (scientific notation for huge numbers)"),
-    ("已切换到死算模式 (Deep)：不设规模上限、完整精度输出（不走科学计数法）；极端输入可能长时间无响应或产生超长输出", "已切換到死算模式 (Deep)：不設規模上限、完整精度輸出（不用科學記號）；極端輸入可能長時間無回應或產生超長輸出", "Calc mode: Deep — no size limits, full-precision output (no scientific notation); extreme inputs may hang or print enormous output"),
-    ("{0}: {1}。可选: {2}", "{0}: {1}。可選: {2}", "{0}: {1}. Options: {2}"),
-    ("未知模式", "未知模式", "unknown mode"),
-    ("数学显示", "數學顯示", "MathIO"),
-    ("线性显示", "線性顯示", "LineIO"),
-    ("角度制", "角度制", "Degree"),
-    ("弧度制", "弧度制", "Radian"),
-    ("快速", "快速", "Fast"),
-    ("死算", "死算", "Deep"),
-    ("未知指令", "未知指令", "unknown command"),
-    ("{0}: {1}。输入 {2} 查看可用指令。", "{0}: {1}。輸入 {2} 查看可用指令。", "{0}: {1}. Type {2} to list available commands."),
-    ("用法", "用法", "Usage"),
-    ("提示", "提示", "Note"),
-    ("错误", "錯誤", "Error"),
-    // ---- /mode 用法 ----
-    ("{0}: /mode <{1}|{2}|{3}|{4}|{5}|{6}>", "{0}: /mode <{1}|{2}|{3}|{4}|{5}|{6}>", "{0}: /mode <{1}|{2}|{3}|{4}|{5}|{6}>"),
-    // ---- /set ----
-    ("{0}: /set <类别> <颜色>", "{0}: /set <類別> <顏色>", "{0}: /set <category> <color>"),
-    ("类别: {0}", "類別: {0}", "Categories: {0}"),
-    ("  颜色: {0}", "  顏色: {0}", "  Colors: {0}"),
-    ("示例: {0}", "範例: {0}", "Example: {0}"),
-    ("可用颜色见 /set 的用法提示", "可用顏色見 /set 的用法提示", "Run /set to list available colors"),
-    ("可用类别见 /set 的用法提示", "可用類別見 /set 的用法提示", "Run /set to list available categories"),
-    ("当前颜色（按各自颜色显示）:", "目前顏色（依各自顏色顯示）:", "Current colors (shown in their own color):"),
-    ("未知类别", "未知類別", "unknown category"),
-    ("未知颜色", "未知顏色", "unknown color"),
-    ("颜色: {0}", "顏色: {0}", "Colors: {0}"),
-    ("颜色已设置为 {0}（已保存，重启后保持）", "顏色已設定為 {0}（已儲存，重啟後保留）", "Color set: {0} (saved, kept after restart)"),
-    ("函数", "函數", "functions"),
-    ("运算符", "運算子", "operators"),
-    ("指令", "指令", "commands"),
-    ("括号", "括號", "brackets"),
-    ("常量", "常數", "constants"),
-    ("数字", "數字", "numbers"),
-    ("提示符", "提示字元", "prompt"),
-    ("结果", "結果", "result"),
-    ("黑", "黑", "black"),
-    ("红", "紅", "red"),
-    ("绿", "綠", "green"),
-    ("黄", "黃", "yellow"),
-    ("蓝", "藍", "blue"),
-    ("洋红", "洋紅", "magenta"),
-    ("青", "青", "cyan"),
-    ("白", "白", "white"),
-    ("亮黑", "亮黑", "bright_black"),
-    ("亮红", "亮紅", "bright_red"),
-    ("亮绿", "亮綠", "bright_green"),
-    ("亮黄", "亮黃", "bright_yellow"),
-    ("亮蓝", "亮藍", "bright_blue"),
-    ("亮洋红", "亮洋紅", "bright_magenta"),
-    ("亮青", "亮青", "bright_cyan"),
-    ("亮白", "亮白", "bright_white"),
-    // ---- 变量存储 ----
-    ("{0}: /let <大写变量名> = <表达式>", "{0}: /let <大寫變數名> = <算式>", "{0}: /let <UPPERCASE_NAME> = <expression>"),
-    ("{0}: 变量名必须为全大写字母（如 X、AB）", "{0}: 變數名必須為全大寫字母（如 X、AB）", "{0}: variable names must be uppercase letters (e.g. X, AB)"),
-    ("{0}: 变量名必须为全大写字母（如 X、AB），或用 /del all 清空", "{0}: 變數名必須為全大寫字母（如 X、AB），或用 /del all 清除", "{0}: variable names must be uppercase letters (e.g. X, AB), or use /del all"),
-    ("{0}: /let 只能存储数值表达式的值", "{0}: /let 只能儲存數值算式的值", "{0}: /let accepts numeric expressions only"),
-    ("{0}: 变量 {1} 不存在", "{0}: 變數 {1} 不存在", "{0}: variable {1} does not exist"),
-    ("{0}: 暂无存储变量", "{0}: 尚無儲存變數", "{0}: no stored variables"),
-    ("暂无存储变量", "尚無儲存變數", "No stored variables"),
-    ("已删除变量 {0}", "已刪除變數 {0}", "Deleted variable {0}"),
-    ("已删除全部 {0} 个变量", "已刪除全部 {0} 個變數", "Deleted all {0} variables"),
-    ("/del <大写变量名> 或 /del all", "/del <大寫變數名> 或 /del all", "/del <UPPERCASE_NAME> or /del all"),
-    ("{0}: 会话状态保存失败（{1}），本次的设置与变量不会在重启后保留", "{0}: 工作階段狀態儲存失敗（{1}），本次的設定與變數不會在重啟後保留", "{0}: failed to save session state ({1}); settings and variables will not survive a restart"),
-    // ---- 方程/方程组 ----
-    ("{0}: 方程中没有变量", "{0}: 方程中沒有變數", "{0}: the equation has no variable"),
-    ("错误: 方程中没有变量", "錯誤: 方程中沒有變數", "Error: the equation has no variable"),
-    ("{0}: 方程包含多个变量（{1}），当前单一方程仅支持单变量；线性方程组请用逗号分隔输入", "{0}: 方程包含多個變數（{1}），目前單一方程僅支援單變數；線性方程組請用逗號分隔輸入", "{0}: the equation has multiple variables ({1}); a single equation supports one variable — use commas to enter a system"),
-    ("{0}: 方程数量({1})与变量数量({2})不匹配", "{0}: 方程數量({1})與變數數量({2})不符", "{0}: {1} equations vs {2} variables — count mismatch"),
-    ("{0}: 非线性方程组暂支持方程数 = 变量数（当前 {1}/{2})", "{0}: 非線性方程組暫支援方程數 = 變數數（目前 {1}/{2})", "{0}: the nonlinear solver needs #equations = #variables (now {1}/{2})"),
-    ("{0}: 非线性方程组暂支持不超过 3 个变量", "{0}: 非線性方程組暫支援不超過 3 個變數", "{0}: the nonlinear solver supports at most 3 variables"),
-    ("方程组无解", "方程組無解", "No solution"),
-    ("方程组有无穷多解", "方程組有無窮多解", "Infinitely many solutions"),
-    ("恒等式：对变量的任意取值均成立", "恆等式：對變數的任意取值均成立", "Identity: true for every value of the variable"),
-    ("未能找到实数根", "未能找到實數根", "No real root found"),
-    ("未找到实数解", "未找到實數解", "No real solution found"),
-    ("无实数解", "無實數解", "No real solution"),
-    ("无解", "無解", "No solution"),
-    ("{0} 的一个解: {1} = {2}", "{0} 的一個解: {1} = {2}", "One solution of {0}: {1} = {2}"),
-    // ---- 周期通式 / 结果后缀 ----
-    // 周期通式只保留**尾段**词条，不写 `{0} = {1}，k 为整数` 那种整句模板：
-    // 整句模板里的字面量 ` = ` 正好夹在"变量（结果底色）"与"数字（数字色）"之间，
-    // 替换时该字面量区间内的颜色码会被丢掉，症状是英文模式下 `=` 从黄色变成白色。
-    // 尾段 `，k 为整数` 本身是连续的一段纯文本，单独翻译既不丢颜色也用不到占位符。
-    ("，k 为整数", "，k 為整數", ", k ∈ ℤ"),
-    ("  或  ", "  或  ", " or "),
-    ("（候选枚举超出规模上限，结果可能不完整）", "（候選枚舉超出規模上限，結果可能不完整）", " (candidate enumeration hit the size limit; result may be incomplete)"),
-    ("（有理数域内不可再分解）", "（有理數域內不可再分解）", " (irreducible over the rationals)"),
-    ("（剩余高次因式未作进一步精确分解）", "（剩餘高次因式未作進一步精確分解）", " (remaining high-degree factor not decomposed further)"),
-    // ---- 求值/解析错误 ----
-    ("除以零错误", "除以零錯誤", "division by zero"),
-    ("开方参数必须为非负数", "開方參數必須為非負數", "the radicand must be non-negative"),
-    ("负数的平方根在实数范围内无定义", "負數的平方根在實數範圍內無定義", "the square root of a negative number is undefined over the reals"),
-    ("负数的非整数次幂在实数范围内无定义", "負數的非整數次幂在實數範圍內無定義", "a negative base with a non-integer exponent is undefined over the reals"),
-    ("负数不能开平方", "負數不能開平方", "cannot take the square root of a negative number"),
-    ("0 的负次幂未定义", "0 的負次幂未定義", "0 raised to a negative power is undefined"),
-    ("ln 参数必须为正数", "ln 參數必須為正數", "ln requires a positive argument"),
-    ("ln 的定义域为 x>0", "ln 的定義域為 x>0", "ln is defined for x>0 only"),
-    ("log10 的定义域为 x>0", "log10 的定義域為 x>0", "log10 is defined for x>0 only"),
-    ("log2 的定义域为 x>0", "log2 的定義域為 x>0", "log2 is defined for x>0 only"),
-    ("log 的底数必须 > 0", "log 的底數必須 > 0", "the base of log must be > 0"),
-    ("log 的真数必须 > 0", "log 的真數必須 > 0", "the argument of log must be > 0"),
-    ("log 的底数不能为 1", "log 的底數不能為 1", "the base of log cannot be 1"),
-    ("log 需要两个参数: log(底数, 真数)", "log 需要兩個參數: log(底數, 真數)", "log takes two arguments: log(base, x)"),
-    ("arcsin 参数必须在 [-1, 1] 范围内", "arcsin 參數必須在 [-1, 1] 範圍內", "arcsin requires an argument in [-1, 1]"),
-    ("arccos 参数必须在 [-1, 1] 范围内", "arccos 參數必須在 [-1, 1] 範圍內", "arccos requires an argument in [-1, 1]"),
-    ("arcsec 参数必须满足 |x| >= 1", "arcsec 參數必須滿足 |x| >= 1", "arcsec requires |x| >= 1"),
-    ("arccsc 参数必须满足 |x| >= 1", "arccsc 參數必須滿足 |x| >= 1", "arccsc requires |x| >= 1"),
-    ("tan 在此角度未定义", "tan 在此角度未定義", "tan is undefined at this angle"),
-    ("cot 在此角度未定义", "cot 在此角度未定義", "cot is undefined at this angle"),
-    ("sec 在此角度未定义", "sec 在此角度未定義", "sec is undefined at this angle"),
-    ("csc 在此角度未定义", "csc 在此角度未定義", "csc is undefined at this angle"),
-    ("参数过大（约 10^{0} 弧度），{1} 位精度的 π 归约会失效，三角函数结果不可靠", "參數過大（約 10^{0} 弧度），{1} 位精度的 π 引數縮減會失效，三角函數結果不可靠", "argument too large (~10^{0} rad): π reduction at {1} digits breaks down, trigonometric results are unreliable"),
-    ("参数过大（约 10^{0}），指数运算结果将超出支持范围", "參數過大（約 10^{0}），指數運算結果將超出支援範圍", "argument too large (~10^{0}): the exponential would exceed the supported range"),
-    ("exp 参数过大（约 10^{0}），结果将超过 10^{1} 位十进制，超出支持范围", "exp 參數過大（約 10^{0}），結果將超過 10^{1} 位十進位，超出支援範圍", "exp argument too large (~10^{0}): the result would exceed 10^{1} decimal digits"),
-    ("exp 参数过大", "exp 參數過大", "exp argument too large"),
-    ("幂运算结果超出支持范围（指数 × ln(底数) ≈ 10^{0}，结果约 10^{1} 位十进制）", "幂運算結果超出支援範圍（指數 × ln(底數) ≈ 10^{0}，結果約 10^{1} 位十進位）", "power result out of range (exponent × ln(base) ≈ 10^{0}, about 10^{1} decimal digits)"),
-    ("幂运算结果约有 {0} 位十进制，超过支持上限（约 10^{1} 位）", "幂運算結果約有 {0} 位十進位，超過支援上限（約 10^{1} 位）", "power result has about {0} decimal digits, exceeding the limit (10^{1})"),
-    ("阶乘参数过大（上限 10000，/mode deep 可取消限制）", "階乘參數過大（上限 10000，/mode deep 可取消限制）", "factorial argument too large (limit 10000; /mode deep removes it)"),
-    ("阶乘参数超出可表示范围", "階乘參數超出可表示範圍", "factorial argument out of representable range"),
-    ("阶乘需要整数参数", "階乘需要整數參數", "factorial requires an integer argument"),
-    ("阶乘需要非负整数", "階乘需要非負整數", "factorial requires a non-negative integer"),
-    ("科学计数法指数超出支持范围（/mode deep 可取消限制）", "科學記號指數超出支援範圍（/mode deep 可取消限制）", "scientific-notation exponent out of range (/mode deep removes the limit)"),
-    ("科学计数法指数超出可表示范围", "科學記號指數超出可表示範圍", "scientific-notation exponent out of representable range"),
-    ("未知函数: {0}", "未知函數: {0}", "unknown function: {0}"),
-    ("未知标识符: {0}", "未知識別字: {0}", "unknown identifier: {0}"),
-    ("未定义变量: {0}", "未定義變數: {0}", "undefined variable: {0}"),
-    ("函数 {0} 需要一个参数", "函數 {0} 需要一個參數", "function {0} takes one argument"),
-    ("函数 {0} 缺少参数", "函數 {0} 缺少參數", "function {0} is missing an argument"),
-    ("函数 '{0}' 缺少右括号", "函數 '{0}' 缺少右括號", "function '{0}' is missing a closing parenthesis"),
-    ("位置 {0} 处意外的字符: '{1}'", "位置 {0} 處意外的字元: '{1}'", "unexpected character at position {0}: '{1}'"),
-    ("位置 {0} 处多余的字符", "位置 {0} 處多餘的字元", "extra characters at position {0}"),
-    ("缺少右括号 ')'", "缺少右括號 ')'", "missing closing parenthesis ')'"),
-    ("缺少闭合的 '|'（绝对值）", "缺少閉合的 '|'（絕對值）", "missing closing '|' (absolute value)"),
-    ("小数点后缺少数字", "小數點後缺少數字", "missing digits after the decimal point"),
-    ("无法解析数字: {0}", "無法解析數字: {0}", "cannot parse number: {0}"),
-    ("空表达式", "空算式", "empty expression"),
-    ("fac/factor 函数需要参数: fac(表达式)", "fac/factor 函數需要參數: fac(算式)", "fac/factor needs an argument: fac(expression)"),
-    ("fac/factor 必须是整个表达式的最外层函数", "fac/factor 必須是整個算式的最外層函數", "fac/factor must be the outermost function of the whole expression"),
-    ("fac/factor 必须作为最外层函数使用", "fac/factor 必須作為最外層函數使用", "fac/factor must be used as the outermost function"),
-    ("不是 fac/factor 表达式", "不是 fac/factor 算式", "not a fac/factor expression"),
-    ("factor 目前仅支持 1~3 个变量", "factor 目前僅支援 1~3 個變數", "factor currently supports 1–3 variables"),
-    ("factor 必须作为最外层函数使用", "factor 必須作為最外層函數使用", "factor must be used as the outermost function"),
-    ("sd 函数需要参数: sd(表达式)", "sd 函數需要參數: sd(算式)", "sd needs an argument: sd(expression)"),
-    ("sd 必须是整个表达式的最外层函数", "sd 必須是整個算式的最外層函數", "sd must be the outermost function of the whole expression"),
-    ("sd 只能作为最外层函数使用", "sd 只能作為最外層函數使用", "sd can only be used as the outermost function"),
-    ("不是 sd 表达式", "不是 sd 算式", "not an sd expression"),
-    ("等式需要在求解模式下处理，不应直接计算", "等式需要在求解模式下處理，不應直接計算", "an equation must be solved, not evaluated"),
-    ("等式不能在求值中使用", "等式不能在求值中使用", "an equation cannot be used inside an expression"),
-    ("方程组不能在求值中使用", "方程組不能在求值中使用", "an equation system cannot be used inside an expression"),
-    ("方程组中每一项都必须是等式", "方程組中每一項都必須是等式", "every item in a system must be an equation"),
-    ("数值求根次数过高（{0} 次，Fast 模式上限 {1}）；如确认需要继续，请先执行 /mode deep", "數值求根次數過高（{0} 次，Fast 模式上限 {1}）；如確認需要繼續，請先執行 /mode deep", "numeric root-finding degree too high ({0}; Fast limit {1}); run /mode deep to continue"),
-    ("数值求根次数过高", "數值求根次數過高", "numeric root-finding degree too high"),
-    ("数值求根未收敛（{0} 次多项式的低精度粗收敛失败），请尝试低次方程", "數值求根未收斂（{0} 次多項式的低精度粗收斂失敗），請嘗試低次方程", "numeric root-finding did not converge ({0}-degree coarse stage failed); try a lower-degree equation"),
-    ("数值求根未收敛（{0} 次多项式超出当前迭代策略），请尝试低次方程", "數值求根未收斂（{0} 次多項式超出目前迭代策略），請嘗試低次方程", "numeric root-finding did not converge ({0}-degree exceeds the current strategy); try a lower-degree equation"),
-    ("高次求根需要精确的有理系数", "高次求根需要精確的有理係數", "high-degree root-finding needs exact rational coefficients"),
-    ("无法因式分解：仅支持有理数系数的多项式", "無法因式分解：僅支援有理係數的多項式", "cannot factor: only polynomials with rational coefficients are supported"),
-    ("未找到用户主目录", "未找到使用者家目錄", "home directory not found"),
-    // ---- 复数 ----
-    ("复数不支持该函数: {0}", "複數不支援該函數: {0}", "complex numbers are not supported by {0}"),
-    ("复数的非整数次幂暂不支持", "複數的非整數次幂暫不支援", "non-integer powers of complex numbers are not supported yet"),
-    ("复数的幂指数过大", "複數的幂指數過大", "complex exponent too large"),
-    ("复数的对数要求 z != 0", "複數的對數要求 z != 0", "the logarithm of a complex number requires z != 0"),
-    ("0 没有辐角", "0 沒有輻角", "0 has no argument"),
-    // ---- 多项式拟合 ----
-    ("多项式拟合至少需要 2 个坐标", "多項式擬合至少需要 2 個座標", "polynomial fitting needs at least 2 points"),
-    ("坐标格式错误（应为 (x,y) 或 P(x,y)）", "座標格式錯誤（應為 (x,y) 或 P(x,y)）", "bad point format (expected (x,y) or P(x,y))"),
-    ("顶点标记必须是大写 P（小写 p 是普通变量）", "頂點標記必須是大寫 P（小寫 p 是普通變數）", "the vertex marker must be an uppercase P (lowercase p is an ordinary variable)"),
-    ("顶点坐标还需要至少一个普通坐标", "頂點座標還需要至少一個普通座標", "a vertex point needs at least one ordinary point as well"),
-    ("模板缺少自变量 x", "模板缺少自變數 x", "the template has no independent variable x"),
-    ("模板中没有未知参数", "模板中沒有未知參數", "the template has no unknown parameter"),
-    ("模板不是多项式，无法提取升幂系数", "模板不是多項式，無法提取升冪係數", "the template is not a polynomial; cannot extract coefficients"),
-    ("模板与坐标不一致（可能对参数不是线性的）", "模板與座標不一致（可能對參數不是線性的）", "the template does not match the points (it may be nonlinear in the parameters)"),
-    ("自由参数: {0}", "自由參數: {0}", "free parameters: {0}"),
-    ("坐标之间存在矛盾，无法同时满足", "座標之間存在矛盾，無法同時滿足", "the points are inconsistent — no polynomial fits all of them"),
-    ("坐标重复或退化，无法唯一确定多项式", "座標重複或退化，無法唯一確定多項式", "duplicate or degenerate points — the polynomial is not unique"),
-    ("坐标/参数过多（{0} 个，Fast 模式上限 {1}）；如确认需要继续，请先执行 /mode deep", "座標/參數過多（{0} 個，Fast 模式上限 {1}）；如確認需要繼續，請先執行 /mode deep", "too many points/parameters ({0}; Fast limit {1}); run /mode deep to continue"),
-    // ---- 三角形求解 ----
-    ("triangle() 必须是整个表达式的最外层函数，不能参与其它运算", "triangle() 必須是整個算式的最外層函式，不能參與其它運算", "triangle() must be the outermost function of the whole expression; it cannot take part in other operations"),
-    ("triangle 函数需要参数: triangle(a=3 b=4 c=5)", "triangle 函式需要參數: triangle(a=3 b=4 c=5)", "triangle needs arguments: triangle(a=3 b=4 c=5)"),
-    ("三角形记号格式错误: {0}", "三角形記號格式錯誤: {0}", "bad triangle notation: {0}"),
-    ("三角形记号格式错误", "三角形記號格式錯誤", "bad triangle notation"),
-    ("未知的三角形记号: {0}", "未知的三角形記號: {0}", "unknown triangle notation: {0}"),
-    ("三角形赋值缺少右端表达式", "三角形賦值缺少右端算式", "triangle assignment is missing its right-hand expression"),
-    ("三角形求解至少需要 2 个已知量", "三角形求解至少需要 2 個已知量", "triangle solving needs at least 2 known values"),
-    ("三角形求解不支持复数", "三角形求解不支援複數", "triangle solving does not support complex numbers"),
-    ("三角形某个量被重复赋值: {0}", "三角形某個量被重複賦值: {0}", "a triangle value is assigned twice: {0}"),
-    ("边长必须为正数: {0}", "邊長必須為正數: {0}", "side length must be positive: {0}"),
-    ("高必须为正数: {0}", "高必須為正數: {0}", "height must be positive: {0}"),
-    ("角度必须在 (0, 180°) 范围内: {0}", "角度必須在 (0, 180°) 範圍內: {0}", "angle must be within (0, 180°): {0}"),
-    ("三角形不满足三角不等式", "三角形不滿足三角不等式", "the values do not satisfy the triangle inequality"),
-    ("已知量之间存在矛盾，无法构成三角形", "已知量之間存在矛盾，無法構成三角形", "the given values are inconsistent — no such triangle"),
-    ("该三角形无解", "該三角形無解", "no such triangle exists"),
-    ("三角形求解未收敛", "三角形求解未收斂", "triangle solving did not converge"),
-    ("已知信息不足，无法确定三角形", "已知資訊不足，無法確定三角形", "not enough information to determine the triangle"),
-    ("已知信息不足，无法确定三角形（形状已确定，仅缺一个长度）", "已知資訊不足，無法確定三角形（形狀已確定，僅缺一個長度）", "not enough information (shape is fixed, only a length is missing)"),
-    ("已知信息不足，无法确定三角形（形状已确定 a : b : c = {0}，仅缺一个长度）", "已知資訊不足，無法確定三角形（形狀已確定 a : b : c = {0}，僅缺一個長度）", "not enough information (shape fixed: a : b : c = {0}; only a length is missing)"),
-    ("解 {0}:", "解 {0}:", "solution {0}:"),
-    ("面积", "面積", "area"),
-    ("周长", "周長", "perimeter"),
-    ("外接圆半径", "外接圓半徑", "circumradius"),
-    ("内切圆半径", "內切圓半徑", "inradius"),
-    // ---- /reset /save /load 与内联提示 ----
-    ("已重置会话（清空 {0} 个变量与 ans）", "已重置工作階段（清空 {0} 個變數與 ans）", "Session reset ({0} variables and ans cleared)"),
-    ("已恢复默认设置（模式、颜色、精度），语言保持不变", "已恢復預設設定（模式、顏色、精度），語言保持不變", "Defaults restored (modes, colors, precision); language unchanged"),
-    ("已保存会话到 {0}（{1} 个变量）", "已儲存工作階段至 {0}（{1} 個變數）", "Session saved to {0} ({1} variables)"),
-    ("保存文件失败: {0}", "儲存檔案失敗: {0}", "failed to write file: {0}"),
-    ("已从 {0} 加载 {1} 行", "已從 {0} 載入 {1} 行", "Loaded {1} lines from {0}"),
-    ("已从 {0} 加载 {1} 行（其中部分行出错，已跳过）", "已從 {0} 載入 {1} 行（其中部分行出錯，已跳過）", "Loaded {1} lines from {0} (some lines failed and were skipped)"),
-    ("/reset [all]（all = 连模式与颜色一起恢复默认）", "/reset [all]（all = 連模式與顏色一起恢復預設）", "/reset [all] (all = also restore modes and colors)"),
-    ("/save <文件路径>", "/save <檔案路徑>", "/save <file path>"),
-    ("/load <文件路径>", "/load <檔案路徑>", "/load <file path>"),
-    ("zh-CN|zh-TW|en（无参数进入选择菜单）", "zh-CN|zh-TW|en（無參數進入選擇選單）", "zh-CN|zh-TW|en (no argument opens the menu)"),
-    ("<类别> <颜色>", "<類別> <顏色>", "<category> <color>"),
-    ("NAME = <表达式>（变量名须全大写）", "NAME = <算式>（變數名須全大寫）", "NAME = <expression> (uppercase name)"),
-    ("NAME 或 all", "NAME 或 all", "NAME or all"),
-    // ---- 精度与显示开关（/mode prec|digits|sci|group） ----
-    ("已设置工作精度为 {0} 位小数（显示 {1} 位有效数字）", "已設定工作精度為 {0} 位小數（顯示 {1} 位有效數字）", "Working precision set to {0} decimal digits (displaying {1} significant digits)"),
-    ("提示: 显示位数（{0}）少于工作精度，可用 /mode digits 提高", "提示: 顯示位數（{0}）少於工作精度，可用 /mode digits 提高", "Note: display digits ({0}) are lower than the working precision; raise them with /mode digits"),
-    ("已设置显示 {0} 位有效数字", "已設定顯示 {0} 位有效數字", "Display digits set to {0}"),
-    ("已开启科学计数法显示", "已開啟科學記號顯示", "Scientific notation enabled"),
-    ("已关闭科学计数法显示（大数完整写出）", "已關閉科學記號顯示（大數完整寫出）", "Scientific notation disabled (large numbers printed in full)"),
-    ("已开启千分位分隔", "已開啟千分位分隔", "Digit grouping enabled"),
-    ("已关闭千分位分隔", "已關閉千分位分隔", "Digit grouping disabled"),
-    // ---- 二元函数（nroot / mod / idiv / nCr / nPr / gcd / lcm / isprime） ----
-    ("函数 {0} 需要两个参数", "函數 {0} 需要兩個參數", "function {0} takes two arguments"),
-    ("nroot 的次数必须是 >= 2 的整数", "nroot 的次數必須是 >= 2 的整數", "nroot requires an integer degree >= 2"),
-    ("nroot 的次数超出支持范围（2 ~ 1000000）", "nroot 的次數超出支援範圍（2 ~ 1000000）", "nroot degree out of range (2 ~ 1000000)"),
-    ("负数的偶次根在实数范围内无定义", "負數的偶次根在實數範圍內無定義", "an even root of a negative number is undefined over the reals"),
-    ("取模与整除需要精确数值", "取模與整除需要精確數值", "mod/idiv require exact values"),
-    ("取模与整除的除数不能为 0", "取模與整除的除數不能為 0", "the divisor of mod/idiv cannot be 0"),
-    ("组合数需要非负整数参数", "組合數需要非負整數參數", "nCr requires non-negative integers"),
-    ("排列数需要非负整数参数", "排列數需要非負整數參數", "nPr requires non-negative integers"),
-    ("组合数参数过大（上限 10000，/mode deep 可取消限制）", "組合數參數過大（上限 10000，/mode deep 可取消限制）", "nCr argument too large (limit 10000; /mode deep removes it)"),
-    ("排列数参数过大（上限 10000，/mode deep 可取消限制）", "排列數參數過大（上限 10000，/mode deep 可取消限制）", "nPr argument too large (limit 10000; /mode deep removes it)"),
-    ("组合数参数过大", "組合數參數過大", "nCr argument too large"),
-    ("排列数参数过大", "排列數參數過大", "nPr argument too large"),
-    ("gcd/lcm 需要整数参数", "gcd/lcm 需要整數參數", "gcd/lcm require integer arguments"),
-    ("gcd/lcm 的参数不能为 0", "gcd/lcm 的參數不能為 0", "gcd/lcm arguments must be non-zero"),
-    // ---- 素因数分解 ----
-    ("primefac 的参数必须是非零整数", "primefac 的參數必須是非零整數", "primefac requires a non-zero integer argument"),
-    ("primefac() 必须是整个表达式的最外层函数，不能参与其它运算", "primefac() 必須是整個算式的最外層函式，不能參與其它運算", "primefac() must be the outermost function of the whole expression; it cannot take part in other operations"),
-    ("primefac 函数需要参数: primefac(12)", "primefac 函式需要參數: primefac(12)", "primefac needs an argument: primefac(12)"),
-    ("素因数分解超出预算（Fast 模式 Pollard 迭代上限 2^17）；如确认需要继续，请先执行 /mode deep", "質因數分解超出預算（Fast 模式 Pollard 迭代上限 2^17）；如確認需要繼續，請先執行 /mode deep", "prime factorization exceeded the budget (Fast mode Pollard iteration limit 2^17); run /mode deep to continue"),
-    ("0 没有素因数分解", "0 沒有質因數分解", "0 has no prime factorization"),
-    // ---- 高等数学：求导 ----
-    ("求导变量必须是单个变量（如 x）", "求導變數必須是單個變數（如 x）", "the differentiation variable must be a single variable (e.g. x)"),
-    ("函数 {0} 不支持求导", "函數 {0} 不支援求導", "function {0} cannot be differentiated"),
-    ("求导结果规模过大（/mode deep 可放宽）", "求導結果規模過大（/mode deep 可放寬）", "derivative too large (run /mode deep to relax)"),
-    ("求导展开嵌套过深（/mode deep 可放宽）", "求導展開嵌套過深（/mode deep 可放寬）", "differentiation nesting too deep (run /mode deep to relax)"),
-    ("求导变量被求和绑定变量遮蔽", "求導變數被求和綁定變數遮蔽", "the differentiation variable is shadowed by the summation variable"),
-    ("高等数学函数 {0} 不能出现在此处（fac/sd/triangle/primefac 内部）", "高等數學函數 {0} 不能出現在此處（fac/sd/triangle/primefac 內部）", "calculus function {0} cannot be used here (inside fac/sd/triangle/primefac)"),
-    ("函数 {0} 需要 {1} 个参数", "函數 {0} 需要 {1} 個參數", "function {0} takes {1} argument(s)"),
-    ("此处不能使用无穷（inf）", "此處不能使用無窮（inf）", "infinity (inf) is not allowed here"),
-    ("等式不能出现在符号运算中", "等式不能出現在符號運算中", "equations cannot appear in symbolic computation"),
-    // ---- 高等数学：积分 ----
-    ("积分上下限必须是常数（可为 inf）", "積分上下限必須是常數（可為 inf）", "the integration bounds must be constants (may be inf)"),
-    ("被积函数在积分区间内出现奇点或非有限值", "被積函數在積分區間內出現奇點或非有限值", "the integrand is singular or non-finite on the interval"),
-    ("积分求值次数超出预算（/mode deep 可放宽）", "積分求值次數超出預算（/mode deep 可放寬）", "integration evaluation budget exceeded (run /mode deep to relax)"),
-    ("无穷限积分需要能求出原函数并收敛（本次无法判定）", "無窮限積分需要能求出原函數並收斂（本次無法判定）", "an infinite integral needs a convergent antiderivative (could not be determined here)"),
-    ("无法求出初等原函数（可改用定积分做数值积分）", "無法求出初等原函數（可改用定積分做數值積分）", "no elementary antiderivative found (use a definite integral for numeric integration)"),
-    ("初等原函数表未覆盖该形态（可用定积分做数值积分）", "初等原函數表未覆蓋該形態（可用定積分做數值積分）", "the antiderivative table does not cover this form (use a definite integral for numeric integration)"),
-    // ---- 高等数学：极限 ----
-    ("极限点必须是常数或 inf", "極限點必須是常數或 inf", "the limit point must be a constant or inf"),
-    ("无法判定极限（结构分析失败且数值逼近未收敛）", "無法判定極限（結構分析失敗且數值逼近未收斂）", "cannot determine the limit (structural analysis failed and the numeric approximation did not converge)"),
-    ("左右极限不相等，极限不存在", "左右極限不相等，極限不存在", "one-sided limits differ; the limit does not exist"),
-    // ---- 高等数学：泰勒展开 ----
-    ("泰勒展开点必须是常数（不得含变量 {0}）", "泰勒展開點必須是常數（不得含變數 {0}）", "the Taylor expansion point must be a constant (must not contain the variable {0})"),
-    ("泰勒展开阶数必须是非负整数（上限 {0}，/mode deep 可放宽）", "泰勒展開階數必須是非負整數（上限 {0}，/mode deep 可放寬）", "the Taylor order must be a non-negative integer (max {0}; /mode deep to relax)"),
-    ("泰勒展开式过大（/mode deep 可放宽）", "泰勒展開式過大（/mode deep 可放寬）", "the Taylor expansion is too large (/mode deep to relax)"),
-    ("泰勒展开点在函数或其导数的奇点上", "泰勒展開點在函數或其導數的奇點上", "the expansion point is a singularity of the function or one of its derivatives"),
-    // ---- 高等数学：求和 / 求积 ----
-    ("求和/求积的变量必须是单个变量（如 k）", "求和/求積的變數必須是單個變數（如 k）", "the summation/product variable must be a single variable (e.g. k)"),
-    ("求和/求积的上下限必须是常数整数", "求和/求積的上下限必須是常數整數", "the summation/product bounds must be constant integers"),
-    ("求和/求积范围过大且无闭式（/mode deep 可放宽）", "求和/求積範圍過大且無閉式（/mode deep 可放寬）", "the summation/product range is too large with no closed form (/mode deep to relax)"),
-    ("求和/求积需求出实数（本次得到复数）", "求和/求積需求出實數（本次得到複數）", "summation/product must produce real values (got a complex one here)"),
-    ("isprime 需要整数参数", "isprime 需要整數參數", "isprime requires an integer argument"),
-    ("nextprime 需要整数参数", "nextprime 需要整數參數", "nextprime requires an integer argument"),
-    ("素性判定参数过大（上限 10^24，/mode deep 可取消限制）", "素性判定參數過大（上限 10^24，/mode deep 可取消限制）", "primality argument too large (limit 10^24; /mode deep removes it)"),
-    // ---- 反双曲 / 双曲倒数 ----
-    ("arccosh 的定义域为 x >= 1", "arccosh 的定義域為 x >= 1", "arccosh is defined for x >= 1 only"),
-    ("arctanh 的定义域为 |x| < 1", "arctanh 的定義域為 |x| < 1", "arctanh is defined for |x| < 1 only"),
-    ("coth 在 x=0 处未定义", "coth 在 x=0 處未定義", "coth is undefined at x=0"),
-    ("csch 在 x=0 处未定义", "csch 在 x=0 處未定義", "csch is undefined at x=0"),
-    // ---- 命令行 / 计时开关 ----
-    ("已开启耗时显示", "已開啟耗時顯示", "Timing display enabled"),
-    ("已关闭耗时显示", "已關閉耗時顯示", "Timing display disabled"),
-    ("/timing <on|off>", "/timing <on|off>", "/timing <on|off>"),
-    ("参数 {0} 缺少取值", "參數 {0} 缺少取值", "option {0} requires a value"),
-    ("未知参数: {0}", "未知參數: {0}", "unknown option: {0}"),
-    ("无法识别的语言代码: {0}", "無法識別的語言代碼: {0}", "unrecognized language code: {0}"),
-    (
-        "用法: hipercalc [-e <表达式>] [-f <文件>] [--stdin] [--lang <代码>] [-q]",
-        "用法: hipercalc [-e <算式>] [-f <檔案>] [--stdin] [--lang <代碼>] [-q]",
-        "Usage: hipercalc [-e <expr>] [-f <file>] [--stdin] [--lang <code>] [-q]",
-    ),
-    ("读取文件失败: {0}", "讀取檔案失敗: {0}", "failed to read file: {0}"),
-    // 文件读写失败的原因（由 `main::io_reason` 归纳，不走操作系统的区域化文案）
-    ("文件不存在", "檔案不存在", "file not found"),
-    ("没有访问权限", "沒有存取權限", "permission denied"),
-    ("文件内容不是有效的文本", "檔案內容不是有效的文字", "the file is not valid text"),
-    ("无法访问该文件", "無法存取該檔案", "cannot access the file"),
-    // ---- 语言切换（自身） ----
-    ("语言 / Language:", "語言 / Language:", "Language:"),
-    ("↑/↓ 选择，回车确认（也可直接输入序号或 /lang <代码>）", "↑/↓ 選擇，Enter 確認（也可直接輸入序號或 /lang <代碼>）", "↑/↓ to choose, Enter to confirm (or type the index / `/lang <code>`)"),
-    ("已切换语言：{0}（仅对后续输出生效）", "已切換語言：{0}（僅對後續輸出生效）", "Language switched to {0} (applies to subsequent output only)"),
-    ("{0}: 无法识别的语言，可选: 1 简体中文 / 2 繁體中文 / 3 English", "{0}: 無法識別的語言，可選: 1 简体中文 / 2 繁體中文 / 3 English", "{0}: unknown language; choose 1 简体中文 / 2 繁體中文 / 3 English"),
-];
+// 词条表已迁移到 `src/language/<语言代码>.json`（编译期内嵌）
 
 #[cfg(test)]
 mod tests {
@@ -841,40 +507,23 @@ mod tests {
     }
 
     #[test]
-    fn table_columns_are_consistent() {
-        // 三列必须同进同退：占位符数量与编号要能对上，否则翻译时 {1} 会落空
-        // （新增词条漏填一列是这套 i18n 最容易犯的错）
-        for (zh, tw, en) in TABLE {
-            let count = |s: &str| s.matches('{').count();
-            let n = count(zh);
-            assert_eq!(n, count(tw), "占位符数量不一致: {zh:?} / {tw:?}");
-            assert_eq!(n, count(en), "占位符数量不一致: {zh:?} / {en:?}");
-            for i in 0..n {
-                let ph = format!("{{{i}}}");
-                assert!(tw.contains(&ph), "繁体列缺占位符 {ph}: {zh:?}");
-                assert!(en.contains(&ph), "英文列缺占位符 {ph}: {zh:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn english_column_has_no_chinese() {
-        // 词条表三列必须同进同退：英文列里混进中文，英文界面就会冒中文。
-        for (zh, _tw, en) in TABLE {
+    fn english_map_has_no_chinese() {
+        // 英文词条里混进中文，英文界面就会冒中文
+        for (zh, en) in crate::language::get("en") {
             let rest = strip_language_names(en);
-            assert!(!has_cjk(&rest), "英文列残留中文: {zh:?} -> {en:?}");
+            assert!(!has_cjk(&rest), "英文词条残留中文: {zh:?} -> {en:?}");
         }
     }
 
     #[test]
-    fn traditional_column_has_no_simplified_only_chars() {
-        for (zh, tw, _en) in TABLE {
+    fn traditional_map_has_no_simplified_only_chars() {
+        for (zh, tw) in crate::language::get("zh-TW") {
             let rest = strip_language_names(tw);
             let hit: String = rest
                 .chars()
                 .filter(|c| SIMPLIFIED_ONLY.contains(*c))
                 .collect();
-            assert!(hit.is_empty(), "繁体列残留简体字「{hit}」: {zh:?} -> {tw:?}");
+            assert!(hit.is_empty(), "繁体词条残留简体字「{hit}」: {zh:?} -> {tw:?}");
         }
     }
 

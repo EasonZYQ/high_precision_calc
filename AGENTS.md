@@ -14,10 +14,14 @@
 ```powershell
 cargo build
 cargo run            # 交互式 REPL（rustyline）
-cargo test           # 62 项单元测试
+cargo test           # 131 项单元测试
 ```
 
-- 已有 `#[cfg(test)]` 单元测试（**62 项**，分布于 9 个源文件，`cargo test` 全绿），
+- **跑构建/测试必须计时**（硬性要求）：不要只贴 `test result: ok` —— 必须带上耗时。
+  `cargo test` 结尾自带 `finished in X.XXs`（纯测试耗时），需要连编译一起看时用 `time cargo test`。
+  多轮验证（反复跑测试、跑全语料扫描）要写清**总耗时**。
+  原因：不看时间就发现不了"某次改动把求解拖慢了十倍"，也无法判断某个预算是真有必要的。
+- 已有 `#[cfg(test)]` 单元测试（**131 项**，`cargo test` 全绿），
   其余验证靠管道喂输入人工核对结果：  
   `Write-Output "1+2*3", "x^2-4=0", "x+y=5,2x-y=1", "sin(pi/6)", "/exit" | cargo run`
 - 新增了**非交互入口**：`-e "表达式"`（裸结果、无耗时行）、`-f 脚本文件`、`--stdin`、
@@ -286,6 +290,13 @@ cargo test           # 62 项单元测试
 
 - **main.rs 里所有控制台输出一律用 `lprint!` / `leprint!` / `lprint_inline!`**（内部走 `i18n::t`）；
   直接写 `println!` 的新文案不会随语言切换，是本功能最容易踩的坑。
+- **词条表在 `src/language/<语言代码>.json`**（编译期 `include_str!` 内嵌，`src/language/mod.rs` 里有个
+  几十行的极简 JSON 解析器 —— 项目一直保持零额外依赖，**不要**为了这个引 serde）：
+  - 键是**简体原文逐字**（简体本身就是键，所以 `zh-CN.json` 是空表）；
+  - 值与键必须**占位符一一对应**（`{0}`/`{1}` 编号与数量都要对得上）；
+  - **新增一门语言**：放一个 `xx.json` → 在 `language::FILES` 登记 → `i18n::Lang` 加变体 →
+    跑 `cargo test`（`language::tests` 自动检查各语言键集一致、占位符对齐，
+    `i18n::tests` 检查英文里没混中文、繁体里没混简体字）。
 - 其它模块（parser / number / solver_* / state）**保持中文字面量不变**——它们就是词条表的键：
   新增用户可见文案时，必须把**简体原文逐字**加进 `i18n::TABLE`（含 `{0}`/`{1}` 占位符编号），
   否则该条在英/繁模式下保持中文（不报错，但会漏译）。占位符按 `format!` 里 `{}` 的出现顺序编号。

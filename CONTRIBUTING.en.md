@@ -30,11 +30,15 @@ cargo test             # run all unit tests
 
 ## Checklist before you submit
 
-1. **`cargo build` and `cargo test` both pass, with no new compiler warnings**;
+1. **`cargo build` and `cargo test` both pass, with no new compiler warnings** — and **note the elapsed
+   time** (the `finished in …` line at the end of `cargo test`, or `time cargo test` to include compilation);
+   without it there is no way to tell whether a change made the solvers much slower;
 2. **New behaviour needs unit tests** (tests live in `#[cfg(test)] mod tests` at the bottom of the source file);
-3. **Keep all three UI languages in sync**: every user-visible string must be added to the entry table in
-   `src/i18n.rs` with all three columns `(Simplified, Traditional, English)` — the Simplified column is the
-   **key**, and a missing row leaves Chinese text in the English/Traditional UI.
+3. **Keep the UI languages in sync**: the entry table now lives in `src/language/<code>.json`
+   (embedded at compile time — **adding a language means adding one JSON file** and registering it in
+   `language::FILES`; see the module docs in that directory). Every user-visible string must be added to
+   both `zh-TW.json` and `en.json` — the **Simplified source text is the key**, and the two key sets must
+   match exactly (a missing entry leaves Chinese text in that language's UI).
    Watch out for long entries with placeholders: a literal part must **not straddle two coloured tokens**
    (e.g. the ` = ` in `{0} = {1}，k 为整数` sits between a variable and a number), otherwise the replacement
    drops the colour codes there. Rewrite such entries as a contiguous plain-text fragment

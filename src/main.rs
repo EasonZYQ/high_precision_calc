@@ -9,6 +9,7 @@ mod number;
 mod parser;
 mod primefac;
 mod calculus;
+mod language;
 mod solver_factor;
 mod solver_linear;
 mod solver_nonlinear;
