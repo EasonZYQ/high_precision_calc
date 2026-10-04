@@ -12,6 +12,9 @@
 /build.log
 /test.log
 
+# ==== 个人测试报告（仅本地保留，不提交到仓库）====
+/test_report.md
+
 # ==== 通用兜底 ====
 *.log
 *.tmp

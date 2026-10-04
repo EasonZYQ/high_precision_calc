@@ -16,7 +16,7 @@ pub const VALID_VARIABLES: &str = "xyzabcdefghjklmnopqrstuvwABCDEFGHIJKLMNOPQRST
 /// 新增函数时只需改这里 + `Evaluator::eval_function` 两处（旧实现有三份重复数组，易漏改）。
 pub const FUNCTIONS: &[&str] = &[
     "sqr", "sqrt", "sin", "cos", "tan", "cot", "sec", "csc", "arcsin", "arccos", "arctan",
-    "arccot", "arcsec", "arccsc", "abs", "sd", "factor", "fac", "primefac", "triangle", "ln", "exp", "log", "log10",
+    "arccot", "arcsec", "arccsc", "abs", "sd", "factor", "fac", "primefac", "triangle", "diff", "ln", "exp", "log", "log10",
     "log2", "floor", "ceil", "round", "frac", "sign", "sinh", "cosh", "tanh", "coth", "sech",
     "csch", "arcsinh", "arccosh", "arctanh", "cbrt", "nroot", "mod", "idiv", "nCr", "nPr",
     "gcd", "lcm", "isprime", "nextprime", "re", "im", "conj", "arg",
@@ -615,6 +615,9 @@ impl Parser {
                 crate::complex::ComplexNum::i_unit(),
             )))),
             "ans" => Ok(Expr::Variable("ans".to_string())),
+            // 无穷（极限点 / 积分限用）。它是**伪变量**：由 calculus 模块在自己的参数位置上识别，
+            // 不允许参与普通求值（那样会报"未定义变量: inf"，误导用户）。
+            "inf" | "∞" => Ok(Expr::Variable("inf".to_string())),
             _ => {
                 // 单字母变量
                 if ident.len() == 1 {
@@ -943,6 +946,11 @@ impl Evaluator {
     }
 
     fn eval_function(&self, name: &str, args: &[Number]) -> Result<Number, String> {
+        // 高等数学函数是**解析期**由 `calculus::expand_calculus` 就地展开的，正常流程到不了这里。
+        // 这条拦截是兜底：万一将来新增了绕过重写的解析路径，也要给出明确提示而不是"未知函数"。
+        if crate::calculus::is_calculus_name(name) {
+            return Err(crate::calculus::ERROR_CALC_IN_WRAPPER.replace("{0}", name));
+        }
         // 参数个数校验：log 有专门的提示（写出参数含义），其余两参函数给统一提示
         if name == "log" && args.len() != 2 {
             return Err("log 需要两个参数: log(底数, 真数)".to_string());
@@ -1670,6 +1678,9 @@ pub enum EvalResult {
     Triangle(Box<crate::solver_triangle::TriangleInput>),
     /// `primefac(非零整数)`：参数已在解析期求值并校验（由 REPL 格式化成 `12 = 2^2 * 3`）
     PrimeFac(Number),
+    /// 高等数学的**符号结果**（含自由变量）：交给 REPL 按显示模式渲染。
+    /// 注意它**不写入 `ans`**（`ans` 只能装 `Number`）。
+    Symbolic(Box<Expr>),
 }
 
 /// 判断一行是否"看起来是多项式拟合输入"（坐标 + 可选解析式）。
@@ -2003,13 +2014,12 @@ pub fn parse_and_eval(
 
     // 先尝试解析为 sd 表达式
     if let Ok(sd_expr) = parser.parse_sd() {
-        match &sd_expr {
-            Expr::Sd(inner) => {
-                if let Expr::Equation(left, right) = inner.as_ref() {
-                    return Ok(EvalResult::Equation(left.clone(), right.clone()));
-                }
+        // 高等数学函数也允许出现在 sd(...) 里；若它出现在 sd/fac 内部，展开时会明确报错
+        let sd_expr = crate::calculus::expand_calculus(evaluator, sd_expr)?;
+        if let Expr::Sd(inner) = &sd_expr {
+            if let Expr::Equation(left, right) = inner.as_ref() {
+                return Ok(EvalResult::Equation(left.clone(), right.clone()));
             }
-            _ => {}
         }
         let result = evaluator.evaluate(&sd_expr)?;
         return Ok(EvalResult::SdValue(result));
@@ -2018,6 +2028,9 @@ pub fn parse_and_eval(
     // 再尝试解析为 factor 表达式
     if let Ok(factor_expr) = parser.parse_factor() {
         if let Expr::Factor(inner) = &factor_expr {
+            // 高等数学函数不允许出现在 fac/factor 内部；走一次重写通路即可给出明确报错
+            // （否则会落到"无法因式分解：仅支持有理数系数的多项式"，看不出真正原因）
+            let _ = crate::calculus::expand_calculus(evaluator, factor_expr.clone())?;
             return Ok(EvalResult::Factor(inner.clone()));
         }
     }
@@ -2032,6 +2045,16 @@ pub fn parse_and_eval(
             parser.pos
         ));
     }
+
+    // 高等数学：**解析完成后、分类/求值前**把 `diff(...)` 之类就地展开成等价普通表达式。
+    // 这样它们既能参与运算（`diff(x^2,x)+1`），又能复用既有的求值/方程/显示链路。
+    // 预扫描未命中时原样返回 ⇒ 既有输入的行为完全不变（这是本改动最重要的不变量）。
+    let had_calculus = crate::calculus::input_may_have_calculus(input);
+    let expr = if had_calculus {
+        crate::calculus::expand_calculus(evaluator, expr)?
+    } else {
+        expr
+    };
 
     match expr {
         Expr::System(eqs) => {
@@ -2050,8 +2073,15 @@ pub fn parse_and_eval(
             Ok(EvalResult::Equation(left, right))
         }
         _ => {
-            let result = evaluator.evaluate(&expr)?;
-            Ok(EvalResult::Value(result))
+            // 含自由变量的**符号结果**（如 `diff(x^2,x)` → `2*x`）交给 REPL 渲染。
+            // 只在输入里真的用了高等数学函数时才走这条路：否则 `x+1` 这类输入
+            // 仍应照旧报"未定义变量: x"，不能因为本功能把既有行为改掉。
+            if had_calculus && crate::calculus::has_free_variables(evaluator, &expr) {
+                Ok(EvalResult::Symbolic(Box::new(expr)))
+            } else {
+                let result = evaluator.evaluate(&expr)?;
+                Ok(EvalResult::Value(result))
+            }
         }
     }
 }

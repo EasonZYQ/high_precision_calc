@@ -8,6 +8,7 @@ mod i18n;
 mod number;
 mod parser;
 mod primefac;
+mod calculus;
 mod solver_factor;
 mod solver_linear;
 mod solver_nonlinear;
@@ -66,11 +67,12 @@ const SIGNATURES: &[(&str, &str)] = &[
     ("isprime", "(n)"),
     ("nextprime", "(n)"),
     ("cbrt", "(x)"),
+    ("diff", "(f, x)"),
 ];
 
 /// 函数白名单（高亮用）：直接引用 `parser::FUNCTIONS`，避免多处数组不同步
 const VALID_FUNCTIONS: &[&str] = parser::FUNCTIONS;
-const CONSTANTS: &[&str] = &["pi", "π", "e", "tau", "phi", "φ", "i"];
+const CONSTANTS: &[&str] = &["pi", "π", "e", "tau", "phi", "φ", "i", "inf", "∞"];
 /// 运算符（输入行与结果行共用）：后三个只出现在**结果**串里（`≈` 前缀、科学计数法的 `×`、
 /// 通式里的 `k·π`），补进来是为了让结果行也能把运算符一并点亮。
 const OPS: &[char] = &['+', '-', '*', '/', '^', '!', '=', '≈', '×', '·'];
@@ -1459,6 +1461,7 @@ fn run_line(input: &str, state: &mut AppState) -> (String, bool) {
         Ok(EvalResult::Fit(fit)) => (handle_fit(&fit, state), false),
         Ok(EvalResult::Triangle(tri)) => (handle_triangle(&tri, state), false),
         Ok(EvalResult::PrimeFac(n)) => (handle_primefac(&n, state), false),
+        Ok(EvalResult::Symbolic(expr)) => (handle_symbolic(&expr, state), false),
         Err(e) => (
             format!("{}: {}", "错误".color(state.colors.error).bold(), e),
             true,
@@ -1549,6 +1552,17 @@ fn handle_primefac(n: &Number, state: &AppState) -> String {
         Ok(text) => colorize_result(&text, &state.colors),
         Err(e) => format!("{}: {}", "错误".color(state.colors.error).bold(), e),
     }
+}
+
+/// 处理高等数学的**符号结果**（如 `diff(x^2, x)` → `= 2*x`）。
+///
+/// 前缀判定与数值结果同源：系数里出现 `Approx`（如 `taylor(sin(x), x, 0.1, 3)`）就是近似值，
+/// 给 `≈`；全部精确给 `=`。符号结果**不写入 `ans`**（`ans` 只能装 `Number`）。
+fn handle_symbolic(expr: &parser::Expr, state: &AppState) -> String {
+    let mode = state.evaluator.display_mode;
+    let body = calculus::render_expr(expr, mode);
+    let prefix = calculus::expr_prefix(expr, mode);
+    colorize_result(&format!("{} {}", prefix, body), &state.colors)
 }
 
 /// 处理"三角形求解"输入：边/角/高 → 全部量（多解时按 `解 N:` 分段）
@@ -2639,6 +2653,9 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   sd(1/3)            顯示轉換：MathIO 轉小數、LineIO 轉符號
   triangle(a=3 b=4 c=5)  三角形求解：邊/角/高 → 全部量（可逗號分隔；只能最外層）
 
+【高等數學】（可參與運算：diff(x^2,x)+1 合法；精確值給 =，數值回退給 ≈）
+  diff(f, x)         求導：diff(x^2, x) → 2*x、diff(sin(x), x) → cos(x)（變數須為單個字母）
+
 【變數儲存】
   /let A = 5         儲存變數（全大寫名），在算式、方程、fac 中自動取值
   /var               檢視全部；/del A 刪除單一；/del all 清除
@@ -2691,6 +2708,9 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   primefac(12)       prime factorization: 12 = 2^2 * 3 (negatives: -12 = -2^2 * 3)
   sd(1/3)            display conversion: MathIO -> decimal, LineIO -> symbolic
   triangle(a=3 b=4 c=5)  triangle solver: sides/angles/heights -> everything (commas OK; outermost only)
+
+[Calculus] (usable inside expressions, e.g. diff(x^2,x)+1; exact gives =, numeric fallback gives ~)
+  diff(f, x)         derivative: diff(x^2, x) -> 2*x, diff(sin(x), x) -> cos(x) (single-letter variable)
 
 [Variables]
   /let A = 5         store a variable (UPPERCASE name), usable in expressions, equations and fac
@@ -2752,6 +2772,9 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   primefac(12)       素因数分解：12 = 2^2 * 3（负数写成 -12 = -2^2 * 3）
   sd(1/3)            显示转换：MathIO 转小数、LineIO 转符号
   triangle(a=3 b=4 c=5)  三角形求解：边/角/高 → 全部量（可逗号分隔；只能最外层）
+
+【高等数学】（可参与运算：diff(x^2,x)+1 合法；精确值给 =，数值回退给 ≈）
+  diff(f, x)         求导：diff(x^2, x) → 2*x、diff(sin(x), x) → cos(x)（变量须为单个字母）
 
 【变量存储】
   /let A = 5         存储变量（全大写名），在表达式、方程、fac 中自动取值
@@ -2961,16 +2984,80 @@ mod cli_tests {
     }
 
     #[test]
+    fn calculus_diff_end_to_end() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        for (input, want) in [
+            ("diff(x^2,x)", "= 2*x"),
+            ("diff(x^2,x)+1", "= 2*x + 1"), // 结果可参与运算
+            ("2*diff(x^3,x)", "= 6*x^2"),
+            ("diff(sin(x),x)", "= cos(x)"),
+            ("diff(1/x,x)", "= -1 / x^2"),
+            ("diff(x^x,x)", "= x^x * (ln(x) + 1)"),
+            ("diff(sin(2*x),x)", "= 2*cos(2*x)"),
+            ("diff(y,x)", "= 0"),
+            ("diff(diff(x^3,x),x)", "= 6*x"),
+        ] {
+            let (out, is_err) = run_line(input, &mut st);
+            assert!(!is_err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 `{want}`");
+        }
+        // 求导结果能进方程：`diff(x^2,x)=2` ⇒ 2*x = 2 ⇒ x = 1
+        let (out, is_err) = run_line("diff(x^2,x)=2", &mut st);
+        assert!(!is_err, "diff 进方程报错: {out}");
+        assert!(out.contains("x = 1"), "{out}");
+
+        // 报错路径
+        for bad in ["diff(x^2)", "diff(x^2,x+1)", "diff(floor(x),x)"] {
+            let (out, is_err) = run_line(bad, &mut st);
+            assert!(is_err, "{bad} 应当报错，实得: {out}");
+            assert!(out.contains("错误"), "{bad} → {out}");
+        }
+        // 职责边界：fac/sd 内部用高数函数要给"不能出现在此处"，而不是别的原因
+        for bad in ["fac(diff(x^3,x))", "sd(diff(x^2,x))"] {
+            let (out, is_err) = run_line(bad, &mut st);
+            assert!(is_err, "{bad} 应当报错，实得: {out}");
+            assert!(out.contains("不能出现在此处"), "{bad} → {out}");
+        }
+        // 零行为变化：不含高数函数的输入照旧
+        let (out, is_err) = run_line("x+1", &mut st);
+        assert!(is_err && out.contains("未定义变量"), "x+1 → {out}");
+        let (out, is_err) = run_line("1+2*3", &mut st);
+        assert!(!is_err && out.contains("= 7"), "1+2*3 → {out}");
+    }
+
+    #[test]
+    fn calculus_prefix_follows_display_mode() {
+        // MathIO：精确分数算精确 ⇒ `=`
+        let mut st = eq_state(trig::AngleMode::Radian);
+        st.evaluator.display_mode = parser::DisplayMode::MathIO;
+        let (out, _) = run_line("diff(x^4/12,x)", &mut st);
+        assert!(out.contains("= 1 / 3 * x^3"), "MathIO → {out}");
+
+        // LineIO：同一个精确分数会显示成 20 位小数 ⇒ 只能算近似 ⇒ `≈`
+        let mut st = eq_state(trig::AngleMode::Radian);
+        st.evaluator.display_mode = parser::DisplayMode::LineIO;
+        let (out, _) = run_line("diff(x^4/12,x)", &mut st);
+        assert!(out.contains("≈ 0.33333333333333333333*x^3"), "LineIO → {out}");
+    }
+
+    #[test]
     fn parse_args_rejects_bad_input() {
         assert!(parse_args(&args(&["-e"])).is_err());
         assert!(parse_args(&args(&["--lang"])).is_err());
         assert!(parse_args(&args(&["--lang", "klingon"])).is_err());
         assert!(parse_args(&args(&["--nope"])).is_err());
-        // 错误文案必须是可翻译模板（能在词条表里命中）：切到英文后应被翻译出来
+        // 错误文案必须是可翻译模板（能在词条表里命中）：切到英文后应被翻译出来。
+        // 语言是进程级全局，切换前先拿测试锁、切换后**还原原值**（写死还原成简体
+        // 会和 i18n 的守卫测试打架，造成偶发假失败）
         let e = parse_args(&args(&["-e"])).unwrap_err();
+        let guard = i18n::TEST_LANG_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let prev = i18n::get();
         i18n::set(i18n::Lang::En);
         let translated = i18n::t(&e);
-        i18n::set(i18n::Lang::ZhCn); // 复原，避免影响其它测试
+        i18n::set(prev);
+        drop(guard);
         assert_ne!(translated, e, "缺少取值提示未命中词条");
     }
     #[test]

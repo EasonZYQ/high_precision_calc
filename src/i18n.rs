@@ -76,6 +76,11 @@ pub fn set(lang: Lang) {
     );
 }
 
+/// 测试专用：语言是**进程级全局**（`AtomicU8`），任何临时切换语言的测试都要先拿这把锁，
+/// 否则两个测试的 `set/还原` 会交错，出现"翻译没生效"的偶发假失败。
+#[cfg(test)]
+pub static TEST_LANG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 读取当前语言
 pub fn get() -> Lang {
     match LANG.load(Ordering::Relaxed) {
@@ -740,6 +745,16 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("primefac 函数需要参数: primefac(12)", "primefac 函式需要參數: primefac(12)", "primefac needs an argument: primefac(12)"),
     ("素因数分解超出预算（Fast 模式 Pollard 迭代上限 2^17）；如确认需要继续，请先执行 /mode deep", "質因數分解超出預算（Fast 模式 Pollard 迭代上限 2^17）；如確認需要繼續，請先執行 /mode deep", "prime factorization exceeded the budget (Fast mode Pollard iteration limit 2^17); run /mode deep to continue"),
     ("0 没有素因数分解", "0 沒有質因數分解", "0 has no prime factorization"),
+    // ---- 高等数学：求导 ----
+    ("求导变量必须是单个变量（如 x）", "求導變數必須是單個變數（如 x）", "the differentiation variable must be a single variable (e.g. x)"),
+    ("函数 {0} 不支持求导", "函數 {0} 不支援求導", "function {0} cannot be differentiated"),
+    ("求导结果规模过大（/mode deep 可放宽）", "求導結果規模過大（/mode deep 可放寬）", "derivative too large (run /mode deep to relax)"),
+    ("求导展开嵌套过深（/mode deep 可放宽）", "求導展開嵌套過深（/mode deep 可放寬）", "differentiation nesting too deep (run /mode deep to relax)"),
+    ("求导变量被求和绑定变量遮蔽", "求導變數被求和綁定變數遮蔽", "the differentiation variable is shadowed by the summation variable"),
+    ("高等数学函数 {0} 不能出现在此处（fac/sd/triangle/primefac 内部）", "高等數學函數 {0} 不能出現在此處（fac/sd/triangle/primefac 內部）", "calculus function {0} cannot be used here (inside fac/sd/triangle/primefac)"),
+    ("函数 {0} 需要 {1} 个参数", "函數 {0} 需要 {1} 個參數", "function {0} takes {1} argument(s)"),
+    ("此处不能使用无穷（inf）", "此處不能使用無窮（inf）", "infinity (inf) is not allowed here"),
+    ("等式不能出现在符号运算中", "等式不能出現在符號運算中", "equations cannot appear in symbolic computation"),
     ("isprime 需要整数参数", "isprime 需要整數參數", "isprime requires an integer argument"),
     ("nextprime 需要整数参数", "nextprime 需要整數參數", "nextprime requires an integer argument"),
     ("素性判定参数过大（上限 10^24，/mode deep 可取消限制）", "素性判定參數過大（上限 10^24，/mode deep 可取消限制）", "primality argument too large (limit 10^24; /mode deep removes it)"),
@@ -794,6 +809,9 @@ mod tests {
     }
 
     fn with_lang<T>(lang: Lang, f: impl FnOnce() -> T) -> T {
+        let _guard = TEST_LANG_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let prev = get();
         set(lang);
         let r = f();
