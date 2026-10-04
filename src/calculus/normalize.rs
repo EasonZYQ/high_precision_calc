@@ -131,14 +131,26 @@ fn to_terms(ev: &crate::parser::Evaluator, e: &Expr) -> Result<Vec<NTerm>, Strin
                     }
                     return Ok(drop_zero(out));
                 }
-                // 否则把除数整体作为负指数因子
-                let inv = NTerm {
-                    coeff: Number::from_int(1),
-                    factors: vec![(r.as_ref().clone(), Number::from_int(-1))],
+                // 否则：× (除数)^(-1)。
+                //
+                // **除数含多项时不把分子拆开**（`num/re` 保持一项）：否则 `2*(1-x)` 会先被
+                // 分配成 `2 - 2x`，再各乘一遍 `(1-x)^-4`，下次求导项数继续翻倍 ——
+                // 实测 `taylor(1/(1-x), x, 0, 5)` 就是这样指数膨胀到撞护栏的。
+                // 除数只有一项（单项式）时分配是安全的（`(x+1)/x → 1 + 1/x`）。
+                let neg_one = Expr::Number(Number::from_int(-1));
+                let inv = to_terms_pow(ev, r, &neg_one)?;
+                check_size(&inv)?;
+                let left: Vec<NTerm> = if b.len() > 1 {
+                    vec![wrap_terms(a)?]
+                } else {
+                    a
                 };
                 let mut out = Vec::new();
-                for t in &a {
-                    out.push(mul_terms(t, &inv)?);
+                for x in &left {
+                    for y in &inv {
+                        out.push(mul_terms(x, y)?);
+                        check_size(&out)?;
+                    }
                 }
                 Ok(drop_zero(out))
             }
@@ -149,72 +161,95 @@ fn to_terms(ev: &crate::parser::Evaluator, e: &Expr) -> Result<Vec<NTerm>, Strin
     }
 }
 
-fn to_terms_pow(ev: &crate::parser::Evaluator, base: &Expr, exp: &Expr) -> Result<Vec<NTerm>, String> {
-    // 开方等：`Pow(x, 1/2)` 作为原子因子（指数保留有理数）
-    if let Some(r) = constant_rational(ev, exp) {
-        let is_int = r.is_integer();
-        let k = if is_int { r.to_integer() } else { BigInt::zero() };
-        if is_int && k.magnitude().bits() <= 8 {
-            let kk: i64 = k.try_into().unwrap_or(0);
-            // 小整数幂：展开（负幂取倒数）
-            if kk != 0 && kk.abs() <= 64 {
-                let base_terms = to_terms(ev, base)?;
-                check_size(&base_terms)?;
-                let mut acc = vec![NTerm {
-                    coeff: Number::from_int(1),
-                    factors: Vec::new(),
-                }];
-                for _ in 0..kk.abs() {
-                    let mut next = Vec::new();
-                    for x in &acc {
-                        for y in &base_terms {
-                            next.push(mul_terms(x, y)?);
-                            check_size(&next)?;
-                        }
-                    }
-                    acc = next;
-                }
-                if kk < 0 {
-                    for t in acc.iter_mut() {
-                        t.coeff = if t.coeff.is_zero() {
-                            return Err("除以零错误".to_string());
-                        } else {
-                            crate::number::Number::div(&Number::from_int(1), &t.coeff)
-                        };
-                        for f in t.factors.iter_mut() {
-                            f.1 = f.1.neg();
-                        }
-                    }
-                }
-                return Ok(drop_zero(acc));
-            }
-            if kk == 0 {
-                return Ok(vec![NTerm {
-                    coeff: Number::from_int(1),
-                    factors: Vec::new(),
-                }]);
+fn to_terms_pow(
+    ev: &crate::parser::Evaluator,
+    base: &Expr,
+    exp: &Expr,
+) -> Result<Vec<NTerm>, String> {
+    // 嵌套幂先合并：`((1-x)^2)^2 = (1-x)^4`（两个指数都是整数时）。
+    // **不合并会出大问题**：两个底的字面不同 ⇒ 同底指数永远合不上 ⇒ 反复求导时
+    // 会留下 `(1-x)^2^2^2…` 这种畸形节点、表达式指数膨胀直到撞护栏
+    // （实测 `taylor(1/(1-x), x, 0, 4)` 会报"泰勒展开式过大"）。
+    if let Expr::Pow(inner, e1) = base {
+        if let (Some(r1), Some(r2)) = (constant_rational(ev, e1), constant_rational(ev, exp)) {
+            if r1.is_integer() && r2.is_integer() {
+                let combined = Expr::Number(Number::from_rational(r1 * r2));
+                return to_terms_pow(ev, inner, &combined);
             }
         }
-        // 有理指数：作为原子因子
+    }
+    // 指数是常数
+    if let Some(r) = constant_rational(ev, exp) {
+        if r.is_integer() {
+            let k = r.to_integer();
+            if k.magnitude().bits() <= 8 {
+                let kk: i64 = k.try_into().unwrap_or(0);
+                if kk == 0 {
+                    // u^0 = 1
+                    return Ok(vec![NTerm {
+                        coeff: Number::from_int(1),
+                        factors: Vec::new(),
+                    }]);
+                }
+                if kk.abs() <= 64 {
+                    // 小整数幂：连乘展开
+                    let base_terms = to_terms(ev, base)?;
+                    check_size(&base_terms)?;
+                    // **只有单项底才展开整数幂**：
+                    //  - 展开 `(2*x)^3 → 8*x^3`、`x^-2 → 1/x^2` 是安全的、也是需要的；
+                    //  - 但把 `(1-x)^4` 展开成 5 项、`(1-x)^8` 展开成 9 项，会让反复求导
+                    //    的项数按倍数增长（实测 `taylor(1/(1-x), x, 0, 5)` 因此撞护栏），
+                    //    而且 `(1 - x)^4` 本来就比展开式更好读 —— 多顶底一律保留为原子幂。
+                    //  - 负幂对多顶底还有额外问题：逐项取倒数会把 `1` 与 `-x` 分别求倒数
+                    //    （得到 `1 - 1/x` 这种垃圾）。
+                    if base_terms.len() != 1 {
+                        return Ok(vec![NTerm {
+                            coeff: Number::from_int(1),
+                            factors: vec![(base.clone(), Number::from_rational(r))],
+                        }]);
+                    }
+                    let mut acc = vec![NTerm {
+                        coeff: Number::from_int(1),
+                        factors: Vec::new(),
+                    }];
+                    for _ in 0..kk.abs() {
+                        let mut next = Vec::new();
+                        for a in &acc {
+                            for b in &base_terms {
+                                next.push(mul_terms(a, b)?);
+                                check_size(&next)?;
+                            }
+                        }
+                        acc = next;
+                    }
+                    if kk < 0 {
+                        for t in acc.iter_mut() {
+                            if t.coeff.is_zero() {
+                                return Err("除以零错误".to_string());
+                            }
+                            t.coeff = crate::number::Number::div(&Number::from_int(1), &t.coeff);
+                            for f in t.factors.iter_mut() {
+                                f.1 = f.1.neg();
+                            }
+                        }
+                    }
+                    return Ok(drop_zero(acc));
+                }
+            }
+        }
+        // 有理指数（如 1/2、-3/2）或过大的整数指数：作为原子因子保留指数
         return Ok(vec![NTerm {
             coeff: Number::from_int(1),
-            factors: vec![(
-                base.clone(),
-                Number::from_rational(r),
-            )],
+            factors: vec![(base.clone(), Number::from_rational(r))],
         }]);
     }
-    // 指数含变量（如 x^x、f^g）⇒ 整体作为原子因子
-    if fold_constant(ev, exp).is_none() {
-        return Ok(vec![NTerm {
-            coeff: Number::from_int(1),
-            factors: vec![(Expr::Pow(Box::new(base.clone()), Box::new(exp.clone())), Number::from_int(1))],
-        }]);
-    }
-    // 指数是不在支持范围内的常数 ⇒ 原子
+    // 指数含变量（`x^x`、`f^g`）⇒ 整体作为原子因子
     Ok(vec![NTerm {
         coeff: Number::from_int(1),
-        factors: vec![(Expr::Pow(Box::new(base.clone()), Box::new(exp.clone())), Number::from_int(1))],
+        factors: vec![(
+            Expr::Pow(Box::new(base.clone()), Box::new(exp.clone())),
+            Number::from_int(1),
+        )],
     }])
 }
 

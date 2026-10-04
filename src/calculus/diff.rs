@@ -252,7 +252,7 @@ mod tests {
         assert_eq!(d("cos(x)", "x"), "-sin(x)");
         assert_eq!(d("exp(x)", "x"), "exp(x)");
         assert_eq!(d("ln(x)", "x"), "1 / x");
-        assert_eq!(d("sqrt(x)", "x"), "1 / (2*sqrt(x))");
+        assert_eq!(d("sqrt(x)", "x"), "0.5 / sqrt(x)");
         assert_eq!(d("x^x", "x"), "x^x * (ln(x) + 1)");
     }
 

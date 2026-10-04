@@ -766,6 +766,11 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("极限点必须是常数或 inf", "極限點必須是常數或 inf", "the limit point must be a constant or inf"),
     ("无法判定极限（结构分析失败且数值逼近未收敛）", "無法判定極限（結構分析失敗且數值逼近未收斂）", "cannot determine the limit (structural analysis failed and the numeric approximation did not converge)"),
     ("左右极限不相等，极限不存在", "左右極限不相等，極限不存在", "one-sided limits differ; the limit does not exist"),
+    // ---- 高等数学：泰勒展开 ----
+    ("泰勒展开点必须是常数（不得含变量 {0}）", "泰勒展開點必須是常數（不得含變數 {0}）", "the Taylor expansion point must be a constant (must not contain the variable {0})"),
+    ("泰勒展开阶数必须是非负整数（上限 {0}，/mode deep 可放宽）", "泰勒展開階數必須是非負整數（上限 {0}，/mode deep 可放寬）", "the Taylor order must be a non-negative integer (max {0}; /mode deep to relax)"),
+    ("泰勒展开式过大（/mode deep 可放宽）", "泰勒展開式過大（/mode deep 可放寬）", "the Taylor expansion is too large (/mode deep to relax)"),
+    ("泰勒展开点在函数或其导数的奇点上", "泰勒展開點在函數或其導數的奇點上", "the expansion point is a singularity of the function or one of its derivatives"),
     ("isprime 需要整数参数", "isprime 需要整數參數", "isprime requires an integer argument"),
     ("nextprime 需要整数参数", "nextprime 需要整數參數", "nextprime requires an integer argument"),
     ("素性判定参数过大（上限 10^24，/mode deep 可取消限制）", "素性判定參數過大（上限 10^24，/mode deep 可取消限制）", "primality argument too large (limit 10^24; /mode deep removes it)"),

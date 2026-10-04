@@ -27,6 +27,7 @@
 pub mod diff;
 pub mod integrate;
 pub mod limit;
+pub mod series;
 pub mod normalize;
 pub mod render;
 
@@ -46,6 +47,8 @@ const INT_MAX_DEPTH_FAST: usize = 16;
 const INT_MAX_DEPTH_DEEP: usize = 40;
 const LIMIT_NUM_ITERS_FAST: usize = 60;
 const LIMIT_NUM_ITERS_DEEP: usize = 200;
+const TAYLOR_MAX_DEGREE_FAST: usize = 50;
+const TAYLOR_MAX_DEGREE_DEEP: usize = 1000;
 
 /// 规范化后项数上限
 pub fn max_terms() -> usize {
@@ -80,6 +83,15 @@ pub fn max_limit_iters() -> usize {
         LIMIT_NUM_ITERS_DEEP
     } else {
         LIMIT_NUM_ITERS_FAST
+    }
+}
+
+/// 泰勒展开的最高次数上限
+pub fn max_taylor_degree() -> usize {
+    if crate::calc_mode::is_deep() {
+        TAYLOR_MAX_DEGREE_DEEP
+    } else {
+        TAYLOR_MAX_DEGREE_FAST
     }
 }
 
@@ -120,12 +132,17 @@ pub const ERROR_TABLE_NOT_COVERED: &str = "初等原函数表未覆盖该形态�
 pub const ERROR_LIMIT_POINT: &str = "极限点必须是常数或 inf";
 pub const ERROR_LIMIT_UNDECIDED: &str = "无法判定极限（结构分析失败且数值逼近未收敛）";
 pub const ERROR_LIMIT_ONE_SIDED: &str = "左右极限不相等，极限不存在";
+// 泰勒展开
+pub const ERROR_TAYLOR_POINT: &str = "泰勒展开点必须是常数（不得含变量 {0}）";
+pub const ERROR_TAYLOR_ORDER: &str = "泰勒展开阶数必须是非负整数（上限 {0}，/mode deep 可放宽）";
+pub const ERROR_TAYLOR_TOO_LARGE: &str = "泰勒展开式过大（/mode deep 可放宽）";
+pub const ERROR_TAYLOR_SINGULAR: &str = "泰勒展开点在函数或其导数的奇点上";
 
 /* ---------------- 注册表 ---------------- */
 
 /// 高等数学函数名（与 `parser::FUNCTIONS` 同步；顺序无关）。
 /// 每新增一项，必须同时补 `CALCULUS_ARITIES` 与对应实现。
-pub const CALCULUS_ARITIES: &[(&str, &[usize])] = &[("diff", &[2]), ("int", &[2, 4]), ("lim", &[3])];
+pub const CALCULUS_ARITIES: &[(&str, &[usize])] = &[("diff", &[2]), ("int", &[2, 4]), ("lim", &[3]), ("taylor", &[4])];
 
 /// 允许 `inf` 出现的位置：`(函数名, 允许 inf 的参数下标)`。
 /// 其余位置出现 `inf` 要在这里就报错 —— 否则会落到求值路径报"未定义变量: inf"，误导用户。
@@ -174,7 +191,15 @@ fn is_ident_byte(c: u8) -> bool {
 
 /// 把高等数学函数节点就地展开成普通 `Expr`；未命中时原样返回（幂等）。
 pub fn expand_calculus(ev: &Evaluator, e: Expr) -> Result<Expr, String> {
+    // 顶层**就是**一次高数调用时不做整体化简：这样 `taylor(...)` 能保留自己拼好的
+    // **升幂**顺序（`x - x^3/6 + x^5/120`，教科书惯例）。一旦和别的运算组合
+    // （`2*diff(...)`、`taylor(...)+x`），就交给通用化简——它按次数降序排，
+    // 与因式分解等其它输出保持一致。
+    let top_is_calc = matches!(&e, Expr::Function(name, _) if is_calculus_name(name));
     let out = expand_node(ev, e)?;
+    if top_is_calc {
+        return Ok(out);
+    }
     // 展开后整体再规范化一次：`2*diff(x^3,x)` 展开成 `2*(3*x^2)`，要合并成 `6*x^2`
     simplify_after_expand(ev, out)
 }
@@ -300,6 +325,11 @@ fn dispatch(ev: &Evaluator, name: &str, args: Vec<Expr>) -> Result<Expr, String>
             let var = as_variable_name(&args[1])?;
             limit::limit(ev, &args[0], &var, &args[2])
         }
+        "taylor" => {
+            let var = as_variable_name(&args[1])?;
+            let n = as_order(ev, &args[3])?;
+            series::taylor(ev, &args[0], &var, &args[2], n)
+        }
         _ => Err(format!("未知函数: {}", name)),
     }
 }
@@ -348,6 +378,28 @@ fn contains_inf(e: &Expr) -> bool {
         Expr::Function(_, args) => args.iter().any(contains_inf),
         _ => false,
     }
+}
+
+/// 泰勒阶数：必须是非负整数常数
+fn as_order(ev: &Evaluator, e: &Expr) -> Result<usize, String> {
+    let limit = max_taylor_degree();
+    let v = ev
+        .evaluate_with_vars(e, &[])
+        .map_err(|_| ERROR_TAYLOR_ORDER.replace("{0}", &limit.to_string()))?;
+    let r = v
+        .as_rational()
+        .ok_or_else(|| ERROR_TAYLOR_ORDER.replace("{0}", &limit.to_string()))?;
+    if !r.is_integer() || r.numer().sign() == num_bigint::Sign::Minus {
+        return Err(ERROR_TAYLOR_ORDER.replace("{0}", &limit.to_string()));
+    }
+    let n: usize = r
+        .numer()
+        .try_into()
+        .map_err(|_| ERROR_TAYLOR_ORDER.replace("{0}", &limit.to_string()))?;
+    if n > limit {
+        return Err(ERROR_TAYLOR_ORDER.replace("{0}", &limit.to_string()));
+    }
+    Ok(n)
 }
 
 /// 第二个参数必须是单个变量名

@@ -85,9 +85,15 @@ fn render_pow(base: &Expr, exp: &Expr, mode: DisplayMode) -> String {
             }
         }
     }
+    // 幂底本身是幂时必须加括号：`x^2^3` 有歧义（应为 `(x^2)^3`）
+    let base_prec = if matches!(base, Expr::Pow(_, _)) {
+        P_POW + 1
+    } else {
+        P_POW
+    };
     format!(
         "{}^{}",
-        render_prec(base, mode, P_POW),
+        render_prec(base, mode, base_prec),
         render_exponent(exp, mode)
     )
 }
