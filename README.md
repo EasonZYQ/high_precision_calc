@@ -57,3 +57,7 @@ cargo test              # 单元测试
 - [完整文档（中文）](docs/DOC.zh-CN.md)
 - [Full documentation (English)](docs/DOC.en.md)
 - [贡献指南](CONTRIBUTING.md) · [Contributing (English)](CONTRIBUTING.en.md)
+
+## 许可
+
+[MIT](LICENSE) © 2026 EasonZYQ

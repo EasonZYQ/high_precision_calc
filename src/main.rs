@@ -3180,6 +3180,67 @@ mod cli_tests {
         }
     }
 
+    /// **性能扫描**：默认 `#[ignore]`（不进常规测试），需要时显式跑：
+    /// `cargo test --release perf_scan -- --ignored --nocapture`
+    ///
+    /// 为什么不做成"每条一个进程"的脚本：本机（沙箱/Defender）启动**任何**进程都要 1.4~1.6 秒
+    /// （`hostname.exe` 实测），进程级计时会被这个常数淹没。进程内计时才能看到真实算法耗时。
+    #[test]
+    #[ignore]
+    fn perf_scan() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        let cases: &[&str] = &[
+            // 基础与精度
+            "1+2*3", "1/3+1/6", "phi", "e^2", "100!",
+            "2^1000", "2^10000", "2^100000", "10000!",
+            "sin(1)", "ln(2)", "log(2,3)", "atan(1)", "exp(10)",
+            // 方程 / 方程组
+            "x^2-4=0", "x^3-6*x^2+11*x-6=0", "x^4-5*x^2+4=0", "x^50-2*x+1=0",
+            "2^x=8", "sin(x)=0.5", "x+y=5, 2*x-y=1", "x^2+y^2=25, y=x+1",
+            // 因式分解 / 素因数分解 / 三角形 / 拟合
+            "fac(x^4-1)", "fac(x^6-1)", "primefac(360)", "primefac(1000003*1000033)",
+            "primefac(2^61-1)", "triangle(a=3 b=4 c=5)", "triangle(a=4 b=5 A=30)",
+            "(1,1) (2,4) (3,9) (4,16)",
+            // 高等数学
+            "diff(x^100,x)", "diff(x^x,x)", "int(x^2,x,0,1)", "int(exp(-x^2),x,0,1)",
+            "int(sin(x)/x,x,0,pi)", "lim(sin(x)/x,x,0)", "lim((x^2-1)/(x-1),x,1)",
+            "taylor(sin(x),x,0,10)", "taylor(1/(1-x),x,0,30)",
+            "sum(k^2,k,1,100)", "sum(k,k,1,1000000000)", "prod(k,k,1,500)",
+            "sum(1/k,k,1,200)",
+        ];
+        let mut rows: Vec<(u128, &str)> = Vec::new();
+        for c in cases {
+            let t = std::time::Instant::now();
+            let _ = run_line(c, &mut st);
+            rows.push((t.elapsed().as_micros(), c));
+        }
+        rows.sort_by(|a, b| b.0.cmp(&a.0));
+        println!("=== 最慢 12 条（微秒）===");
+        for (us, c) in rows.iter().take(12) {
+            println!("{:10} us  {}", us, c);
+        }
+        let total: u128 = rows.iter().map(|r| r.0).sum();
+        println!("--- 合计 {} us / {} 条 ---", total, rows.len());
+    }
+
+    /// 回归：初值表要覆盖**非三角方程**的近零根与远根
+    /// （性能扫描时发现 `ln(x)=-10` 的真根 4.5e-5 在 0 与 0.5 之间没有任何初值 ⇒ 丢根）
+    #[test]
+    fn nonpolynomial_roots_near_zero_and_far() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        for (input, want) in [
+            ("ln(x)=-10", "0.000045399929762484851536"),
+            ("ln(x)=-5", "0.0067379469990854670966"),
+            ("ln(x)=10", "22026.465794806716517"),
+            ("2^x=8", "x = 3"),
+            ("exp(x)=0.001", "-6.9077552789821370521"),
+        ] {
+            let (out, is_err) = run_line(input, &mut st);
+            assert!(!is_err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 `{want}`");
+        }
+    }
+
     #[test]
     fn calculus_prefix_follows_display_mode() {
         // MathIO：精确分数算精确 ⇒ `=`

@@ -459,17 +459,37 @@ pub fn collect_all_roots(
         );
         guesses.push(g);
     }
-    // pi 及其半倍（覆盖三角函数零点）
+    // 近零初值：`0` 与 `±0.5` 之间是空的，而 `ln(x)=c`（c 为负）这类方程的根可以非常小
+    // —— `ln(x)=-10` 的真根是 4.5e-5，从 0.5/1.57/18.8 出发牛顿都会一步跳到负半轴（对数无定义）⇒ 丢根。
+    // 加一列 10^-k 初值就能接住（牛顿对这类根收敛很稳；最终仍要过残差校验，不会造出假根）。
+    for k in 2..=6u32 {
+        let mut d = BigFloat::from_u64(1);
+        for _ in 0..k {
+            d = BigFloat::mul(&d, &BigFloat::from_u64(10), bigfloat::precision());
+        }
+        let g = BigFloat::div(&BigFloat::from_u64(1), &d, bigfloat::precision());
+        guesses.push(g.clone());
+        guesses.push(g.neg());
+    }
+    // π 及其半倍（覆盖三角函数零点）。
+    //
+    // **只在该方程真的含"以该变量为角度的三角函数"时才加**：这些初值本身很"远"
+    // （±π..±6π 及其半倍，|x| 最大到 18.8），牛顿从远处奔向小根要十几步，
+    // 而每一步都在求 `2^18.8` 这类**大指数幂**（实测单次 1~3ms，是整数指数时的百倍）。
+    // 非三角方程用不到它们（±1..±6、±0.5/±1.5/±2.5/±3.5 已经覆盖了邻近区域，
+    // 而且牛顿从邻近点收敛很快），去掉后实测 `2^x=8` 从 1.9s 降到 0.5s 量级。
     let pi = BigFloat::pi(bigfloat::precision());
-    for k in 1i64..=6 {
-        for s in [1i64, -1i64] {
-            let kpi = BigFloat::mul(
-                &BigFloat::from_i64(s * k),
-                &pi,
-                bigfloat::precision(),
-            );
-            guesses.push(kpi.clone());
-            guesses.push(BigFloat::mul(&kpi, &half, bigfloat::precision()));
+    if crate::equation::has_trig_of_var(expr, var) {
+        for k in 1i64..=6 {
+            for s in [1i64, -1i64] {
+                let kpi = BigFloat::mul(
+                    &BigFloat::from_i64(s * k),
+                    &pi,
+                    bigfloat::precision(),
+                );
+                guesses.push(kpi.clone());
+                guesses.push(BigFloat::mul(&kpi, &half, bigfloat::precision()));
+            }
         }
     }
 

@@ -59,3 +59,7 @@ cargo test              # unit tests
 - [Full documentation (English)](docs/DOC.en.md)
 - [完整文档（中文）](docs/DOC.zh-CN.md)
 - [Contributing](CONTRIBUTING.en.md) · [贡献指南](CONTRIBUTING.md)
+
+## License
+
+[MIT](LICENSE) © 2026 EasonZYQ

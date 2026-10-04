@@ -28,7 +28,8 @@ static FILES: &[(&str, &str)] = &[
     ("en", include_str!("en.json")),
 ];
 
-/// 已知语言代码（供 `/lang` 菜单与测试枚举）
+/// 已知语言代码（仅测试用于枚举各语言文件）
+#[cfg(test)]
 pub fn all_tags() -> impl Iterator<Item = &'static str> {
     FILES.iter().map(|(tag, _)| *tag)
 }
@@ -72,7 +73,6 @@ pub fn parse_object(src: &str) -> Result<Vec<(String, String)>, String> {
     loop {
         skip_ws(&b, &mut i);
         if peek(&b, i) == Some('}') {
-            i += 1;
             break;
         }
         let key = parse_string(&b, &mut i)?;
@@ -87,7 +87,6 @@ pub fn parse_object(src: &str) -> Result<Vec<(String, String)>, String> {
                 i += 1;
             }
             Some('}') => {
-                i += 1;
                 break;
             }
             other => return Err(format!("期望 `,` 或 `}}`，实际是 {other:?}")),
