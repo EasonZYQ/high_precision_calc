@@ -69,6 +69,7 @@ const SIGNATURES: &[(&str, &str)] = &[
     ("cbrt", "(x)"),
     ("diff", "(f, x)"),
     ("int", "(f, x) 或 (f, x, a, b)"),
+    ("lim", "(f, x, a)"),
 ];
 
 /// 函数白名单（高亮用）：直接引用 `parser::FUNCTIONS`，避免多处数组不同步
@@ -2658,6 +2659,7 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   diff(f, x)         求導：diff(x^2, x) → 2*x、diff(sin(x), x) → cos(x)（變數須為單個字母）
   int(f, x)          不定積分：int(x^2, x) → 1 / 3 * x^3（省略積分常數）
   int(f, x, a, b)    定積分：int(x^2, x, 0, 1) → 1 / 3；無初等原函數時自動數值積分（上下限可寫 inf）
+  lim(f, x, a)       極限：lim(sin(x)/x, x, 0) → 1、lim(1/x, x, inf) → 0（a 可為 inf）
 
 【變數儲存】
   /let A = 5         儲存變數（全大寫名），在算式、方程、fac 中自動取值
@@ -2716,6 +2718,7 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   diff(f, x)         derivative: diff(x^2, x) -> 2*x, diff(sin(x), x) -> cos(x) (single-letter variable)
   int(f, x)          antiderivative: int(x^2, x) -> 1 / 3 * x^3 (integration constant omitted)
   int(f, x, a, b)    definite integral: int(x^2, x, 0, 1) -> 1 / 3; numeric fallback when needed (bounds may be inf)
+  lim(f, x, a)       limit: lim(sin(x)/x, x, 0) -> 1, lim(1/x, x, inf) -> 0 (a may be inf)
 
 [Variables]
   /let A = 5         store a variable (UPPERCASE name), usable in expressions, equations and fac
@@ -2782,6 +2785,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   diff(f, x)         求导：diff(x^2, x) → 2*x、diff(sin(x), x) → cos(x)（变量须为单个字母）
   int(f, x)          不定积分：int(x^2, x) → 1 / 3 * x^3（省略积分常数）
   int(f, x, a, b)    定积分：int(x^2, x, 0, 1) → 1 / 3；无初等原函数时自动数值积分（上限可写 inf）
+  lim(f, x, a)       极限：lim(sin(x)/x, x, 0) → 1、lim(1/x, x, inf) → 0（a 可为 inf）
 
 【变量存储】
   /let A = 5         存储变量（全大写名），在表达式、方程、fac 中自动取值
@@ -3065,6 +3069,40 @@ mod cli_tests {
         let (out, _) = run_line("int(exp(-x),x,0,inf)", &mut st);
         assert!(out.trim_end().ends_with('1'), "{out}");
         assert!(!out.contains("0.9999"), "不应出现 0.999… 的截断: {out}");
+    }
+
+    #[test]
+    fn calculus_limit_end_to_end() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        st.evaluator.display_mode = parser::DisplayMode::MathIO;
+        for (input, want) in [
+            ("lim(x^2,x,2)", "4"),
+            ("lim((x^2-1)/(x-1),x,1)", "2"),
+            ("lim(sin(x)/x,x,0)", "1"),
+            ("lim((exp(x)-1)/x,x,0)", "1"),
+            ("lim(1/x,x,inf)", "0"),
+            ("lim((2*x^2+1)/(x^2-3),x,inf)", "2"),
+            ("lim((x+1)/(x^2+1),x,inf)", "0"),
+            ("lim(x^3/(x^2+1),x,inf)", "inf"),
+        ] {
+            let (out, is_err) = run_line(input, &mut st);
+            assert!(!is_err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 `{want}`");
+        }
+        for (bad, want) in [
+            ("lim(sin(x),x,inf)", "无法判定"),
+            ("lim(abs(x)/x,x,0)", "不相等"),
+            ("lim(floor(x),x,0)", "不相等"),
+            ("lim(x^2,x,y)", "常数"),
+            ("lim(x^2,x)", "需要"),
+        ] {
+            let (out, is_err) = run_line(bad, &mut st);
+            assert!(is_err, "{bad} 应当报错，实得: {out}");
+            assert!(out.contains(want), "{bad} → {out}；期望含 `{want}`");
+        }
+        // inf 只允许出现在极限点上
+        let (out, is_err) = run_line("lim(x^2,inf,1)", &mut st);
+        assert!(is_err && out.contains("无穷"), "{out}");
     }
 
     #[test]

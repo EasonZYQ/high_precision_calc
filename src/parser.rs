@@ -16,7 +16,7 @@ pub const VALID_VARIABLES: &str = "xyzabcdefghjklmnopqrstuvwABCDEFGHIJKLMNOPQRST
 /// 新增函数时只需改这里 + `Evaluator::eval_function` 两处（旧实现有三份重复数组，易漏改）。
 pub const FUNCTIONS: &[&str] = &[
     "sqr", "sqrt", "sin", "cos", "tan", "cot", "sec", "csc", "arcsin", "arccos", "arctan",
-    "arccot", "arcsec", "arccsc", "abs", "sd", "factor", "fac", "primefac", "triangle", "diff", "int", "ln", "exp", "log", "log10",
+    "arccot", "arcsec", "arccsc", "abs", "sd", "factor", "fac", "primefac", "triangle", "diff", "int", "lim", "ln", "exp", "log", "log10",
     "log2", "floor", "ceil", "round", "frac", "sign", "sinh", "cosh", "tanh", "coth", "sech",
     "csch", "arcsinh", "arccosh", "arctanh", "cbrt", "nroot", "mod", "idiv", "nCr", "nPr",
     "gcd", "lcm", "isprime", "nextprime", "re", "im", "conj", "arg",

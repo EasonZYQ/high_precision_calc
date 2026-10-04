@@ -26,6 +26,7 @@
 
 pub mod diff;
 pub mod integrate;
+pub mod limit;
 pub mod normalize;
 pub mod render;
 
@@ -43,6 +44,8 @@ const INT_MAX_EVALS_FAST: usize = 2000;
 const INT_MAX_EVALS_DEEP: usize = 200_000;
 const INT_MAX_DEPTH_FAST: usize = 16;
 const INT_MAX_DEPTH_DEEP: usize = 40;
+const LIMIT_NUM_ITERS_FAST: usize = 60;
+const LIMIT_NUM_ITERS_DEEP: usize = 200;
 
 /// 规范化后项数上限
 pub fn max_terms() -> usize {
@@ -71,6 +74,22 @@ pub fn max_int_evals() -> usize {
     }
 }
 
+/// 数值极限的最大迭代步数
+pub fn max_limit_iters() -> usize {
+    if crate::calc_mode::is_deep() {
+        LIMIT_NUM_ITERS_DEEP
+    } else {
+        LIMIT_NUM_ITERS_FAST
+    }
+}
+
+/// 洛必达的最大轮数
+pub const LIMIT_LHOPITAL_MAX: usize = 6;
+
+/// `x → ±inf` 数值探测的指数上限（10^k）。取 30 远低于 `check_trig_range` 的 10^(precision-2)
+/// 护栏（默认 10⁷⁸），保证探测不会撞上"三角函数参数过大"而把错误归因搞错。
+pub const LIMIT_INF_K_MAX: i32 = 30;
+
 /// 数值积分的二分递归深度上限
 pub fn max_int_depth() -> usize {
     if crate::calc_mode::is_deep() {
@@ -97,16 +116,20 @@ pub const ERROR_INT_BUDGET: &str = "积分求值次数超出预算（/mode deep 
 pub const ERROR_INT_INF_CONVERGE: &str = "无穷限积分需要能求出原函数并收敛（本次无法判定）";
 pub const ERROR_NO_ANTIDERIVATIVE: &str = "无法求出初等原函数（可改用定积分做数值积分）";
 pub const ERROR_TABLE_NOT_COVERED: &str = "初等原函数表未覆盖该形态（可用定积分做数值积分）";
+// 极限
+pub const ERROR_LIMIT_POINT: &str = "极限点必须是常数或 inf";
+pub const ERROR_LIMIT_UNDECIDED: &str = "无法判定极限（结构分析失败且数值逼近未收敛）";
+pub const ERROR_LIMIT_ONE_SIDED: &str = "左右极限不相等，极限不存在";
 
 /* ---------------- 注册表 ---------------- */
 
 /// 高等数学函数名（与 `parser::FUNCTIONS` 同步；顺序无关）。
 /// 每新增一项，必须同时补 `CALCULUS_ARITIES` 与对应实现。
-pub const CALCULUS_ARITIES: &[(&str, &[usize])] = &[("diff", &[2]), ("int", &[2, 4])];
+pub const CALCULUS_ARITIES: &[(&str, &[usize])] = &[("diff", &[2]), ("int", &[2, 4]), ("lim", &[3])];
 
 /// 允许 `inf` 出现的位置：`(函数名, 允许 inf 的参数下标)`。
 /// 其余位置出现 `inf` 要在这里就报错 —— 否则会落到求值路径报"未定义变量: inf"，误导用户。
-pub const CALCULUS_INF_ALLOWED: &[(&str, &[usize])] = &[("int", &[2, 3])];
+pub const CALCULUS_INF_ALLOWED: &[(&str, &[usize])] = &[("int", &[2, 3]), ("lim", &[2])];
 
 /// 从注册表导出函数名列表（仅测试用于一致性断言）
 #[cfg(test)]
@@ -272,6 +295,10 @@ fn dispatch(ev: &Evaluator, name: &str, args: Vec<Expr>) -> Result<Expr, String>
                 let r = integrate::definite(ev, &args[0], &var, &args[2], &args[3])?;
                 Ok(Expr::Number(r))
             }
+        }
+        "lim" => {
+            let var = as_variable_name(&args[1])?;
+            limit::limit(ev, &args[0], &var, &args[2])
         }
         _ => Err(format!("未知函数: {}", name)),
     }

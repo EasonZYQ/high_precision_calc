@@ -762,6 +762,10 @@ static TABLE: &[(&str, &str, &str)] = &[
     ("无穷限积分需要能求出原函数并收敛（本次无法判定）", "無窮限積分需要能求出原函數並收斂（本次無法判定）", "an infinite integral needs a convergent antiderivative (could not be determined here)"),
     ("无法求出初等原函数（可改用定积分做数值积分）", "無法求出初等原函數（可改用定積分做數值積分）", "no elementary antiderivative found (use a definite integral for numeric integration)"),
     ("初等原函数表未覆盖该形态（可用定积分做数值积分）", "初等原函數表未覆蓋該形態（可用定積分做數值積分）", "the antiderivative table does not cover this form (use a definite integral for numeric integration)"),
+    // ---- 高等数学：极限 ----
+    ("极限点必须是常数或 inf", "極限點必須是常數或 inf", "the limit point must be a constant or inf"),
+    ("无法判定极限（结构分析失败且数值逼近未收敛）", "無法判定極限（結構分析失敗且數值逼近未收斂）", "cannot determine the limit (structural analysis failed and the numeric approximation did not converge)"),
+    ("左右极限不相等，极限不存在", "左右極限不相等，極限不存在", "one-sided limits differ; the limit does not exist"),
     ("isprime 需要整数参数", "isprime 需要整數參數", "isprime requires an integer argument"),
     ("nextprime 需要整数参数", "nextprime 需要整數參數", "nextprime requires an integer argument"),
     ("素性判定参数过大（上限 10^24，/mode deep 可取消限制）", "素性判定參數過大（上限 10^24，/mode deep 可取消限制）", "primality argument too large (limit 10^24; /mode deep removes it)"),
