@@ -734,7 +734,7 @@ The REPL highlights keywords **live** (functions green, operators yellow, comman
 - **Bracket pairing and marking**: the bracket at the cursor and its partner are bolded; a surplus `)` is always
   red, while an unclosed `(` turns red only when the cursor is not to its right (so typing never floods the line
   with red). **Enter is never blocked** — the parser still reports the real error.
-- **Keys**: `Ctrl+C` clears the current line (press twice within 1s to quit); `Ctrl+L` clears the screen;
+- **Keys**: `Ctrl+C` interrupts a running computation, and quits when idle; `Ctrl+L` clears the screen;
   `Ctrl+R` reverse-searches history.
 - **Full-width to half-width**: `。` `（` `）` `，` `＝` `＋` `－` `×` `÷` and full-width digits are converted
   automatically, so an IME-produced full-width punctuation no longer causes an error.

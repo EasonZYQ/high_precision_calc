@@ -291,5 +291,6 @@
   "求和/求积范围过大且无闭式（已超过 Deep 模式上限）": "the summation/product range is too large with no closed form (beyond the Deep-mode limit)",
   "参数过多：最多 {0} 个": "too many arguments: at most {0}",
   "(f, x) 或 (f, x, a, b)": "(f, x) or (f, x, a, b)",
-  "输入 {0} 查看帮助，输入表达式进行计算，{1} 连按两次退出": "Type {0} for help, enter an expression to compute, press {1} twice to quit"
+  "计算已中断": "computation cancelled",
+  "输入 {0} 查看帮助，输入表达式进行计算，{1} 退出": "Type {0} for help, enter an expression to compute, {1} to quit"
 }

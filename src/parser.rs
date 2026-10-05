@@ -822,6 +822,7 @@ impl Evaluator {
     }
 
     pub fn evaluate(&mut self, expr: &Expr) -> Result<Number, String> {
+        crate::cancel::check()?;
         match expr {
             Expr::Sd(inner) => {
                 let result = self.evaluate(inner)?;
@@ -839,6 +840,8 @@ impl Evaluator {
 
     /// 带单变量替换的求值（兼容接口）
     pub fn evaluate_with_var(&self, expr: &Expr, var: &str, value: &Number) -> Result<Number, String> {
+        // 中断检查点：长循环（数值求和/积分、DK 求根…）每次迭代至少走一次求值入口
+        crate::cancel::check()?;
         self.eval_node(expr, &[(var.to_string(), value)])
     }
 

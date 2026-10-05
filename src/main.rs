@@ -9,6 +9,7 @@ mod number;
 mod parser;
 mod primefac;
 mod calculus;
+mod cancel;
 mod language;
 mod solver_factor;
 mod solver_linear;
@@ -35,19 +36,18 @@ use rustyline::history::DefaultHistory;
 use rustyline::line_buffer::LineBuffer;
 use rustyline::{
     Cmd, ConditionalEventHandler, Context, Editor, Event, EventContext, EventHandler, Helper,
-    KeyEvent, Movement, RepeatCount, Result as RlResult,
+    KeyEvent, RepeatCount, Result as RlResult,
 };
 use rustyline::Changeset;
 use std::cell::Cell;
 use std::io::{IsTerminal, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// 全部指令（Tab 补全共用；新增指令时同时改这里与 `handle_command`）
 const COMMANDS: &[&str] = &[
     "/help", "/clear", "/mode", "/lang", "/language", "/timing", "/set", "/let", "/var", "/del",
-    "/reset", "/save", "/load", "/exit", "/quit",
+    "/reset", "/save", "/load", "/exit", "/quit", "/q",
 ];
 
 /// 指令的内联用法提示（键为指令全名；文案会经 `i18n::t` 翻译）
@@ -635,6 +635,26 @@ fn completion_edit(
     (start..orig_pos.max(start), pos)
 }
 
+/// 把签名 `(f, x, a, b)` 拆成参数名列表（去掉括号与空白）
+fn sig_params(sig: &str) -> Vec<&str> {
+    sig.trim_matches(|c| c == '(' || c == ')')
+        .split(',')
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+/// 已输入 `argc` 个参数后，右侧提示应当只显示**剩下还没写的参数**，末尾补 `)`。
+/// 例：`log` 的签名是 `(base, x)`，刚敲完 `log(`（argc=0）提示 `base, x)`；
+/// 敲完第一个参数（argc=1）提示只剩 `x)`（即"每输入一个参数就去掉该参数的提示"）。
+fn remaining_args_hint(sig: &str, argc: usize) -> String {
+    let params = sig_params(sig);
+    if argc >= params.len() {
+        return ")".to_string();
+    }
+    format!("{})", params[argc..].join(", "))
+}
+
 /// 本帧参数的提示种类（决定右侧提示的颜色）。
 /// 之所以用 `Cell` 而不是把颜色塞进 `display()`：`display()` 参与终端宽度计算，**不能含 ANSI**。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -733,22 +753,28 @@ impl Hinter for CalcHelper {
 
     fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<ArgHint> {
         // A. 光标落在某个函数调用的括号内 ⇒ 显示参数提示（不再要求光标在行尾）
-        if let Some((name, _open, argc)) = enclosing_function_call(line, pos) {
-            if let Some(m) = fn_meta(&name) {
-                let (kind, text) = if argc > m.max {
-                    (
-                        HintKind::TooMany,
-                        i18n::fmt("参数过多：最多 {0} 个", &[&m.max.to_string()]),
-                    )
-                } else if argc < m.min {
-                    (HintKind::Incomplete, i18n::t(m.sig))
-                } else {
-                    (HintKind::Normal, i18n::t(m.sig))
-                };
-                self.hint_kind.set(kind);
-                return Some(ArgHint {
-                    text: format!("  {}", text),
-                });
+        // 只在**光标位于行尾**时显示：rustyline 的 hint 只能追加在整行末尾，
+        // 光标停在行中间时它会跑到最右边、看起来像行尾的垃圾（用户反馈过）。
+        // 行尾正是正常打字的位置，此时提示就贴在手边。
+        if pos == line.len() {
+            if let Some((name, _open, argc)) = enclosing_function_call(line, pos) {
+                if let Some(m) = fn_meta(&name) {
+                    let (kind, text) = if argc > m.max {
+                        (
+                            HintKind::TooMany,
+                            i18n::fmt("参数过多：最多 {0} 个", &[&m.max.to_string()]),
+                        )
+                    } else if argc < m.min {
+                        // 渐进提示：只显示还没写的参数
+                        (HintKind::Incomplete, remaining_args_hint(m.sig, argc))
+                    } else {
+                        (HintKind::Normal, remaining_args_hint(m.sig, argc))
+                    };
+                    self.hint_kind.set(kind);
+                    return Some(ArgHint {
+                        text: format!("  {}", text),
+                    });
+                }
             }
         }
         self.hint_kind.set(HintKind::Normal);
@@ -795,30 +821,6 @@ impl Highlighter for CalcHelper {
 
 impl Helper for CalcHelper {}
 
-/// Ctrl+C：第一次清空当前行，1 秒内连按第二次才退出（Python REPL 的习惯）。
-/// rustyline 一次按键只能返回一个 `Cmd`，多步动作只能靠这里的状态机实现。
-struct CtrlCHandler {
-    last: AtomicU64,
-}
-
-impl ConditionalEventHandler for CtrlCHandler {
-    fn handle(
-        &self,
-        _evt: &Event,
-        _n: RepeatCount,
-        _positive: bool,
-        _ctx: &EventContext,
-    ) -> Option<Cmd> {
-        let now = now_millis();
-        let prev = self.last.swap(now, Ordering::Relaxed);
-        if now.saturating_sub(prev) <= 1000 {
-            Some(Cmd::Interrupt) // 第二次 ⇒ 走主循环既有的 Interrupted 分支退出
-        } else {
-            Some(Cmd::Kill(Movement::WholeBuffer)) // 第一次 ⇒ 清空当前行
-        }
-    }
-}
-
 /// 全角字符 → 半角（中文输入法下 `。`（ 等极易打出）
 struct FullwidthHandler {
     to: &'static str,
@@ -836,28 +838,27 @@ impl ConditionalEventHandler for FullwidthHandler {
     }
 }
 
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// 注册自定义键位：Ctrl+C 清行/连按退出 + 全角转半角。
 /// （Ctrl+L 清屏、Ctrl+R 反向历史搜索是 rustyline 的 Emacs 默认绑定，无需注册。）
 fn install_key_bindings(rl: &mut Editor<CalcHelper, DefaultHistory>) {
-    rl.bind_sequence(
-        KeyEvent::ctrl('C'),
-        EventHandler::Conditional(Box::new(CtrlCHandler {
-            last: AtomicU64::new(0),
-        })),
-    );
+    // **不给 Ctrl+C 绑定自定义动作**：空闲时应走 rustyline 默认的 `Cmd::Interrupt`
+    // ⇒ `ReadlineError::Interrupted` ⇒ 主循环退出程序（"没运算时 Ctrl+C 退出"）。
+    // 计算中的中断走 `cancel` 模块的控制台处理器（那里没有键盘读取）。
     for (full, half) in FULLWIDTH_MAP {
         rl.bind_sequence(
             KeyEvent::from(*full),
             EventHandler::Conditional(Box::new(FullwidthHandler { to: half })),
         );
     }
+}
+
+/// `/xxx` 是否该当作指令点亮。
+///
+/// `command_anywhere = true`（/help 正文）时必须是**已知指令** —— 否则正文里的 `x/y/z`
+/// 会把 `/y`、`/z` 点亮（英文帮助里就出现过这种误判）。输入行是 false：
+/// 用户正在敲指令、还没敲完也该有指令色。
+fn command_token_is_valid(tok: &str, command_anywhere: bool) -> bool {
+    !command_anywhere || COMMANDS.contains(&tok)
 }
 
 /// 按类别给一段文本着色（REPL 输入行、/help 列表与各指令提示共用）：
@@ -910,6 +911,12 @@ fn colorize_impl(
 
     while i < len {
         // 指令：`/` + 至少一个字母（排除 1/2、1/x 这类除法）
+        // 指令：`/` + 至少一个字母（排除 1/2、1/x 这类除法）
+        //
+        // `command_anywhere = true`（/help 正文着色）时**必须再要求是已知指令**：
+        // 否则正文里的 `x/y/z` 会把 `/y`、`/z` 当成指令点亮（英文帮助里就出现过）——
+        // 帮助正文是散文，不该用"像指令"这种弱判据。
+        // 输入行（false）保留宽松判据：用户正在敲指令时即使还没敲完也该有指令色。
         let is_command = chars[i] == '/'
             && i + 1 < len
             && chars[i + 1].is_ascii_alphabetic()
@@ -921,6 +928,12 @@ fn colorize_impl(
                 i += 1;
             }
             let cmd: String = chars[start..i].iter().collect();
+            if !command_token_is_valid(&cmd, command_anywhere) {
+                // 不是已知指令 ⇒ 当作普通文本（连同 `/` 一起原样输出）
+                plain.push_str(&cmd);
+                i = start + cmd.chars().count();
+                continue;
+            }
             flush_plain!();
             result.push_str(&cmd.color(colors.command).bold().to_string());
             seen_non_space = true;
@@ -1240,6 +1253,7 @@ fn main() {
         colors: colors.clone(),
         vars: state.evaluator.vars.keys().cloned().collect(),
     };
+    cancel::install_handler();
     let mut rl = Editor::new().expect("创建 readline 编辑器失败");
     rl.set_helper(Some(helper));
     install_key_bindings(&mut rl);
@@ -1273,7 +1287,7 @@ fn main() {
     lprint!(
         "{}",
         i18n::fmt(
-            "输入 {0} 查看帮助，输入表达式进行计算，{1} 连按两次退出",
+            "输入 {0} 查看帮助，输入表达式进行计算，{1} 退出",
             &[
                 &"/help".color(state.colors.command).bold().to_string(),
                 &"Ctrl+C".dimmed().to_string(),
@@ -1404,7 +1418,7 @@ fn handle_command(input: &str, state: &mut AppState) -> bool {
         "/let" => handle_let(input, state),
         "/var" => handle_vars(state),
         "/del" => handle_del(parts, state),
-        "/exit" | "/quit" => return true,
+        "/exit" | "/quit" | "/q" => return true,
         _ => {
             lprint!(
                 "{}",
@@ -3065,7 +3079,7 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   prod(f, k, a, b)   求積：prod(k, k, 1, 10) → 3628800
   ── 鍵盤與輸入 ──
   Tab                補全函數/指令/常數/變數；函數補成 name() 並把游標放進括號
-  Ctrl+C             清空當前行；1 秒內連按兩次才離開
+  Ctrl+C             計算中：中斷當前運算；空閒：離開程式
   Ctrl+L             清屏          Ctrl+R  反向搜尋歷史
   括號               游標處的括號與其配對括號加粗；不合法的括號標紅（不擋 Enter）
   輸入法             全角（）、。，等自動轉成半角
@@ -3133,7 +3147,7 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   prod(f, k, a, b)   product: prod(k, k, 1, 10) -> 3628800
   -- Keyboard & input --
   Tab                complete functions/commands/constants/variables; a function becomes name() with the cursor inside
-  Ctrl+C             clear the current line; press twice within 1s to quit
+  Ctrl+C             during a computation: interrupt it; when idle: quit
   Ctrl+L             clear screen   Ctrl+R  reverse history search
   Brackets           the brackets at the cursor and their match are bolded; invalid ones turn red (Enter is never blocked)
   IME                full-width ( ) , . etc. are converted to half-width automatically
@@ -3209,7 +3223,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   prod(f, k, a, b)   求积：prod(k, k, 1, 10) → 3628800
   ── 键盘与输入 ──
   Tab                补全函数/指令/常数/变量；函数补成 name() 并把光标放进括号
-  Ctrl+C             清空当前行；1 秒内连按两次才退出
+  Ctrl+C             计算中：中断当前运算；空闲：退出程序
   Ctrl+L             清屏          Ctrl+R  反向搜索历史
   括号               光标处的括号与其配对括号加粗；不合法的括号标红（不挡回车）
   输入法             全角（）、。，等自动转成半角
@@ -3715,6 +3729,28 @@ mod cli_tests {
         let (range, pos) = completion_edit(0, 3, "sinh()");
         assert_eq!(range, 0..3);
         assert_eq!(pos, 5);
+    }
+
+    #[test]
+    fn progressive_argument_hint() {
+        // 每输入一个参数，对应的提示就消失
+        assert_eq!(remaining_args_hint("(x)", 0), "x)");
+        assert_eq!(remaining_args_hint("(x)", 1), ")");
+        assert_eq!(remaining_args_hint("(base, x)", 0), "base, x)");
+        assert_eq!(remaining_args_hint("(base, x)", 1), "x)");
+        assert_eq!(remaining_args_hint("(f, x, a, b)", 2), "a, b)");
+        assert_eq!(sig_params("(f, x, a, b)"), vec!["f", "x", "a", "b"]);
+    }
+
+    #[test]
+    fn help_body_only_lights_up_real_commands() {
+        // 帮助正文（command_anywhere=true）：只有真指令才算指令
+        assert!(command_token_is_valid("/help", true));
+        assert!(command_token_is_valid("/q", true));
+        assert!(!command_token_is_valid("/y", true), "x/y/z 里的 /y 不该被点亮");
+        assert!(!command_token_is_valid("/z", true));
+        // 输入行（false）：宽松判据，正在敲的半个指令也保留指令色
+        assert!(command_token_is_valid("/mo", false));
     }
 
     #[test]

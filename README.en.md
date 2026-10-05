@@ -16,7 +16,7 @@ arbitrary-precision decimals plus exact symbolic arithmetic, equation / system s
 function fitting, triangle solving, prime factorization — and **higher mathematics** (derivative `diff`,
 limit `lim`, integral `int`, Taylor series `taylor`, sums and products `sum`/`prod`, all composable) —
 with a syntax-highlighted REPL (Tab completes a function with the cursor inside the parentheses, bracket pairing,
-in-bracket argument hints, Ctrl+C clears the line, full-width punctuation auto-converted), and a Simplified Chinese / Traditional Chinese / English UI.
+in-bracket argument hints, Ctrl+C interrupts or quits, full-width punctuation auto-converted), and a Simplified Chinese / Traditional Chinese / English UI.
 
 ## Demo
 

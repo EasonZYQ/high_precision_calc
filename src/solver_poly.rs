@@ -62,6 +62,8 @@ pub fn newton_solve(
     );
 
     for _ in 0..max_iter {
+        // 中断检查：本函数返回 Option，故中断表现为"放弃这个初值"（外层循环另有检查点）
+        crate::cancel::check().ok()?;
         // 计算 f(x)
         // 复数结果（如 `ln(-1)`、`sqrt(-4)`）说明该初值落在实数域之外：
         // `Number::to_approx` 对复数会 debug_assert（不能静默丢虚部）⇒ 必须先分流、当作无效初值放弃。
