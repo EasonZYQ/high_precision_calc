@@ -43,6 +43,30 @@ jobs:
 
   # 覆盖 Release 要出的全部目标：**跨平台编译一旦坏掉，这里就会红**
   # （早期 rawkey::Key 变体缺失导致非 Windows 全线失败，正是这一层能提前拦住的）
+  # 代码风格与静态检查：只跑一次 Ubuntu（fmt/clippy 结果与平台无关，不必进三平台矩阵）
+  lint:
+    name: Lint (fmt + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # fmt：仓库已做过一次全仓格式化（见 style 提交），这里**阻塞**
+      - name: Rustfmt check
+        run: cargo fmt --all -- --check
+
+      # clippy：**阶段一先非阻塞**，只为把告警收集起来，观察后再收紧
+      # （收紧时优先 \`-- -D clippy::correctness\`，而不是一步 \`-D warnings\`）
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+        continue-on-error: true
+
   cross:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
