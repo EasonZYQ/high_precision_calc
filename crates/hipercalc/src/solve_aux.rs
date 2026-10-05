@@ -2,10 +2,10 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::Signed;
 
-use hipercalc_core::bigfloat::{self, BigFloat};
-use hipercalc_core::number::Number;
 use crate::parser::{DisplayMode, Evaluator, Expr};
 use crate::solver_poly;
+use hipercalc_core::bigfloat::{self, BigFloat};
+use hipercalc_core::number::Number;
 use hipercalc_core::trig::AngleMode;
 
 /// 判定结果前缀：有限小数/精确符号表达 → "="；无限小数（近似/循环小数/无理）→ "≈"
@@ -90,11 +90,7 @@ pub fn float_to_exact_rational(x: &BigFloat) -> Option<(i64, i64)> {
         } else {
             BigInt::from(10).pow((-mag).ceil() as u32 + 12)
         };
-        BigFloat::div(
-            &BigFloat::from_u64(1),
-            &denom.into(),
-            bigfloat::precision(),
-        )
+        BigFloat::div(&BigFloat::from_u64(1), &denom.into(), bigfloat::precision())
     };
     // 候选常量表只构造一次（旧实现每轮 `BigFloat::from_i64(p/q)` 各分配一次，共 ~8000 次）
     let p_table: Vec<BigFloat> = (-200i64..=200).map(BigFloat::from_i64).collect();
@@ -126,11 +122,7 @@ pub fn gcd64(mut a: i64, mut b: i64) -> i64 {
         a = b;
         b = t;
     }
-    if a == 0 {
-        1
-    } else {
-        a
-    }
+    if a == 0 { 1 } else { a }
 }
 
 /// BigFloat 绝对值（value 为负时取反）
@@ -252,11 +244,7 @@ fn pi_ratio(x: &BigFloat, pi: &BigFloat, max_den: i64, tol_rel: f64) -> Option<(
 /// 判定前先按 `±3π` 的窗口过滤：牛顿从远处的初值可能落到很远的根（弧度模式下 `sin(x)+cos(x)=1`
 /// 会混进 ≈29.8 这类根），它们混进根集合会让相邻差不再规整、把整条通式判否。
 /// 窗口**只影响判定输入**，不影响调用方在回退分支里列出的全部根。
-pub fn format_periodic_roots(
-    roots: &[Number],
-    var: char,
-    angle_mode: AngleMode,
-) -> Option<String> {
+pub fn format_periodic_roots(roots: &[Number], var: char, angle_mode: AngleMode) -> Option<String> {
     if roots.len() < 4 {
         return None;
     }
@@ -403,10 +391,7 @@ pub fn format_periodic_roots(
     // "残基≈0"沿用旧实现的阈值 `10·π·tol ≈ 3.1e-5`（`tol_abs` 太紧，会把数值噪声误判成新家族）
     let zero_residual_tol = BigFloat::mul(
         &pi,
-        &BigFloat::from_big_rational(&BigRational::new(
-            BigInt::from(1),
-            BigInt::from(100_000),
-        )),
+        &BigFloat::from_big_rational(&BigRational::new(BigInt::from(1), BigInt::from(100_000))),
         prec,
     );
     let mut family: Vec<String> = Vec::new();
@@ -436,11 +421,7 @@ pub fn format_periodic_roots(
 }
 
 /// 用多组初始猜测收集非多项式方程在区间内的所有实根（去重）
-pub fn collect_all_roots(
-    evaluator: &Evaluator,
-    expr: &Expr,
-    var: char,
-) -> Vec<Number> {
+pub fn collect_all_roots(evaluator: &Evaluator, expr: &Expr, var: char) -> Vec<Number> {
     let mut guesses: Vec<BigFloat> = vec![BigFloat::from_u64(0)];
     for i in 1i64..=6 {
         guesses.push(BigFloat::from_i64(i));
@@ -452,11 +433,7 @@ pub fn collect_all_roots(
         bigfloat::precision(),
     );
     for s in [1i64, -1, 3, -3] {
-        let g = BigFloat::mul(
-            &BigFloat::from_i64(s),
-            &half,
-            bigfloat::precision(),
-        );
+        let g = BigFloat::mul(&BigFloat::from_i64(s), &half, bigfloat::precision());
         guesses.push(g);
     }
     // 近零初值：`0` 与 `±0.5` 之间是空的，而 `ln(x)=c`（c 为负）这类方程的根可以非常小
@@ -482,11 +459,7 @@ pub fn collect_all_roots(
     if crate::equation::has_trig_of_var(expr, var) {
         for k in 1i64..=6 {
             for s in [1i64, -1i64] {
-                let kpi = BigFloat::mul(
-                    &BigFloat::from_i64(s * k),
-                    &pi,
-                    bigfloat::precision(),
-                );
+                let kpi = BigFloat::mul(&BigFloat::from_i64(s * k), &pi, bigfloat::precision());
                 guesses.push(kpi.clone());
                 guesses.push(BigFloat::mul(&kpi, &half, bigfloat::precision()));
             }
@@ -499,14 +472,8 @@ pub fn collect_all_roots(
     // 而 `±1..±6` 又会过冲落到远端根，根集合残缺 ⇒ 周期通式判不出来。
     // 换算后**牛顿轨迹与弧度模式在物理上完全一致**（Δx_度 = (180/π)·Δx_弧度），两种模式行为对齐。
     // 非三角方程（`1/x=2`、`ln(x)=1`）的自变量是普通实数，**必须保留原初值**，否则会丢根。
-    if evaluator.angle_mode == AngleMode::Degree
-        && crate::equation::has_trig_of_var(expr, var)
-    {
-        let scale = BigFloat::div(
-            &BigFloat::from_u64(180),
-            &pi,
-            bigfloat::precision(),
-        );
+    if evaluator.angle_mode == AngleMode::Degree && crate::equation::has_trig_of_var(expr, var) {
+        let scale = BigFloat::div(&BigFloat::from_u64(180), &pi, bigfloat::precision());
         guesses = guesses
             .into_iter()
             .map(|g| BigFloat::mul(&g, &scale, bigfloat::precision()))
@@ -525,10 +492,7 @@ pub fn collect_all_roots(
         bigfloat::precision(),
     );
     let root_close = |a: &BigFloat, b: &BigFloat, t: &BigFloat| {
-        BigFloat::sub(a, b, bigfloat::precision())
-            .value
-            .abs()
-            <= t.value.abs()
+        BigFloat::sub(a, b, bigfloat::precision()).value.abs() <= t.value.abs()
     };
 
     // 阶段一：粗扫
@@ -566,7 +530,7 @@ pub fn collect_all_roots(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::{parse_and_eval, BinOp, EvalResult};
+    use crate::parser::{BinOp, EvalResult, parse_and_eval};
 
     /// 单位角（度）的根
     fn deg(v: i64) -> Number {
@@ -758,9 +722,9 @@ mod tests {
         ev.angle_mode = AngleMode::Degree;
         let roots = collect_all_roots(&ev, &eq_expr("1/x=2"), 'x');
         assert!(
-            roots.iter().any(|r| {
-                float_to_exact_rational(&r.to_approx()) == Some((1, 2))
-            }),
+            roots
+                .iter()
+                .any(|r| { float_to_exact_rational(&r.to_approx()) == Some((1, 2)) }),
             "度模式下 1/x=2 应仍找到 0.5，实得 {:?}",
             roots.len()
         );
@@ -774,7 +738,9 @@ mod tests {
         assert!(!roots.is_empty(), "ln(x)=1 应找到 e");
         let roots = collect_all_roots(&ev, &eq_expr("sqrt(x)=2"), 'x');
         assert!(
-            roots.iter().any(|r| float_to_exact_rational(&r.to_approx()) == Some((4, 1))),
+            roots
+                .iter()
+                .any(|r| float_to_exact_rational(&r.to_approx()) == Some((4, 1))),
             "sqrt(x)=2 应找到 4"
         );
     }

@@ -16,12 +16,12 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::One;
 
-use hipercalc_core::number::Number;
 use crate::parser::{BinOp, Expr, UnaryOp};
+use hipercalc_core::number::Number;
 
 use super::{
-    max_taylor_degree, ERROR_TAYLOR_ORDER, ERROR_TAYLOR_POINT, ERROR_TAYLOR_SINGULAR,
-    ERROR_TAYLOR_TOO_LARGE, ERROR_TOO_MANY_TERMS,
+    ERROR_TAYLOR_ORDER, ERROR_TAYLOR_POINT, ERROR_TAYLOR_SINGULAR, ERROR_TAYLOR_TOO_LARGE,
+    ERROR_TOO_MANY_TERMS, max_taylor_degree,
 };
 
 /// 吸附时允许的最大分母：超过就认为是真无理/超越值，保持近似
@@ -69,7 +69,11 @@ pub fn taylor(
         }
         deriv = match super::diff::diff(ev, &deriv, var) {
             Ok(d) => d,
-            Err(e) if e == ERROR_TOO_MANY_TERMS || e.contains("规模过大") || e.contains("嵌套过深") => {
+            Err(e)
+                if e == ERROR_TOO_MANY_TERMS
+                    || e.contains("规模过大")
+                    || e.contains("嵌套过深") =>
+            {
                 // 高阶导数的表达式会指数膨胀：给泰勒专用文案，不要复用"求导结果规模过大"
                 return Err(ERROR_TAYLOR_TOO_LARGE.to_string());
             }
@@ -117,15 +121,14 @@ fn term(coeff: &Number, a: &Number, var: &str, k: usize) -> Expr {
     let base = if a.is_zero() {
         x
     } else {
-        Expr::Binary(
-            Box::new(x),
-            BinOp::Sub,
-            Box::new(Expr::Number(a.clone())),
-        )
+        Expr::Binary(Box::new(x), BinOp::Sub, Box::new(Expr::Number(a.clone())))
     };
     let mut body = base;
     if k != 1 {
-        body = Expr::Pow(Box::new(body), Box::new(Expr::Number(Number::from_int(k as i64))));
+        body = Expr::Pow(
+            Box::new(body),
+            Box::new(Expr::Number(Number::from_int(k as i64))),
+        );
     }
     if is_one(coeff) {
         body
@@ -224,7 +227,14 @@ mod tests {
 
     fn t(input: &str, n: usize) -> String {
         let ev = Evaluator::new();
-        let r = taylor(&ev, &parse(input), "x", &Expr::Number(Number::from_int(0)), n).unwrap();
+        let r = taylor(
+            &ev,
+            &parse(input),
+            "x",
+            &Expr::Number(Number::from_int(0)),
+            n,
+        )
+        .unwrap();
         super::super::render::render_expr(&r, DisplayMode::MathIO)
     }
 
@@ -292,12 +302,22 @@ mod tests {
     fn snap_only_for_small_denominators() {
         // cos(0) 的近似值应吸附成精确 1
         let ev = Evaluator::new();
-        let v = ev.evaluate_with_var(&parse("cos(x)"), "x", &Number::from_int(0)).unwrap();
+        let v = ev
+            .evaluate_with_var(&parse("cos(x)"), "x", &Number::from_int(0))
+            .unwrap();
         assert!(matches!(v, Number::Approx(_)));
         let snapped = snap_exact(&v);
-        assert_eq!(snapped.as_rational().map(|r| r.to_string()).unwrap_or_default(), "1");
+        assert_eq!(
+            snapped
+                .as_rational()
+                .map(|r| r.to_string())
+                .unwrap_or_default(),
+            "1"
+        );
         // cos(1) 是真无理值 ⇒ 保持近似
-        let v2 = ev.evaluate_with_var(&parse("cos(x)"), "x", &Number::from_int(1)).unwrap();
+        let v2 = ev
+            .evaluate_with_var(&parse("cos(x)"), "x", &Number::from_int(1))
+            .unwrap();
         assert!(matches!(snap_exact(&v2), Number::Approx(_)));
     }
 
@@ -307,7 +327,10 @@ mod tests {
         // 反复求导时项数会指数膨胀（曾让这条用例报"泰勒展开式过大"）；
         // 同理多顶底的幂不能展开、分子也不能被分配进分母。
         assert_eq!(t("1/(1-x)", 5), "1 + x + x^2 + x^3 + x^4 + x^5");
-        assert_eq!(t("1/(1-x)", 10), "1 + x + x^2 + x^3 + x^4 + x^5 + x^6 + x^7 + x^8 + x^9 + x^10");
+        assert_eq!(
+            t("1/(1-x)", 10),
+            "1 + x + x^2 + x^3 + x^4 + x^5 + x^6 + x^7 + x^8 + x^9 + x^10"
+        );
         assert_eq!(t("1/(1+x)", 6), "1 - x + x^2 - x^3 + x^4 - x^5 + x^6");
     }
 

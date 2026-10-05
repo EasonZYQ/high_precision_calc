@@ -80,10 +80,7 @@ fn to_radians(angle: &Number, mode: AngleMode) -> Number {
     match mode {
         AngleMode::Radian => angle.clone(),
         AngleMode::Degree => {
-            let pi_180 = BigRational::new(
-                BigInt::from(1),
-                BigInt::from(180),
-            );
+            let pi_180 = BigRational::new(BigInt::from(1), BigInt::from(180));
             let pi_factor = Number::from_pi_times(pi_180);
             angle.mul(&pi_factor)
         }
@@ -405,10 +402,7 @@ fn make_surd(a: i64, b: i64, c: u64, d: u64) -> Number {
         terms.push(ExactTerm::Rational(BigRational::from_integer(a_int)));
     }
     if b != 0 {
-        terms.push(ExactTerm::Sqrt(
-            BigRational::from_integer(b_int),
-            rad,
-        ));
+        terms.push(ExactTerm::Sqrt(BigRational::from_integer(b_int), rad));
     }
 
     Number::Exact(ExactExpr {
@@ -431,16 +425,10 @@ fn make_double_surd(a: i64, b: i64, c1: u64, d: i64, c2: u64, e: u64) -> Number 
         terms.push(ExactTerm::Rational(BigRational::from_integer(a_int)));
     }
     if b != 0 {
-        terms.push(ExactTerm::Sqrt(
-            BigRational::from_integer(b_int),
-            rad1,
-        ));
+        terms.push(ExactTerm::Sqrt(BigRational::from_integer(b_int), rad1));
     }
     if d != 0 {
-        terms.push(ExactTerm::Sqrt(
-            BigRational::from_integer(d_int),
-            rad2,
-        ));
+        terms.push(ExactTerm::Sqrt(BigRational::from_integer(d_int), rad2));
     }
 
     Number::Exact(ExactExpr {
@@ -459,14 +447,16 @@ pub fn try_exact_arcsin(arg: &Number) -> Option<Number> {
         if rat.numer().abs() == BigInt::from(1) && *rat.denom() == BigInt::from(2) {
             let sign = if rat.is_negative() { -1 } else { 1 };
             return Some(Number::from_pi_times(BigRational::new(
-                BigInt::from(sign), BigInt::from(6),
+                BigInt::from(sign),
+                BigInt::from(6),
             )));
         }
         // arcsin(±1) = ±pi/2
         if rat.numer().abs() == BigInt::from(1) && *rat.denom() == BigInt::from(1) {
             let sign = if rat.is_negative() { -1 } else { 1 };
             return Some(Number::from_pi_times(BigRational::new(
-                BigInt::from(sign), BigInt::from(2),
+                BigInt::from(sign),
+                BigInt::from(2),
             )));
         }
     }
@@ -476,19 +466,28 @@ pub fn try_exact_arcsin(arg: &Number) -> Option<Number> {
     if is_exact_sqrt_ratio(&arg_pos, 2, 2).is_some() {
         // arcsin(±sqr(2)/2) = ±pi/4
         let sign = if neg { -1 } else { 1 };
-        return Some(Number::from_pi_times(BigRational::new(BigInt::from(sign), BigInt::from(4))));
+        return Some(Number::from_pi_times(BigRational::new(
+            BigInt::from(sign),
+            BigInt::from(4),
+        )));
     }
     if is_exact_sqrt_ratio(&arg_pos, 3, 2).is_some() {
         // arcsin(±sqr(3)/2) = ±pi/3
         let sign = if neg { -1 } else { 1 };
-        return Some(Number::from_pi_times(BigRational::new(BigInt::from(sign), BigInt::from(3))));
+        return Some(Number::from_pi_times(BigRational::new(
+            BigInt::from(sign),
+            BigInt::from(3),
+        )));
     }
     None
 }
 
 pub fn try_exact_arccos(arg: &Number) -> Option<Number> {
     if arg.is_zero() {
-        return Some(Number::from_pi_times(BigRational::new(BigInt::from(1), BigInt::from(2))));
+        return Some(Number::from_pi_times(BigRational::new(
+            BigInt::from(1),
+            BigInt::from(2),
+        )));
     }
     if let Some(rat) = arg.as_rational() {
         // arccos(1) = 0
@@ -539,7 +538,8 @@ pub fn try_exact_arctan(arg: &Number) -> Option<Number> {
         if rat.numer().abs() == BigInt::from(1) && *rat.denom() == BigInt::from(1) {
             let sign = if rat.is_negative() { -1 } else { 1 };
             return Some(Number::from_pi_times(BigRational::new(
-                BigInt::from(sign), BigInt::from(4),
+                BigInt::from(sign),
+                BigInt::from(4),
             )));
         }
     }
@@ -549,7 +549,10 @@ pub fn try_exact_arctan(arg: &Number) -> Option<Number> {
     if is_exact_sqrt_ratio(&arg_pos, 3, 1).is_some() {
         // arctan(±sqr(3)) = ±pi/3
         let sign = if neg { -1 } else { 1 };
-        return Some(Number::from_pi_times(BigRational::new(BigInt::from(sign), BigInt::from(3))));
+        return Some(Number::from_pi_times(BigRational::new(
+            BigInt::from(sign),
+            BigInt::from(3),
+        )));
     }
     None
 }
@@ -565,7 +568,8 @@ fn is_exact_sqrt_ratio(num: &Number, rad: u64, den: u64) -> Option<()> {
             // 形式1: denom=den, coeff=1, rad=rad → sqrt(rad)/den
             if expr.denominator == BigInt::from(den) && expr.terms.len() == 1 {
                 if let ExactTerm::Sqrt(coeff, r) = &expr.terms[0] {
-                    if coeff.is_integer() && *coeff.numer() == BigInt::from(1)
+                    if coeff.is_integer()
+                        && *coeff.numer() == BigInt::from(1)
                         && *r == BigInt::from(rad)
                     {
                         return Some(());

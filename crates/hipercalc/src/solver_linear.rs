@@ -1,5 +1,5 @@
-use hipercalc_core::number::Number;
 use crate::parser::DisplayMode;
+use hipercalc_core::number::Number;
 
 /// 线性方程组求解结果
 #[derive(Debug, Clone)]
@@ -119,7 +119,11 @@ pub fn gaussian_elimination(
     }
 
     let unique = solution.len() == m && n >= m && !infinite;
-    Some(LinearSolution { values: solution, unique, infinite })
+    Some(LinearSolution {
+        values: solution,
+        unique,
+        infinite,
+    })
 }
 
 /// 格式化线性方程组解。

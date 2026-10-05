@@ -27,10 +27,10 @@
 pub mod diff;
 pub mod integrate;
 pub mod limit;
-pub mod series;
-pub mod sumprod;
 pub mod normalize;
 pub mod render;
+pub mod series;
+pub mod sumprod;
 
 use crate::parser::{Evaluator, Expr};
 
@@ -174,7 +174,8 @@ pub const ERROR_DIFF_DEPTH: &str = "求导展开嵌套过深（/mode deep 可放
 pub const ERROR_DIFF_VAR: &str = "求导变量必须是单个变量（如 x）";
 pub const ERROR_NO_SYMBOLIC_EQ: &str = "等式不能出现在符号运算中";
 pub const ERROR_SUM_SHADOWED: &str = "求导变量被求和绑定变量遮蔽";
-pub const ERROR_CALC_IN_WRAPPER: &str = "高等数学函数 {0} 不能出现在此处（fac/sd/triangle/primefac 内部）";
+pub const ERROR_CALC_IN_WRAPPER: &str =
+    "高等数学函数 {0} 不能出现在此处（fac/sd/triangle/primefac 内部）";
 pub const ERROR_CALC_ARITY: &str = "函数 {0} 需要 {1} 个参数";
 pub const ERROR_INF_POSITION: &str = "此处不能使用无穷（inf）";
 // 积分
@@ -205,7 +206,14 @@ pub const ERROR_SUM_COMPLEX: &str = "求和/求积需求出实数（本次得到
 
 /// 高等数学函数名（与 `parser::FUNCTIONS` 同步；顺序无关）。
 /// 每新增一项，必须同时补 `CALCULUS_ARITIES` 与对应实现。
-pub const CALCULUS_ARITIES: &[(&str, &[usize])] = &[("diff", &[2]), ("int", &[2, 4]), ("lim", &[3]), ("taylor", &[4]), ("sum", &[4]), ("prod", &[4])];
+pub const CALCULUS_ARITIES: &[(&str, &[usize])] = &[
+    ("diff", &[2]),
+    ("int", &[2, 4]),
+    ("lim", &[3]),
+    ("taylor", &[4]),
+    ("sum", &[4]),
+    ("prod", &[4]),
+];
 
 /// 允许 `inf` 出现的位置：`(函数名, 允许 inf 的参数下标)`。
 /// 其余位置出现 `inf` 要在这里就报错 —— 否则会落到求值路径报"未定义变量: inf"，误导用户。
@@ -420,9 +428,7 @@ fn check_arity(name: &str, got: usize) -> Result<(), String> {
             .collect::<Vec<_>>()
             .join(" 或 "),
     };
-    Err(ERROR_CALC_ARITY
-        .replace("{0}", name)
-        .replace("{1}", &want))
+    Err(ERROR_CALC_ARITY.replace("{0}", name).replace("{1}", &want))
 }
 
 /// `inf` 只允许出现在白名单位置（其余位置给出明确报错，而不是"未定义变量: inf"）

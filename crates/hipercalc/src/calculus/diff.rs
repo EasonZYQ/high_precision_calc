@@ -7,7 +7,7 @@
 
 use crate::parser::{BinOp, Expr, UnaryOp};
 
-use super::{max_diff_depth, ERROR_DIFF_DEPTH, ERROR_DIFF_VAR, ERROR_NO_SYMBOLIC_EQ};
+use super::{ERROR_DIFF_DEPTH, ERROR_DIFF_VAR, ERROR_NO_SYMBOLIC_EQ, max_diff_depth};
 
 /// 求导入口：`f` 对 `var` 求导（结果已化简）
 pub fn diff(ev: &crate::parser::Evaluator, f: &Expr, var: &str) -> Result<Expr, String> {
@@ -40,7 +40,10 @@ fn diff_raw(
                 BinOp::Add => Ok(add(dl, dr)),
                 BinOp::Sub => Ok(sub(dl, dr)),
                 // 乘积法则
-                BinOp::Mul => Ok(add(mul(dl, r.as_ref().clone()), mul(l.as_ref().clone(), dr))),
+                BinOp::Mul => Ok(add(
+                    mul(dl, r.as_ref().clone()),
+                    mul(l.as_ref().clone(), dr),
+                )),
                 // 商法则：(l'r - lr') / r^2
                 BinOp::Div => Ok(div(
                     sub(mul(dl, r.as_ref().clone()), mul(l.as_ref().clone(), dr)),
@@ -55,10 +58,7 @@ fn diff_raw(
                 return Ok(mul(
                     mul(
                         exp.as_ref().clone(),
-                        pow(
-                            base.as_ref().clone(),
-                            sub(exp.as_ref().clone(), num(1)),
-                        ),
+                        pow(base.as_ref().clone(), sub(exp.as_ref().clone(), num(1))),
                     ),
                     df,
                 ));
@@ -68,15 +68,9 @@ fn diff_raw(
             let df = diff_raw(ev, base, var, depth + 1)?;
             let inner = add(
                 mul(dg, call("ln", base.as_ref().clone())),
-                div(
-                    mul(exp.as_ref().clone(), df),
-                    base.as_ref().clone(),
-                ),
+                div(mul(exp.as_ref().clone(), df), base.as_ref().clone()),
             );
-            Ok(mul(
-                pow(base.as_ref().clone(), exp.as_ref().clone()),
-                inner,
-            ))
+            Ok(mul(pow(base.as_ref().clone(), exp.as_ref().clone()), inner))
         }
         Expr::Function(name, args) => diff_function(ev, name, args, var, depth),
         Expr::Sd(x) | Expr::Factor(x) => diff_raw(ev, x, var, depth + 1),
@@ -97,10 +91,7 @@ fn diff_function(
         if args.len() != 2 {
             return Err(format!("函数 log 需要两个参数"));
         }
-        let rewritten = div(
-            call("ln", args[1].clone()),
-            call("ln", args[0].clone()),
-        );
+        let rewritten = div(call("ln", args[1].clone()), call("ln", args[0].clone()));
         return diff_raw(ev, &rewritten, var, depth + 1);
     }
     if args.len() != 1 {

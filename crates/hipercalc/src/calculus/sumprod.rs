@@ -19,12 +19,12 @@
 use num_bigint::BigInt;
 use num_traits::One;
 
-use hipercalc_core::number::Number;
 use crate::parser::{BinOp, Expr};
+use hipercalc_core::number::Number;
 
 use super::{
-    max_prod_terms, max_sum_exact_terms, max_sum_numeric_terms, max_sum_terms, ERROR_SUM_BOUND,
-    ERROR_SUM_COMPLEX, ERROR_SUM_NO_CLOSED_FORM, ERROR_SUM_TOO_LARGE_DEEP,
+    ERROR_SUM_BOUND, ERROR_SUM_COMPLEX, ERROR_SUM_NO_CLOSED_FORM, ERROR_SUM_TOO_LARGE_DEEP,
+    max_prod_terms, max_sum_exact_terms, max_sum_numeric_terms, max_sum_terms,
 };
 
 /// 多项式（`coeffs[i]` 是 `n^i` 的系数），仅本模块内部使用
@@ -92,7 +92,8 @@ fn numeric_sum(
         // 先用**近似**整数 k 求值：这样整条链走 BigFloat（每项 ~2µs），
         // 而用精确 k 会全程走有理数运算（含 gcd 化简，实测每项 ~23µs，慢十倍多）。
         // 近似 k 是 `from_u64(k)` —— 表示成 Approx 但数值精确，`floor`/`frac` 之类结果不变。
-        let approx_k = Number::Approx(hipercalc_core::bigfloat::BigFloat::from_u64(k.max(0) as u64));
+        let approx_k =
+            Number::Approx(hipercalc_core::bigfloat::BigFloat::from_u64(k.max(0) as u64));
         let approx_k = if k < 0 { approx_k.neg() } else { approx_k };
         let v = match ev.evaluate_with_var(f, var, &approx_k) {
             Ok(v) => v,
@@ -164,7 +165,10 @@ fn closed_form_sum(
             let lo_v = poly_eval(&formula, &Number::from_int(lo));
             total = hipercalc_core::number::Number::add(
                 &total,
-                &hipercalc_core::number::Number::mul(c, &hipercalc_core::number::Number::sub(&hi_v, &lo_v)),
+                &hipercalc_core::number::Number::mul(
+                    c,
+                    &hipercalc_core::number::Number::sub(&hi_v, &lo_v),
+                ),
             );
         }
         return Ok(Some(total));
@@ -210,14 +214,20 @@ fn closed_form_prod(
             let lo = a - 1;
             if lo == 0 {
                 let fact = factorial(b.abs())?;
-                let cp = hipercalc_core::number::Number::pow(&c, &Number::from_bigint(BigInt::from(count)))?;
+                let cp = hipercalc_core::number::Number::pow(
+                    &c,
+                    &Number::from_bigint(BigInt::from(count)),
+                )?;
                 return Ok(Some(hipercalc_core::number::Number::mul(&cp, &fact)));
             }
             if a > 0 {
                 let hi_f = factorial(b)?;
                 let lo_f = factorial(lo)?;
                 let ratio = hipercalc_core::number::Number::div(&hi_f, &lo_f);
-                let cp = hipercalc_core::number::Number::pow(&c, &Number::from_bigint(BigInt::from(count)))?;
+                let cp = hipercalc_core::number::Number::pow(
+                    &c,
+                    &Number::from_bigint(BigInt::from(count)),
+                )?;
                 return Ok(Some(hipercalc_core::number::Number::mul(&cp, &ratio)));
             }
         }
@@ -248,7 +258,8 @@ fn geometric_sum(
     if r.is_zero() {
         return Ok(None);
     }
-    let expect = hipercalc_core::number::Number::mul(&f0, &hipercalc_core::number::Number::mul(&r, &r));
+    let expect =
+        hipercalc_core::number::Number::mul(&f0, &hipercalc_core::number::Number::mul(&r, &r));
     if !num_close(&expect, &f2) {
         return Ok(None);
     }
@@ -283,7 +294,10 @@ fn sum_power_formula(p: usize) -> Poly {
             acc = poly_sub(&acc, &poly_scale(&s[j], &c));
         }
         let d = Number::from_bigint(BigInt::from(m + 1));
-        s.push(poly_scale(&acc, &hipercalc_core::number::Number::div(&Number::from_int(1), &d)));
+        s.push(poly_scale(
+            &acc,
+            &hipercalc_core::number::Number::div(&Number::from_int(1), &d),
+        ));
     }
     s.pop().unwrap()
 }
@@ -317,7 +331,9 @@ fn poly_sub(a: &[Number], b: &[Number]) -> Poly {
 }
 
 fn poly_scale(a: &[Number], s: &Number) -> Poly {
-    a.iter().map(|c| hipercalc_core::number::Number::mul(c, s)).collect()
+    a.iter()
+        .map(|c| hipercalc_core::number::Number::mul(c, s))
+        .collect()
 }
 
 fn poly_mul(a: &[Number], b: &[Number]) -> Poly {
@@ -346,11 +362,7 @@ fn poly_eval(a: &[Number], x: &Number) -> Number {
 
 /* ---------------- 小工具 ---------------- */
 
-fn bounds(
-    ev: &crate::parser::Evaluator,
-    a: &Expr,
-    b: &Expr,
-) -> Result<(i64, i64), String> {
+fn bounds(ev: &crate::parser::Evaluator, a: &Expr, b: &Expr) -> Result<(i64, i64), String> {
     let get = |e: &Expr| -> Result<i64, String> {
         let v = ev
             .evaluate_with_vars(e, &[])
@@ -366,12 +378,7 @@ fn bounds(
     Ok((get(a)?, get(b)?))
 }
 
-fn eval_at(
-    ev: &crate::parser::Evaluator,
-    f: &Expr,
-    var: &str,
-    k: i64,
-) -> Result<Number, String> {
+fn eval_at(ev: &crate::parser::Evaluator, f: &Expr, var: &str, k: i64) -> Result<Number, String> {
     let v = ev
         .evaluate_with_var(f, var, &Number::from_int(k))
         .map_err(|e| e)?;
@@ -393,9 +400,7 @@ fn eval_const(ev: &crate::parser::Evaluator, f: &Expr) -> Result<Number, String>
 fn has_division(f: &Expr, var: &str) -> bool {
     match f {
         Expr::Binary(l, BinOp::Div, r) => {
-            super::has_free_var_named(r, var)
-                || has_division(l, var)
-                || has_division(r, var)
+            super::has_free_var_named(r, var) || has_division(l, var) || has_division(r, var)
         }
         Expr::Binary(l, _, r) => has_division(l, var) || has_division(r, var),
         Expr::Unary(_, x) | Expr::Sd(x) | Expr::Factor(x) => has_division(x, var),
@@ -458,9 +463,21 @@ mod tests {
     fn run(name: &str, f: &str, var: &str, a: i64, b: i64) -> String {
         let ev = Evaluator::new();
         let r = if name == "sum" {
-            sum(&ev, &parse(f), var, &Expr::Number(Number::from_int(a)), &Expr::Number(Number::from_int(b)))
+            sum(
+                &ev,
+                &parse(f),
+                var,
+                &Expr::Number(Number::from_int(a)),
+                &Expr::Number(Number::from_int(b)),
+            )
         } else {
-            prod(&ev, &parse(f), var, &Expr::Number(Number::from_int(a)), &Expr::Number(Number::from_int(b)))
+            prod(
+                &ev,
+                &parse(f),
+                var,
+                &Expr::Number(Number::from_int(a)),
+                &Expr::Number(Number::from_int(b)),
+            )
         }
         .unwrap();
         match &r {
@@ -472,9 +489,21 @@ mod tests {
     fn run_err(name: &str, f: &str, var: &str, a: i64, b: i64) -> String {
         let ev = Evaluator::new();
         let r = if name == "sum" {
-            sum(&ev, &parse(f), var, &Expr::Number(Number::from_int(a)), &Expr::Number(Number::from_int(b)))
+            sum(
+                &ev,
+                &parse(f),
+                var,
+                &Expr::Number(Number::from_int(a)),
+                &Expr::Number(Number::from_int(b)),
+            )
         } else {
-            prod(&ev, &parse(f), var, &Expr::Number(Number::from_int(a)), &Expr::Number(Number::from_int(b)))
+            prod(
+                &ev,
+                &parse(f),
+                var,
+                &Expr::Number(Number::from_int(a)),
+                &Expr::Number(Number::from_int(b)),
+            )
         };
         r.unwrap_err()
     }
@@ -502,7 +531,10 @@ mod tests {
     #[test]
     fn geometric_and_power_sums() {
         assert_eq!(run("sum", "2^k", "k", 0, 10), "2047");
-        assert_eq!(run("sum", "2^k", "k", 1, 100), "2535301200456458802993406410750");
+        assert_eq!(
+            run("sum", "2^k", "k", 1, 100),
+            "2535301200456458802993406410750"
+        );
         assert_eq!(run("sum", "3^k", "k", 1, 5), "363");
     }
 

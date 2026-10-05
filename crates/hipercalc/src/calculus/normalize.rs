@@ -12,10 +12,10 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
 
-use hipercalc_core::number::Number;
 use crate::parser::{BinOp, Expr, UnaryOp};
+use hipercalc_core::number::Number;
 
-use super::{max_terms, ERROR_TOO_MANY_TERMS};
+use super::{ERROR_TOO_MANY_TERMS, max_terms};
 
 /// 一项：`coeff · Π base^exp`
 #[derive(Clone)]
@@ -140,11 +140,7 @@ fn to_terms(ev: &crate::parser::Evaluator, e: &Expr) -> Result<Vec<NTerm>, Strin
                 let neg_one = Expr::Number(Number::from_int(-1));
                 let inv = to_terms_pow(ev, r, &neg_one)?;
                 check_size(&inv)?;
-                let left: Vec<NTerm> = if b.len() > 1 {
-                    vec![wrap_terms(a)?]
-                } else {
-                    a
-                };
+                let left: Vec<NTerm> = if b.len() > 1 { vec![wrap_terms(a)?] } else { a };
                 let mut out = Vec::new();
                 for x in &left {
                     for y in &inv {
@@ -227,7 +223,8 @@ fn to_terms_pow(
                             if t.coeff.is_zero() {
                                 return Err("除以零错误".to_string());
                             }
-                            t.coeff = hipercalc_core::number::Number::div(&Number::from_int(1), &t.coeff);
+                            t.coeff =
+                                hipercalc_core::number::Number::div(&Number::from_int(1), &t.coeff);
                             for f in t.factors.iter_mut() {
                                 f.1 = f.1.neg();
                             }
@@ -281,10 +278,7 @@ fn wrap_terms(ts: Vec<NTerm>) -> Result<NTerm, String> {
 fn mul_terms(a: &NTerm, b: &NTerm) -> Result<NTerm, String> {
     let mut factors = a.factors.clone();
     for (base, exp) in &b.factors {
-        if let Some(slot) = factors
-            .iter_mut()
-            .find(|(eb, _)| same_base(eb, base))
-        {
+        if let Some(slot) = factors.iter_mut().find(|(eb, _)| same_base(eb, base)) {
             slot.1 = slot.1.add(exp);
         } else {
             factors.push((base.clone(), exp.clone()));

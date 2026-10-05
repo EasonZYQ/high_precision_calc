@@ -4,39 +4,39 @@
 // **不要**加 complex / bigint_ext：本文件从不使用它们，加了会触发 unused_imports。
 use hipercalc_core::{bigfloat, calc_mode, cancel, display, trig};
 
+mod calculus;
 mod equation;
 mod i18n;
+mod language;
 mod parser;
 mod primefac;
-mod calculus;
-mod language;
+mod solve_aux;
 mod solver_factor;
+mod solver_fit;
 mod solver_linear;
 mod solver_nonlinear;
-mod solver_fit;
 mod solver_poly;
 mod solver_triangle;
-mod solve_aux;
 mod state;
 
 use colored::*;
+use hipercalc_core::number::Number;
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::Signed;
-use hipercalc_core::number::Number;
-use parser::{parse_and_eval, DisplayMode, EvalResult, Evaluator};
+use parser::{DisplayMode, EvalResult, Evaluator, parse_and_eval};
+use rustyline::Changeset;
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::{Hint, Hinter};
-use rustyline::validate::Validator;
 use rustyline::history::DefaultHistory;
 use rustyline::line_buffer::LineBuffer;
+use rustyline::validate::Validator;
 use rustyline::{
     Cmd, ConditionalEventHandler, Context, Editor, Event, EventContext, EventHandler, Helper,
     KeyEvent, RepeatCount, Result as RlResult,
 };
-use rustyline::Changeset;
 use std::cell::Cell;
 use std::io::{IsTerminal, Write};
 use std::sync::mpsc;
@@ -44,13 +44,30 @@ use std::time::{Duration, Instant};
 
 /// 全部指令（Tab 补全共用；新增指令时同时改这里与 `handle_command`）
 const COMMANDS: &[&str] = &[
-    "/help", "/clear", "/mode", "/lang", "/language", "/timing", "/set", "/let", "/var", "/del",
-    "/reset", "/save", "/load", "/exit", "/quit", "/q",
+    "/help",
+    "/clear",
+    "/mode",
+    "/lang",
+    "/language",
+    "/timing",
+    "/set",
+    "/let",
+    "/var",
+    "/del",
+    "/reset",
+    "/save",
+    "/load",
+    "/exit",
+    "/quit",
+    "/q",
 ];
 
 /// 指令的内联用法提示（键为指令全名；文案会经 `i18n::t` 翻译）
 const COMMAND_HINTS: &[(&str, &str)] = &[
-    ("/mode", "mathio|lineio|deg|rad|fast|deep|prec|digits|sci|group"),
+    (
+        "/mode",
+        "mathio|lineio|deg|rad|fast|deep|prec|digits|sci|group",
+    ),
     ("/lang", "zh-CN|zh-TW|en（无参数进入选择菜单）"),
     ("/timing", "on|off"),
     ("/set", "<类别> <颜色>"),
@@ -78,78 +95,392 @@ struct FnMeta {
 
 const FUNCTIONS_META: &[FnMeta] = &[
     // 单参
-    FnMeta { name: "sqr", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "sqrt", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "sin", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "cos", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "tan", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "cot", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "sec", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "csc", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "arcsin", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "arccos", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "arctan", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "arccot", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "arcsec", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "arccsc", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "abs", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "sd", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "factor", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "fac", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "ln", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "exp", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "log10", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "log2", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "sinh", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "cosh", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "tanh", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "coth", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "sech", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "csch", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "arcsinh", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "arccosh", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "arctanh", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "cbrt", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "re", min: 1, max: 1, sig: "(z)" },
-    FnMeta { name: "im", min: 1, max: 1, sig: "(z)" },
-    FnMeta { name: "conj", min: 1, max: 1, sig: "(z)" },
-    FnMeta { name: "arg", min: 1, max: 1, sig: "(z)" },
-    FnMeta { name: "isprime", min: 1, max: 1, sig: "(n)" },
-    FnMeta { name: "nextprime", min: 1, max: 1, sig: "(n)" },
-    FnMeta { name: "primefac", min: 1, max: 1, sig: "(n)" },
-    FnMeta { name: "floor", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "ceil", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "round", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "frac", min: 1, max: 1, sig: "(x)" },
-    FnMeta { name: "sign", min: 1, max: 1, sig: "(x)" },
+    FnMeta {
+        name: "sqr",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "sqrt",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "sin",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "cos",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "tan",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "cot",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "sec",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "csc",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "arcsin",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "arccos",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "arctan",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "arccot",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "arcsec",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "arccsc",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "abs",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "sd",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "factor",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "fac",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "ln",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "exp",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "log10",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "log2",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "sinh",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "cosh",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "tanh",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "coth",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "sech",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "csch",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "arcsinh",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "arccosh",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "arctanh",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "cbrt",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "re",
+        min: 1,
+        max: 1,
+        sig: "(z)",
+    },
+    FnMeta {
+        name: "im",
+        min: 1,
+        max: 1,
+        sig: "(z)",
+    },
+    FnMeta {
+        name: "conj",
+        min: 1,
+        max: 1,
+        sig: "(z)",
+    },
+    FnMeta {
+        name: "arg",
+        min: 1,
+        max: 1,
+        sig: "(z)",
+    },
+    FnMeta {
+        name: "isprime",
+        min: 1,
+        max: 1,
+        sig: "(n)",
+    },
+    FnMeta {
+        name: "nextprime",
+        min: 1,
+        max: 1,
+        sig: "(n)",
+    },
+    FnMeta {
+        name: "primefac",
+        min: 1,
+        max: 1,
+        sig: "(n)",
+    },
+    FnMeta {
+        name: "floor",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "ceil",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "round",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "frac",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "sign",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
     // 双参
-    FnMeta { name: "log", min: 2, max: 2, sig: "(base, x)" },
-    FnMeta { name: "nroot", min: 2, max: 2, sig: "(x, n)" },
-    FnMeta { name: "mod", min: 2, max: 2, sig: "(a, b)" },
-    FnMeta { name: "idiv", min: 2, max: 2, sig: "(a, b)" },
-    FnMeta { name: "nCr", min: 2, max: 2, sig: "(n, r)" },
-    FnMeta { name: "nPr", min: 2, max: 2, sig: "(n, r)" },
-    FnMeta { name: "gcd", min: 2, max: 2, sig: "(a, b)" },
-    FnMeta { name: "lcm", min: 2, max: 2, sig: "(a, b)" },
+    FnMeta {
+        name: "log",
+        min: 2,
+        max: 2,
+        sig: "(base, x)",
+    },
+    FnMeta {
+        name: "nroot",
+        min: 2,
+        max: 2,
+        sig: "(x, n)",
+    },
+    FnMeta {
+        name: "mod",
+        min: 2,
+        max: 2,
+        sig: "(a, b)",
+    },
+    FnMeta {
+        name: "idiv",
+        min: 2,
+        max: 2,
+        sig: "(a, b)",
+    },
+    FnMeta {
+        name: "nCr",
+        min: 2,
+        max: 2,
+        sig: "(n, r)",
+    },
+    FnMeta {
+        name: "nPr",
+        min: 2,
+        max: 2,
+        sig: "(n, r)",
+    },
+    FnMeta {
+        name: "gcd",
+        min: 2,
+        max: 2,
+        sig: "(a, b)",
+    },
+    FnMeta {
+        name: "lcm",
+        min: 2,
+        max: 2,
+        sig: "(a, b)",
+    },
     // 高等数学
-    FnMeta { name: "diff", min: 2, max: 2, sig: "(f, x)" },
-    FnMeta { name: "lim", min: 3, max: 3, sig: "(f, x, a)" },
-    FnMeta { name: "int", min: 2, max: 4, sig: "(f, x) 或 (f, x, a, b)" },
-    FnMeta { name: "taylor", min: 4, max: 4, sig: "(f, x, a, n)" },
-    FnMeta { name: "sum", min: 4, max: 4, sig: "(f, k, a, b)" },
-    FnMeta { name: "prod", min: 4, max: 4, sig: "(f, k, a, b)" },
+    FnMeta {
+        name: "diff",
+        min: 2,
+        max: 2,
+        sig: "(f, x)",
+    },
+    FnMeta {
+        name: "lim",
+        min: 3,
+        max: 3,
+        sig: "(f, x, a)",
+    },
+    FnMeta {
+        name: "int",
+        min: 2,
+        max: 4,
+        sig: "(f, x) 或 (f, x, a, b)",
+    },
+    FnMeta {
+        name: "taylor",
+        min: 4,
+        max: 4,
+        sig: "(f, x, a, n)",
+    },
+    FnMeta {
+        name: "sum",
+        min: 4,
+        max: 4,
+        sig: "(f, k, a, b)",
+    },
+    FnMeta {
+        name: "prod",
+        min: 4,
+        max: 4,
+        sig: "(f, k, a, b)",
+    },
     // 命名参数特例：不做元数校验（a/b/c/A/B/C 任意组合，可逗号可空白）
-    FnMeta { name: "triangle", min: 0, max: usize::MAX, sig: "(a, b, c, A, B, C)" },
+    FnMeta {
+        name: "triangle",
+        min: 0,
+        max: usize::MAX,
+        sig: "(a, b, c, A, B, C)",
+    },
 ];
 
 /// 全角 → 半角映射：中文输入法下最容易打出的全角标点（`。` 是最高频痛点）。
 /// 只做符号与数字，**不做全角字母**（会干扰变量名的单字母/全大写规则）。
 const FULLWIDTH_MAP: &[(char, &str)] = &[
-    ('。', "."), ('．', "."), ('，', ","), ('；', ";"), ('：', ":"),
-    ('（', "("), ('）', ")"), ('［', "["), ('］', "]"),
-    ('＝', "="), ('＋', "+"), ('－', "-"), ('×', "*"), ('÷', "/"),
-    ('０', "0"), ('１', "1"), ('２', "2"), ('３', "3"), ('４', "4"),
-    ('５', "5"), ('６', "6"), ('７', "7"), ('８', "8"), ('９', "9"),
+    ('。', "."),
+    ('．', "."),
+    ('，', ","),
+    ('；', ";"),
+    ('：', ":"),
+    ('（', "("),
+    ('）', ")"),
+    ('［', "["),
+    ('］', "]"),
+    ('＝', "="),
+    ('＋', "+"),
+    ('－', "-"),
+    ('×', "*"),
+    ('÷', "/"),
+    ('０', "0"),
+    ('１', "1"),
+    ('２', "2"),
+    ('３', "3"),
+    ('４', "4"),
+    ('５', "5"),
+    ('６', "6"),
+    ('７', "7"),
+    ('８', "8"),
+    ('９', "9"),
 ];
 
 /// 在 `FUNCTIONS_META` 里查函数元数据
@@ -983,7 +1314,13 @@ fn colorize_impl(
                 result.push_str(&style_char(chars[i], colors.error).to_string());
             } else if matches!(pair, Some((a, b)) if a == i || b == i) {
                 // 加粗要经 ColoredString（ 本身没有 bold），故这里直接构造
-                result.push_str(&chars[i].to_string().color(colors.bracket).bold().to_string());
+                result.push_str(
+                    &chars[i]
+                        .to_string()
+                        .color(colors.bracket)
+                        .bold()
+                        .to_string(),
+                );
             } else {
                 result.push_str(&style_char(chars[i], colors.bracket).to_string());
             }
@@ -1121,8 +1458,8 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                 let v = args
                     .get(i + 1)
                     .ok_or_else(|| format!("参数 {0} 缺少取值", a))?;
-                let l = i18n::Lang::parse(v)
-                    .ok_or_else(|| format!("无法识别的语言代码: {0}", v))?;
+                let l =
+                    i18n::Lang::parse(v).ok_or_else(|| format!("无法识别的语言代码: {0}", v))?;
                 lang = Some(l);
                 i += 2;
             }
@@ -1133,7 +1470,11 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             _ => return Err(format!("未知参数: {0}", a)),
         }
     }
-    Ok(Options { cli, lang, no_timing })
+    Ok(Options {
+        cli,
+        lang,
+        no_timing,
+    })
 }
 
 /// 非交互执行：`-e` 只跑一条且只打印裸结果行；`-f`/`--stdin` 逐行执行。
@@ -1153,7 +1494,11 @@ fn run_non_interactive(opts: &Options, state: &mut AppState) -> i32 {
                     return 2;
                 }
             };
-            if run_script_lines(text.lines(), state, false) { 1 } else { 0 }
+            if run_script_lines(text.lines(), state, false) {
+                1
+            } else {
+                0
+            }
         }
         Cli::Stdin => {
             let mut text = String::new();
@@ -1161,7 +1506,11 @@ fn run_non_interactive(opts: &Options, state: &mut AppState) -> i32 {
                 let stdin = std::io::stdin();
                 let _ = std::io::Read::read_to_string(&mut stdin.lock(), &mut text);
             }
-            if run_script_lines(text.lines(), state, false) { 1 } else { 0 }
+            if run_script_lines(text.lines(), state, false) {
+                1
+            } else {
+                0
+            }
         }
         Cli::Interactive => 0,
     }
@@ -1590,11 +1939,19 @@ fn handle_save(parts: &[&str], state: &AppState) {
     ));
     out.push_str(&format!(
         "/mode group {}\n",
-        if bigfloat::group_enabled() { "on" } else { "off" }
+        if bigfloat::group_enabled() {
+            "on"
+        } else {
+            "off"
+        }
     ));
     out.push_str(&format!(
         "/timing {}\n",
-        if calc_mode::timing_enabled() { "on" } else { "off" }
+        if calc_mode::timing_enabled() {
+            "on"
+        } else {
+            "off"
+        }
     ));
     for (cat, name) in state.colors.to_pairs() {
         out.push_str(&format!("/set {} {}\n", cat, name));
@@ -1649,13 +2006,14 @@ fn handle_load(parts: &[&str], state: &mut AppState) {
             if had_err {
                 lprint!(
                     "{}",
-                    format!("已从 {0} 加载 {1} 行（其中部分行出错，已跳过）", path, count).yellow()
+                    format!(
+                        "已从 {0} 加载 {1} 行（其中部分行出错，已跳过）",
+                        path, count
+                    )
+                    .yellow()
                 );
             } else {
-                lprint!(
-                    "{}",
-                    format!("已从 {0} 加载 {1} 行", path, count).green()
-                );
+                lprint!("{}", format!("已从 {0} 加载 {1} 行", path, count).green());
             }
         }
         Err(e) => lprint!(
@@ -1679,15 +2037,29 @@ fn handle_set(parts: Vec<&str>, state: &mut AppState) {
     let new_color = match parse_color(&color_name_in) {
         Some(c) => c,
         None => {
-            lprint!("{}: {}", "未知颜色".color(state.colors.error).bold(), color_name_in);
-            lprint!("{}", colorize_text("  可用颜色见 /set 的用法提示", &state.colors, true));
+            lprint!(
+                "{}: {}",
+                "未知颜色".color(state.colors.error).bold(),
+                color_name_in
+            );
+            lprint!(
+                "{}",
+                colorize_text("  可用颜色见 /set 的用法提示", &state.colors, true)
+            );
             return;
         }
     };
 
     if !state.colors.set_category(&category, new_color) {
-        lprint!("{}: {}", "未知类别".color(state.colors.error).bold(), category);
-        lprint!("{}", colorize_text("  可用类别见 /set 的用法提示", &state.colors, true));
+        lprint!(
+            "{}: {}",
+            "未知类别".color(state.colors.error).bold(),
+            category
+        );
+        lprint!(
+            "{}",
+            colorize_text("  可用类别见 /set 的用法提示", &state.colors, true)
+        );
         return;
     }
 
@@ -1726,7 +2098,10 @@ fn print_set_usage(state: &AppState) {
         .iter()
         .map(|(k, zh)| option_name(k, zh))
         .collect();
-    lprint!("{}", colorize_text(&format!("类别: {}", cats.join(" ")), &state.colors, true));
+    lprint!(
+        "{}",
+        colorize_text(&format!("类别: {}", cats.join(" ")), &state.colors, true)
+    );
     // 颜色名保持英文（可选值），逐项附标注（中文）/译名（其它语言）
     let color_lines: Vec<String> = COLOR_OPTIONS
         .iter()
@@ -1736,7 +2111,11 @@ fn print_set_usage(state: &AppState) {
     lprint!("当前颜色（按各自颜色显示）:");
     for (cat, zh) in COLOR_CATEGORIES {
         let c = state.colors.get_category(cat);
-        lprint!("  {}: {}", option_name(cat, zh), color_name(c).color(c).bold());
+        lprint!(
+            "  {}: {}",
+            option_name(cat, zh),
+            color_name(c).color(c).bold()
+        );
     }
 }
 
@@ -1792,8 +2171,11 @@ fn handle_mode(parts: &[&str], state: &mut AppState) {
                 if n > bigfloat::display_digits() {
                     lprint!(
                         "{}",
-                        format!("提示: 显示位数（{}）少于工作精度，可用 /mode digits 提高", bigfloat::display_digits())
-                            .dimmed()
+                        format!(
+                            "提示: 显示位数（{}）少于工作精度，可用 /mode digits 提高",
+                            bigfloat::display_digits()
+                        )
+                        .dimmed()
                     );
                 }
             }
@@ -1816,7 +2198,10 @@ fn handle_mode(parts: &[&str], state: &mut AppState) {
                 "{}: {}",
                 "用法".color(state.colors.prompt),
                 colorize_text(
-                    &format!("/mode digits <1..{}>（不超过工作精度）", bigfloat::precision()),
+                    &format!(
+                        "/mode digits <1..{}>（不超过工作精度）",
+                        bigfloat::precision()
+                    ),
                     &state.colors,
                     true
                 )
@@ -1874,7 +2259,6 @@ fn handle_mode(parts: &[&str], state: &mut AppState) {
         }
     }
 }
-
 
 /// 生成一行的结果文本（供 REPL 与非交互入口共用）；返回 (文本, 是否错误)。
 /// 不做任何打印、不涉及计时——计时与输出由调用方负责。
@@ -2099,7 +2483,10 @@ fn handle_equation(left: &parser::Expr, right: &parser::Expr, state: &mut AppSta
     // 提取变量（已存储的大写变量视为常数，不参与未知数判定）
     let variables = unknown_variables(&eq_expr, &state.evaluator);
     if variables.is_empty() {
-        return format!("{}", "错误: 方程中没有变量".color(state.colors.error).bold());
+        return format!(
+            "{}",
+            "错误: 方程中没有变量".color(state.colors.error).bold()
+        );
     }
     if variables.len() > 1 {
         let vs: String = variables
@@ -2152,15 +2539,26 @@ fn handle_equation(left: &parser::Expr, right: &parser::Expr, state: &mut AppSta
                         if let Some(root) = newton_with_guesses(&state.evaluator, &eq_expr, var) {
                             let sol = solver_poly::PolySolution::Real(Number::Approx(root));
                             return colorize_result(
-                                &format!("{} 的一个解: {} = {}",
-                                    variables.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(","),
+                                &format!(
+                                    "{} 的一个解: {} = {}",
+                                    variables
+                                        .iter()
+                                        .map(|c| c.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join(","),
                                     var,
-                                    solver_poly::format_solution(&sol, state.evaluator.display_mode)
+                                    solver_poly::format_solution(
+                                        &sol,
+                                        state.evaluator.display_mode
+                                    )
                                 ),
                                 &state.colors,
                             );
                         } else {
-                            return format!("{}", "未能找到实数根".color(state.colors.error).bold());
+                            return format!(
+                                "{}",
+                                "未能找到实数根".color(state.colors.error).bold()
+                            );
                         }
                     }
                 }
@@ -2194,18 +2592,9 @@ fn handle_equation(left: &parser::Expr, right: &parser::Expr, state: &mut AppSta
                             DisplayMode::MathIO => display::format_mathio(&exact),
                             DisplayMode::LineIO => display::format_lineio(&exact),
                         };
-                        format!(
-                            "{} {} {}",
-                            var,
-                            solve_aux::result_prefix(&exact, mode),
-                            out
-                        )
+                        format!("{} {} {}", var, solve_aux::result_prefix(&exact, mode), out)
                     }
-                    None => format!(
-                        "{} ≈ {}",
-                        var,
-                        display::format_lineio(r)
-                    ),
+                    None => format!("{} ≈ {}", var, display::format_lineio(r)),
                 }
             })
             .collect();
@@ -2281,7 +2670,10 @@ fn handle_let(input: &str, state: &mut AppState) {
     // 去掉 '/' 与命令词本身（大小写不敏感），只保留参数部分：
     // 不能"跳到第一个大写字母"——那会让 `/let 1A=5` 被静默当成 `A=5` 存下来。
     let after_slash = input.trim().trim_start_matches('/');
-    let cmd_len = after_slash.chars().take_while(|c| c.is_ascii_alphabetic()).count();
+    let cmd_len = after_slash
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .count();
     let body = after_slash[cmd_len..].trim();
     let Some((name, expr)) = body.split_once('=') else {
         lprint!(
@@ -2293,7 +2685,10 @@ fn handle_let(input: &str, state: &mut AppState) {
     };
     let name = name.trim();
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
-        lprint!("{}: 变量名必须为全大写字母（如 X、AB）", "错误".color(state.colors.error).bold());
+        lprint!(
+            "{}: 变量名必须为全大写字母（如 X、AB）",
+            "错误".color(state.colors.error).bold()
+        );
         return;
     }
     match parse_and_eval(expr.trim(), &mut state.evaluator) {
@@ -2307,7 +2702,10 @@ fn handle_let(input: &str, state: &mut AppState) {
             );
         }
         Ok(_) => {
-            lprint!("{}: /let 只能存储数值表达式的值", "错误".color(state.colors.error).bold());
+            lprint!(
+                "{}: /let 只能存储数值表达式的值",
+                "错误".color(state.colors.error).bold()
+            );
         }
         Err(e) => {
             lprint!("{}: {}", "错误".color(state.colors.error).bold(), e);
@@ -2352,20 +2750,34 @@ fn handle_del(parts: Vec<&str>, state: &mut AppState) {
         persist_state(state);
         lprint!(
             "{}",
-            format!("已删除全部 {} 个变量", n).color(state.colors.result).bold()
+            format!("已删除全部 {} 个变量", n)
+                .color(state.colors.result)
+                .bold()
         );
         return;
     }
     let name = parts[1];
     if !name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
-        lprint!("{}: 变量名必须为全大写字母（如 X、AB），或用 /del all 清空", "错误".color(state.colors.error).bold());
+        lprint!(
+            "{}: 变量名必须为全大写字母（如 X、AB），或用 /del all 清空",
+            "错误".color(state.colors.error).bold()
+        );
         return;
     }
     if state.evaluator.vars.remove(name).is_some() {
         persist_state(state);
-        lprint!("{}", format!("已删除变量 {}", name).color(state.colors.result).bold());
+        lprint!(
+            "{}",
+            format!("已删除变量 {}", name)
+                .color(state.colors.result)
+                .bold()
+        );
     } else {
-        lprint!("{}: 变量 {} 不存在", "提示".color(state.colors.prompt), name);
+        lprint!(
+            "{}: 变量 {} 不存在",
+            "提示".color(state.colors.prompt),
+            name
+        );
     }
 }
 
@@ -2423,7 +2835,10 @@ fn history_path() -> Option<std::path::PathBuf> {
     Some(std::path::PathBuf::from(dir).join(".hipercalc_history"))
 }
 
-fn handle_system(equations: &[(Box<parser::Expr>, Box<parser::Expr>)], state: &mut AppState) -> String {
+fn handle_system(
+    equations: &[(Box<parser::Expr>, Box<parser::Expr>)],
+    state: &mut AppState,
+) -> String {
     if equations.is_empty() {
         return String::new();
     }
@@ -2501,10 +2916,8 @@ fn handle_system(equations: &[(Box<parser::Expr>, Box<parser::Expr>)], state: &m
                     "方程组有无穷多解".color(state.colors.error).bold()
                 ));
             } else {
-                let output = solver_linear::format_linear_solution(
-                    &solution,
-                    state.evaluator.display_mode,
-                );
+                let output =
+                    solver_linear::format_linear_solution(&solution, state.evaluator.display_mode);
                 out.push(colorize_result(&output, &state.colors));
             }
         } else {
@@ -2523,10 +2936,7 @@ fn handle_system(equations: &[(Box<parser::Expr>, Box<parser::Expr>)], state: &m
         );
     }
     if all_vars.len() > 3 {
-        return format!(
-            "{}: 非线性方程组暂支持不超过 3 个变量",
-            "提示".yellow()
-        );
+        return format!("{}: 非线性方程组暂支持不超过 3 个变量", "提示".yellow());
     }
 
     let sols = solver_nonlinear::solve_system(&state.evaluator, &eq_exprs, &all_vars);
@@ -2571,7 +2981,13 @@ fn extract_linear_from_expr(
     let mut const_term = Number::from_int(0);
     let mut vars_seen: Vec<char> = Vec::new();
 
-    extract_linear_rec(evaluator, expr, &mut var_coeffs, &mut const_term, &mut vars_seen)?;
+    extract_linear_rec(
+        evaluator,
+        expr,
+        &mut var_coeffs,
+        &mut const_term,
+        &mut vars_seen,
+    )?;
 
     // 常数项移到右边: (表达式 = 0) => 变量项 = -常数
     Some((var_coeffs, const_term.neg(), vars_seen))
@@ -2602,7 +3018,9 @@ fn extract_linear_rec(
             }
             if name.len() == 1 {
                 let ch = name.chars().next().unwrap();
-                if !vars.contains(&ch) { vars.push(ch); }
+                if !vars.contains(&ch) {
+                    vars.push(ch);
+                }
                 add_coeff(coeffs, ch, Number::from_int(1));
                 Some(())
             } else {
@@ -2621,9 +3039,19 @@ fn extract_linear_rec(
                     let mut right_coeffs = Vec::new();
                     let mut right_const = Number::from_int(0);
                     let mut right_vars = Vec::new();
-                    extract_linear_rec(evaluator, right, &mut right_coeffs, &mut right_const, &mut right_vars)?;
+                    extract_linear_rec(
+                        evaluator,
+                        right,
+                        &mut right_coeffs,
+                        &mut right_const,
+                        &mut right_vars,
+                    )?;
                     for (v, c) in right_coeffs {
-                        for ch in &right_vars { if !vars.contains(ch) { vars.push(*ch); } }
+                        for ch in &right_vars {
+                            if !vars.contains(ch) {
+                                vars.push(*ch);
+                            }
+                        }
                         add_coeff(coeffs, v, c.neg());
                     }
                     *const_term = const_term.sub(&right_const);
@@ -2637,12 +3065,16 @@ fn extract_linear_rec(
 
                     // 数字在左、变量在右: 2*x
                     if let (Some(n), Some(v)) = (&l_num, &r_var) {
-                        if !vars.contains(v) { vars.push(*v); }
+                        if !vars.contains(v) {
+                            vars.push(*v);
+                        }
                         add_coeff(coeffs, *v, n.clone());
                         Some(())
                     // 变量在左、数字在右: x*2
                     } else if let (Some(v), Some(n)) = (&l_var, &r_num) {
-                        if !vars.contains(v) { vars.push(*v); }
+                        if !vars.contains(v) {
+                            vars.push(*v);
+                        }
                         add_coeff(coeffs, *v, n.clone());
                         Some(())
                     // 常数×常数（如 2*3）：乘起来并入常数项
@@ -2662,9 +3094,19 @@ fn extract_linear_rec(
                     let mut inner_coeffs = Vec::new();
                     let mut inner_const = Number::from_int(0);
                     let mut inner_vars = Vec::new();
-                    extract_linear_rec(evaluator, left, &mut inner_coeffs, &mut inner_const, &mut inner_vars)?;
+                    extract_linear_rec(
+                        evaluator,
+                        left,
+                        &mut inner_coeffs,
+                        &mut inner_const,
+                        &mut inner_vars,
+                    )?;
                     for (v, c) in inner_coeffs {
-                        for ch in &inner_vars { if !vars.contains(ch) { vars.push(*ch); } }
+                        for ch in &inner_vars {
+                            if !vars.contains(ch) {
+                                vars.push(*ch);
+                            }
+                        }
                         add_coeff(coeffs, v, c.div(&den));
                     }
                     *const_term = const_term.add(&inner_const.div(&den));
@@ -2672,23 +3114,31 @@ fn extract_linear_rec(
                 }
             }
         }
-        parser::Expr::Unary(op, e) => {
-            match op {
-                parser::UnaryOp::Pos => extract_linear_rec(evaluator, e, coeffs, const_term, vars),
-                parser::UnaryOp::Neg => {
-                    let mut inner_coeffs = Vec::new();
-                    let mut inner_const = Number::from_int(0);
-                    let mut inner_vars = Vec::new();
-                    extract_linear_rec(evaluator, e, &mut inner_coeffs, &mut inner_const, &mut inner_vars)?;
-                    for (v, c) in inner_coeffs {
-                        for ch in &inner_vars { if !vars.contains(ch) { vars.push(*ch); } }
-                        add_coeff(coeffs, v, c.neg());
+        parser::Expr::Unary(op, e) => match op {
+            parser::UnaryOp::Pos => extract_linear_rec(evaluator, e, coeffs, const_term, vars),
+            parser::UnaryOp::Neg => {
+                let mut inner_coeffs = Vec::new();
+                let mut inner_const = Number::from_int(0);
+                let mut inner_vars = Vec::new();
+                extract_linear_rec(
+                    evaluator,
+                    e,
+                    &mut inner_coeffs,
+                    &mut inner_const,
+                    &mut inner_vars,
+                )?;
+                for (v, c) in inner_coeffs {
+                    for ch in &inner_vars {
+                        if !vars.contains(ch) {
+                            vars.push(*ch);
+                        }
                     }
-                    *const_term = const_term.sub(&inner_const);
-                    Some(())
+                    add_coeff(coeffs, v, c.neg());
                 }
+                *const_term = const_term.sub(&inner_const);
+                Some(())
             }
-        }
+        },
         _ => None,
     }
 }
@@ -2724,17 +3174,24 @@ fn extract_var_name(expr: &parser::Expr) -> Option<char> {
     }
 }
 
-fn format_solutions(solutions: &[solver_poly::PolySolution], var: char, state: &AppState) -> String {
+fn format_solutions(
+    solutions: &[solver_poly::PolySolution],
+    var: char,
+    state: &AppState,
+) -> String {
     if solutions.is_empty() {
         return colorize_result("无实数解", &state.colors);
     }
     let mode = state.evaluator.display_mode;
-    let parts: Vec<String> = solutions.iter().map(|s| {
-        // 前缀按显示模式判定：MathIO 下精确根为 `=`；LineIO 下只有能完整写出
-        // 的有限小数/整数才是 `=`（如 sqrt(2) 的小数展开应标 `≈`）
-        let sign = solution_prefix(s, mode);
-        format!("{} {} {}", var, sign, solver_poly::format_solution(s, mode))
-    }).collect();
+    let parts: Vec<String> = solutions
+        .iter()
+        .map(|s| {
+            // 前缀按显示模式判定：MathIO 下精确根为 `=`；LineIO 下只有能完整写出
+            // 的有限小数/整数才是 `=`（如 sqrt(2) 的小数展开应标 `≈`）
+            let sign = solution_prefix(s, mode);
+            format!("{} {} {}", var, sign, solver_poly::format_solution(s, mode))
+        })
+        .collect();
     // 整体着色（而不是逐个根着色后再拼接）：这样分隔用的 `, ` 也会落在 result 底色上
     colorize_result(&parts.join(", "), &state.colors)
 }
@@ -2871,7 +3328,10 @@ fn print_lang_menu(current: i18n::Lang, state: &AppState) {
         // 箭头用运算符颜色高亮（与 /set operators 同色）；名字本身按当前选择用 result 色
         let arrow = if l == current { "❯" } else { " " };
         let name = if l == current {
-            l.native_name().color(state.colors.result).bold().to_string()
+            l.native_name()
+                .color(state.colors.result)
+                .bold()
+                .to_string()
         } else {
             l.native_name().to_string()
         };
@@ -3633,7 +4093,7 @@ mod cli_tests {
             ("sum(1,k,1,10)", "10"),
             ("prod(k,k,1,10)", "3628800"),
             ("prod(2,k,1,10)", "1024"),
-            ("prod(k,k,3,1)", "1"), // 空积
+            ("prod(k,k,3,1)", "1"),    // 空积
             ("sum(k,k,1,10)+1", "56"), // 可参与运算
         ] {
             let (out, is_err) = run_line(input, &mut st);
@@ -3663,21 +4123,51 @@ mod cli_tests {
         let mut st = eq_state(trig::AngleMode::Radian);
         let cases: &[&str] = &[
             // 基础与精度
-            "1+2*3", "1/3+1/6", "phi", "e^2", "100!",
-            "2^1000", "2^10000", "2^100000", "10000!",
-            "sin(1)", "ln(2)", "log(2,3)", "atan(1)", "exp(10)",
+            "1+2*3",
+            "1/3+1/6",
+            "phi",
+            "e^2",
+            "100!",
+            "2^1000",
+            "2^10000",
+            "2^100000",
+            "10000!",
+            "sin(1)",
+            "ln(2)",
+            "log(2,3)",
+            "atan(1)",
+            "exp(10)",
             // 方程 / 方程组
-            "x^2-4=0", "x^3-6*x^2+11*x-6=0", "x^4-5*x^2+4=0", "x^50-2*x+1=0",
-            "2^x=8", "sin(x)=0.5", "x+y=5, 2*x-y=1", "x^2+y^2=25, y=x+1",
+            "x^2-4=0",
+            "x^3-6*x^2+11*x-6=0",
+            "x^4-5*x^2+4=0",
+            "x^50-2*x+1=0",
+            "2^x=8",
+            "sin(x)=0.5",
+            "x+y=5, 2*x-y=1",
+            "x^2+y^2=25, y=x+1",
             // 因式分解 / 素因数分解 / 三角形 / 拟合
-            "fac(x^4-1)", "fac(x^6-1)", "primefac(360)", "primefac(1000003*1000033)",
-            "primefac(2^61-1)", "triangle(a=3 b=4 c=5)", "triangle(a=4 b=5 A=30)",
+            "fac(x^4-1)",
+            "fac(x^6-1)",
+            "primefac(360)",
+            "primefac(1000003*1000033)",
+            "primefac(2^61-1)",
+            "triangle(a=3 b=4 c=5)",
+            "triangle(a=4 b=5 A=30)",
             "(1,1) (2,4) (3,9) (4,16)",
             // 高等数学
-            "diff(x^100,x)", "diff(x^x,x)", "int(x^2,x,0,1)", "int(exp(-x^2),x,0,1)",
-            "int(sin(x)/x,x,0,pi)", "lim(sin(x)/x,x,0)", "lim((x^2-1)/(x-1),x,1)",
-            "taylor(sin(x),x,0,10)", "taylor(1/(1-x),x,0,30)",
-            "sum(k^2,k,1,100)", "sum(k,k,1,1000000000)", "prod(k,k,1,500)",
+            "diff(x^100,x)",
+            "diff(x^x,x)",
+            "int(x^2,x,0,1)",
+            "int(exp(-x^2),x,0,1)",
+            "int(sin(x)/x,x,0,pi)",
+            "lim(sin(x)/x,x,0)",
+            "lim((x^2-1)/(x-1),x,1)",
+            "taylor(sin(x),x,0,10)",
+            "taylor(1/(1-x),x,0,30)",
+            "sum(k^2,k,1,100)",
+            "sum(k,k,1,1000000000)",
+            "prod(k,k,1,500)",
             "sum(1/k,k,1,200)",
         ];
         let mut rows: Vec<(u128, &str)> = Vec::new();
@@ -3792,18 +4282,39 @@ mod cli_tests {
 
     #[test]
     fn enclosing_function_detection() {
-        assert_eq!(enclosing_function_call("sin(1,2", 7), Some(("sin".into(), 3, 2)));
-        assert_eq!(enclosing_function_call("sin(", 4), Some(("sin".into(), 3, 0)));
+        assert_eq!(
+            enclosing_function_call("sin(1,2", 7),
+            Some(("sin".into(), 3, 2))
+        );
+        assert_eq!(
+            enclosing_function_call("sin(", 4),
+            Some(("sin".into(), 3, 0))
+        );
         // 末尾逗号不算"已写第二个参数"（用户反馈过：写完逗号提示把第二个参数跳过去了）
-        assert_eq!(enclosing_function_call("1+log(2,", 8), Some(("log".into(), 5, 1)));
-        assert_eq!(enclosing_function_call("sum(k,", 6), Some(("sum".into(), 3, 1)));
-        assert_eq!(enclosing_function_call("sum(k,2", 7), Some(("sum".into(), 3, 2)));
+        assert_eq!(
+            enclosing_function_call("1+log(2,", 8),
+            Some(("log".into(), 5, 1))
+        );
+        assert_eq!(
+            enclosing_function_call("sum(k,", 6),
+            Some(("sum".into(), 3, 1))
+        );
+        assert_eq!(
+            enclosing_function_call("sum(k,2", 7),
+            Some(("sum".into(), 3, 2))
+        );
         assert_eq!(enclosing_function_call("(1+2)", 3), None); // 裸括号分组不算函数调用
         // `|…|` 内的逗号不计入参数分隔
-        assert_eq!(enclosing_function_call("abs(|-3|,", 9), Some(("abs".into(), 3, 1)));
+        assert_eq!(
+            enclosing_function_call("abs(|-3|,", 9),
+            Some(("abs".into(), 3, 1))
+        );
         // 嵌套：内层括号里的逗号属于内层函数
         // 游标在末尾（x 之后）才是"写了 2 个参数"
-        assert_eq!(enclosing_function_call("diff(sin(x),x)", 13), Some(("diff".into(), 4, 2)));
+        assert_eq!(
+            enclosing_function_call("diff(sin(x),x)", 13),
+            Some(("diff".into(), 4, 2))
+        );
     }
 
     /// **核心用例**：验证"补成 `sin()` 且光标落在括号内"的落点计算。
@@ -3848,7 +4359,10 @@ mod cli_tests {
         // 帮助正文（command_anywhere=true）：只有真指令才算指令
         assert!(command_token_is_valid("/help", true));
         assert!(command_token_is_valid("/q", true));
-        assert!(!command_token_is_valid("/y", true), "x/y/z 里的 /y 不该被点亮");
+        assert!(
+            !command_token_is_valid("/y", true),
+            "x/y/z 里的 /y 不该被点亮"
+        );
         assert!(!command_token_is_valid("/z", true));
         // 输入行（false）：宽松判据，正在敲的半个指令也保留指令色
         assert!(command_token_is_valid("/mo", false));
@@ -3875,7 +4389,10 @@ mod cli_tests {
         let mut seen = std::collections::HashSet::new();
         for (full, half) in FULLWIDTH_MAP {
             assert!(seen.insert(*full), "全角字符重复: {full}");
-            assert!(!half.chars().all(|c| c.is_alphabetic()), "{half} 不该映射到字母");
+            assert!(
+                !half.chars().all(|c| c.is_alphabetic()),
+                "{half} 不该映射到字母"
+            );
             assert!(!full.is_ascii(), "{full} 不是全角字符");
         }
         assert!(FULLWIDTH_MAP.iter().any(|(f, h)| *f == '。' && *h == "."));
@@ -3894,7 +4411,10 @@ mod cli_tests {
         let mut st = eq_state(trig::AngleMode::Radian);
         st.evaluator.display_mode = parser::DisplayMode::LineIO;
         let (out, _) = run_line("diff(x^4/12,x)", &mut st);
-        assert!(out.contains("≈ 0.33333333333333333333*x^3"), "LineIO → {out}");
+        assert!(
+            out.contains("≈ 0.33333333333333333333*x^3"),
+            "LineIO → {out}"
+        );
     }
 
     #[test]
@@ -3926,7 +4446,9 @@ mod cli_tests {
             assert!(seen.insert(*c), "{c} 重复登记");
         }
         // 关键指令必须在表里（Tab 补全依赖）
-        for need in ["/mode", "/lang", "/timing", "/set", "/let", "/save", "/load", "/reset"] {
+        for need in [
+            "/mode", "/lang", "/timing", "/set", "/let", "/save", "/load", "/reset",
+        ] {
             assert!(COMMANDS.contains(&need), "{need} 未登记到 COMMANDS");
         }
     }
@@ -3935,14 +4457,23 @@ mod cli_tests {
     fn completion_respects_implicit_multiplication() {
         let vars = vec!["PI_VAR".to_string(), "AB".to_string()];
         // 指令前缀
-        assert_eq!(completion_candidates("/mo", &vars), vec!["/mode".to_string()]);
+        assert_eq!(
+            completion_candidates("/mo", &vars),
+            vec!["/mode".to_string()]
+        );
         // 多字母函数名
         let f = completion_candidates("sin", &vars);
-        assert!(f.contains(&"sin".to_string()) && f.contains(&"sinh".to_string()), "{f:?}");
+        assert!(
+            f.contains(&"sin".to_string()) && f.contains(&"sinh".to_string()),
+            "{f:?}"
+        );
         // 常数
         assert!(completion_candidates("ta", &vars).contains(&"tau".to_string()));
         // 存储变量（全大写）
-        assert_eq!(completion_candidates("PI", &vars), vec!["PI_VAR".to_string()]);
+        assert_eq!(
+            completion_candidates("PI", &vars),
+            vec!["PI_VAR".to_string()]
+        );
         // 单字母 token 不给候选（否则会把 x、y 这类隐式乘法因子补成函数名）
         for t in ["x", "y", "e", "2", "xy", "xz", "P"] {
             assert!(
@@ -3970,5 +4501,4 @@ mod cli_tests {
         assert!(inline_hint("xyz").is_none());
         assert!(inline_hint("").is_none());
     }
-
 }

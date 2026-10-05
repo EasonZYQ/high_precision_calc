@@ -44,8 +44,8 @@ fn extract_vars(expr: &Expr, vars: &mut Vec<char>) {
             extract_vars(left, vars);
             extract_vars(right, vars);
         }
-        Expr::Number(_) => {}, // 无变量
-        Expr::System(_) => {},
+        Expr::Number(_) => {} // 无变量
+        Expr::System(_) => {}
     }
 }
 
@@ -57,9 +57,7 @@ pub fn is_polynomial(expr: &Expr) -> bool {
         Expr::Binary(left, op, right) => {
             use crate::parser::BinOp;
             match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul => {
-                    is_polynomial(left) && is_polynomial(right)
-                }
+                BinOp::Add | BinOp::Sub | BinOp::Mul => is_polynomial(left) && is_polynomial(right),
                 // 除以非零常数仍为多项式（如 x/2）
                 BinOp::Div => is_polynomial(left) && is_constant_expr(right),
             }
@@ -85,8 +83,10 @@ fn is_constant_expr(expr: &Expr) -> bool {
     match expr {
         Expr::Number(_) => true,
         Expr::Unary(op, e) => {
-            matches!(op, crate::parser::UnaryOp::Pos | crate::parser::UnaryOp::Neg)
-                && is_constant_expr(e)
+            matches!(
+                op,
+                crate::parser::UnaryOp::Pos | crate::parser::UnaryOp::Neg
+            ) && is_constant_expr(e)
         }
         _ => false,
     }
@@ -95,9 +95,7 @@ fn is_constant_expr(expr: &Expr) -> bool {
 /// 检查表达式是否为常整数（可求值且不含变量）
 fn is_constant_integer(expr: &Expr) -> bool {
     match expr {
-        Expr::Number(n) => {
-            n.as_rational().map(|r| r.is_integer()).unwrap_or(false)
-        }
+        Expr::Number(n) => n.as_rational().map(|r| r.is_integer()).unwrap_or(false),
         Expr::Unary(_, e) => is_constant_integer(e),
         _ => false,
     }
@@ -139,7 +137,13 @@ fn check_linear(expr: &Expr) -> bool {
             if let Expr::Variable(_) = base.as_ref() {
                 is_constant_integer(exp)
                     && match exp.as_ref() {
-                        Expr::Number(n) => n.as_rational().map(|r| *r.numer() == num_bigint::BigInt::from(1u32) && *r.denom() == num_bigint::BigInt::from(1u32)).unwrap_or(false),
+                        Expr::Number(n) => n
+                            .as_rational()
+                            .map(|r| {
+                                *r.numer() == num_bigint::BigInt::from(1u32)
+                                    && *r.denom() == num_bigint::BigInt::from(1u32)
+                            })
+                            .unwrap_or(false),
                         _ => false,
                     }
             } else {
@@ -181,16 +185,13 @@ const FORWARD_TRIG: [&str; 6] = ["sin", "cos", "tan", "cot", "sec", "csc"];
 pub fn has_trig_of_var(expr: &Expr, var: char) -> bool {
     match expr {
         Expr::Function(name, args) => {
-            if FORWARD_TRIG.contains(&name.as_str())
-                && args.iter().any(|a| references_var(a, var))
+            if FORWARD_TRIG.contains(&name.as_str()) && args.iter().any(|a| references_var(a, var))
             {
                 return true;
             }
             args.iter().any(|a| has_trig_of_var(a, var))
         }
-        Expr::Binary(left, _, right) => {
-            has_trig_of_var(left, var) || has_trig_of_var(right, var)
-        }
+        Expr::Binary(left, _, right) => has_trig_of_var(left, var) || has_trig_of_var(right, var),
         Expr::Unary(_, e) => has_trig_of_var(e, var),
         Expr::Pow(base, exp) => has_trig_of_var(base, var) || has_trig_of_var(exp, var),
         Expr::Sd(inner) => has_trig_of_var(inner, var),

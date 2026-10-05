@@ -1,10 +1,10 @@
 use num_bigint::BigInt;
 use num_traits::Signed;
 
-use hipercalc_core::bigfloat::{self, BigFloat};
-use hipercalc_core::number::Number;
 use crate::parser::{Evaluator, Expr};
 use crate::solver_linear;
+use hipercalc_core::bigfloat::{self, BigFloat};
+use hipercalc_core::number::Number;
 
 /// 发散判据：|x| 超过 1e6 即认为牛顿发散，放弃该初值。
 /// 指数/对数型方程（如 e^x+y=1）在某些初值处修正量会爆炸，不拦截会让 exp 的
@@ -31,7 +31,11 @@ fn eval_residuals(
         .collect();
     let res: Result<Vec<BigFloat>, String> = equations
         .iter()
-        .map(|e| evaluator.evaluate_with_vars(e, &substs).map(|n| n.to_approx()))
+        .map(|e| {
+            evaluator
+                .evaluate_with_vars(e, &substs)
+                .map(|n| n.to_approx())
+        })
         .collect();
     res.ok()
 }
@@ -44,9 +48,9 @@ fn same_solution(a: &[BigFloat], b: &[BigFloat]) -> bool {
         &BigInt::from(10).pow(tol_exp as u32).into(),
         bigfloat::precision(),
     );
-    a.iter().zip(b.iter()).all(|(x, y)| {
-        BigFloat::sub(x, y, bigfloat::precision()).value.abs() <= eps.value.abs()
-    })
+    a.iter()
+        .zip(b.iter())
+        .all(|(x, y)| BigFloat::sub(x, y, bigfloat::precision()).value.abs() <= eps.value.abs())
 }
 
 /// 从单个初值做多维牛顿，返回收敛解（或 None）。
@@ -228,7 +232,15 @@ pub fn solve_system(
     for c in &candidates {
         // 精收敛：全精度、容差取精度的一半再加 5（默认 80 位 → 1e-45）
         let fine_tol_exp = (bigfloat::precision().div_ceil(2) + 5) as u32;
-        if let Some(sol) = newton_once(evaluator, equations, vars, c, bigfloat::precision(), fine_tol_exp, false) {
+        if let Some(sol) = newton_once(
+            evaluator,
+            equations,
+            vars,
+            c,
+            bigfloat::precision(),
+            fine_tol_exp,
+            false,
+        ) {
             if !results.iter().any(|r| same_solution(r, &sol)) {
                 results.push(sol);
             }
@@ -286,7 +298,10 @@ mod tests {
         let sols = solve_system(&ev, &eqs, &['x', 'y']);
         assert_eq!(sols.len(), 2, "应恰有两个交点: {sols:?}");
         for s in &sols {
-            assert!(residuals_ok(&ev, &eqs, &['x', 'y'], s), "解不满足方程: {s:?}");
+            assert!(
+                residuals_ok(&ev, &eqs, &['x', 'y'], s),
+                "解不满足方程: {s:?}"
+            );
         }
     }
 

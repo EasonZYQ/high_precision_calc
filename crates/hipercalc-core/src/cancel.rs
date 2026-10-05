@@ -129,6 +129,9 @@ mod tests {
             let _s = Scope::new();
             assert!(is_computing());
         }
-        assert!(!is_computing(), "离开作用域必须复位，否则空闲时 Ctrl+C 会不退出");
+        assert!(
+            !is_computing(),
+            "离开作用域必须复位，否则空闲时 Ctrl+C 会不退出"
+        );
     }
 }

@@ -361,7 +361,8 @@ impl BigFloat {
         } else {
             Sign::Minus
         };
-        let result_value = BigInt::from_biguint(result_sign, quotient.to_biguint().unwrap_or_default());
+        let result_value =
+            BigInt::from_biguint(result_sign, quotient.to_biguint().unwrap_or_default());
 
         // 修正精度: a/b = (A/B) * 10^(pb-pa)
         // quotient = A * 10^scale / B
@@ -483,9 +484,11 @@ impl BigFloat {
             let is_int = exponent.precision == 0
                 || BigFloat::sub(
                     exponent,
-                    &BigFloat::from_int(&exponent.value.div_floor(&BigInt::from(10).pow(
-                        exponent.precision as u32,
-                    ))),
+                    &BigFloat::from_int(
+                        &exponent
+                            .value
+                            .div_floor(&BigInt::from(10).pow(exponent.precision as u32)),
+                    ),
                     target_prec + MARGIN,
                 )
                 .is_zero();
@@ -501,9 +504,11 @@ impl BigFloat {
             || (exponent.precision > 0
                 && BigFloat::sub(
                     exponent,
-                    &BigFloat::from_int(&exponent.value.div_floor(&BigInt::from(10).pow(
-                        (exponent.precision) as u32,
-                    ))),
+                    &BigFloat::from_int(
+                        &exponent
+                            .value
+                            .div_floor(&BigInt::from(10).pow((exponent.precision) as u32)),
+                    ),
                     work_prec,
                 )
                 .is_zero())
@@ -549,7 +554,8 @@ impl BigFloat {
         if digits > MAX_RESULT_DIGITS {
             return Err(format!(
                 "幂运算结果约有 {:.0} 位十进制，超过支持上限（约 10^{:.0} 位）",
-                digits, MAX_RESULT_DIGITS.log10()
+                digits,
+                MAX_RESULT_DIGITS.log10()
             ));
         }
         Ok(())
@@ -743,7 +749,9 @@ impl BigFloat {
         if x.value.abs() > pi.value {
             let quot = BigFloat::div(&x, &two_pi, work_prec);
             let int_part = BigFloat::from_int(
-                &quot.value.div_floor(&BigInt::from(10).pow(quot.precision as u32)),
+                &quot
+                    .value
+                    .div_floor(&BigInt::from(10).pow(quot.precision as u32)),
             );
             x = BigFloat::sub(&x, &BigFloat::mul(&int_part, &two_pi, work_prec), work_prec);
         }
@@ -906,17 +914,12 @@ impl BigFloat {
         let mut a = BigFloat::from_u64(1);
         let sqrt2 = BigFloat::from_u64(2).sqrt(work_prec);
         let mut b = BigFloat::div(&BigFloat::from_u64(1), &sqrt2, work_prec);
-        let mut t = BigFloat::from_int(&BigInt::from(1))
-            .rounded(work_prec);
+        let mut t = BigFloat::from_int(&BigInt::from(1)).rounded(work_prec);
         t = BigFloat::div(&t, &BigFloat::from_u64(4), work_prec);
         let mut p = BigFloat::from_u64(1);
 
         for _ in 0..10 {
-            let a_next = BigFloat::div(
-                &BigFloat::add(&a, &b, work_prec),
-                &two,
-                work_prec,
-            );
+            let a_next = BigFloat::div(&BigFloat::add(&a, &b, work_prec), &two, work_prec);
             let b_next = BigFloat::mul(&a, &b, work_prec).sqrt(work_prec);
             let diff = BigFloat::sub(&a, &a_next, work_prec);
             let diff2 = BigFloat::mul(&diff, &diff, work_prec);
@@ -1020,17 +1023,29 @@ impl BigFloat {
         let prec = n.precision;
 
         if prec == 0 {
-            return if is_neg { format!("-{}", abs_str) } else { abs_str };
+            return if is_neg {
+                format!("-{}", abs_str)
+            } else {
+                abs_str
+            };
         }
 
-        let int_digits = if prec < total_len { total_len - prec } else { 0 };
+        let int_digits = if prec < total_len {
+            total_len - prec
+        } else {
+            0
+        };
 
         // 死算模式：完整十进制（整数部分全写 + 全部小数位），不截断、不用科学计数法
         if crate::calc_mode::is_deep() {
             let full = if prec >= total_len {
                 format!("0.{}{}", "0".repeat(prec - total_len), abs_str)
             } else {
-                format!("{}.{}", &abs_str[..total_len - prec], &abs_str[total_len - prec..])
+                format!(
+                    "{}.{}",
+                    &abs_str[..total_len - prec],
+                    &abs_str[total_len - prec..]
+                )
             };
             return if is_neg { format!("-{}", full) } else { full };
         }
@@ -1058,7 +1073,11 @@ impl BigFloat {
 
         // 如果小数位数不超过 max_digits，输出全部
         if n.precision <= max_digits {
-            return if is_neg { format!("-{}", full_decimal) } else { full_decimal };
+            return if is_neg {
+                format!("-{}", full_decimal)
+            } else {
+                full_decimal
+            };
         }
 
         // 否则输出 max_digits 位有效数字（四舍五入）
@@ -1208,11 +1227,7 @@ impl BigFloat {
         if prec >= total_len {
             let padding = prec - total_len;
             let s = format!("0.{}{}", "0".repeat(padding), abs_str);
-            if is_neg {
-                format!("-{}", s)
-            } else {
-                s
-            }
+            if is_neg { format!("-{}", s) } else { s }
         } else {
             let int_part = &abs_str[..total_len - prec];
             let frac_part = &abs_str[total_len - prec..];
@@ -1221,11 +1236,7 @@ impl BigFloat {
             } else {
                 format!("{}.{}", int_part, frac_part)
             };
-            if is_neg {
-                format!("-{}", s)
-            } else {
-                s
-            }
+            if is_neg { format!("-{}", s) } else { s }
         }
     }
 }
@@ -1329,6 +1340,9 @@ mod tests {
         // 位数不同：120 位缓存的内部精度更高
         assert!(p120.precision >= 120 || p120.value.to_string().len() > 100);
         // 再次取值命中缓存，结果不变
-        assert_eq!(BigFloat::pi(80).to_significant_string(30), p80.to_significant_string(30));
+        assert_eq!(
+            BigFloat::pi(80).to_significant_string(30),
+            p80.to_significant_string(30)
+        );
     }
 }

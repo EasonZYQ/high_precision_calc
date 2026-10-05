@@ -430,7 +430,10 @@ mod tests {
         check_div(&(&s * &s), &(&s + BigInt::from(1)));
         check_div(&(&s * &s), &(-&s));
         // 非对称规模
-        check_div(&bi("1").mul_pow10(5_000), &(bi("7").mul_pow10(2_500) + BigInt::from(3)));
+        check_div(
+            &bi("1").mul_pow10(5_000),
+            &(bi("7").mul_pow10(2_500) + BigInt::from(3)),
+        );
     }
 
     #[test]
@@ -473,7 +476,10 @@ mod tests {
         // 完全立方/完全五次方
         assert_eq!(int_nth_root(&BigInt::from(27u32), 3), BigInt::from(3));
         assert_eq!(int_nth_root(&BigInt::from(26u32), 3), BigInt::from(2));
-        assert_eq!(int_nth_root(&BigInt::from(1_000_000u32), 3), BigInt::from(100));
+        assert_eq!(
+            int_nth_root(&BigInt::from(1_000_000u32), 3),
+            BigInt::from(100)
+        );
         assert_eq!(int_nth_root(&BigInt::from(32u32), 5), BigInt::from(2));
         assert_eq!(int_nth_root(&BigInt::from(31u32), 5), BigInt::from(1));
         // 保序与回验：r^k ≤ n < (r+1)^k

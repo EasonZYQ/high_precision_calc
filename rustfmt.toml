@@ -1,0 +1,5 @@
+# edition 与各 crate 的 Cargo.toml 一致（虚拟清单没有 edition，显式声明更稳）
+edition = "2024"
+
+# 其余保持 rustfmt 默认：max_width=100、wrap_comments=false
+# （wrap_comments 为 false ⇒ 中文注释不会被重排或折行）

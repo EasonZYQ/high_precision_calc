@@ -559,7 +559,20 @@ mod tests {
     #[test]
     fn u64_miller_rabin_is_deterministic() {
         // 对 u64 范围，12 个基是确定性判定：既不能把合数放过去，也不能把素数判成合数
-        for n in [2u64, 3, 4, 5, 97, 561, 1105, 1729, 2465, 2821, 6601, 999_999_937] {
+        for n in [
+            2u64,
+            3,
+            4,
+            5,
+            97,
+            561,
+            1105,
+            1729,
+            2465,
+            2821,
+            6601,
+            999_999_937,
+        ] {
             let want = !matches!(n, 4 | 561 | 1105 | 1729 | 2465 | 2821 | 6601);
             assert_eq!(is_prime_u64(n), want, "is_prime_u64({n})");
         }
@@ -571,7 +584,10 @@ mod tests {
     fn bigint_path_handles_beyond_u64() {
         // 2^70 只有小素因子，很快
         let n = BigInt::from(2u32).pow(70);
-        assert_eq!(format_prime_factorization(&n).unwrap(), format!("{} = 2^70", n));
+        assert_eq!(
+            format_prime_factorization(&n).unwrap(),
+            format!("{} = 2^70", n)
+        );
         // 超出 u64 的合数（含大素因子）走 BigInt 路径的 Pollard
         let p = BigInt::from(2u32).pow(40) + 15; // 合数
         let f = prime_factorize(&p).unwrap();
@@ -583,6 +599,9 @@ mod tests {
     fn i64_min_is_handled() {
         // i64::MIN 的绝对值是 2^63，超出 i64 但正好落在 u64 内
         let n = BigInt::from(i64::MIN);
-        assert_eq!(format_prime_factorization(&n).unwrap(), format!("{} = -2^63", n));
+        assert_eq!(
+            format_prime_factorization(&n).unwrap(),
+            format!("{} = -2^63", n)
+        );
     }
 }

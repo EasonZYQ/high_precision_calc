@@ -27,12 +27,12 @@ use num_traits::Signed;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use crate::i18n::Lang;
+use crate::parser::{self, DisplayMode, EvalResult, Evaluator};
 use hipercalc_core::bigfloat::BigFloat;
 use hipercalc_core::calc_mode::{self, CalcMode};
 use hipercalc_core::display;
-use crate::i18n::Lang;
 use hipercalc_core::number::Number;
-use crate::parser::{self, DisplayMode, EvalResult, Evaluator};
 use hipercalc_core::trig::AngleMode;
 
 /// 状态文件路径（与 `.hipercalc_history` 同目录）
@@ -120,8 +120,12 @@ pub fn decode_var(s: &str) -> Option<Number> {
 /// 颜色表为 `(类别, 颜色名)` 原始字符串，合法性（类别/颜色名是否受支持）由调用方校验后应用。
 /// 语言为 None 表示文件里没有记录（首次启动）⇒ 调用方按系统语言判定。
 /// 文件不存在或不可读时返回 None（调用方保持默认设置）。
-pub fn load()
--> Option<(SavedModes, Vec<(String, Number)>, Vec<(String, String)>, Option<Lang>)> {
+pub fn load() -> Option<(
+    SavedModes,
+    Vec<(String, Number)>,
+    Vec<(String, String)>,
+    Option<Lang>,
+)> {
     let path = state_path()?;
     let text = std::fs::read_to_string(path).ok()?;
 
@@ -161,9 +165,7 @@ pub fn load()
             if let Some((name, val)) = v.split_once('=') {
                 let name = name.trim();
                 // 变量名合法性：全大写字母/下划线（与 /let 的校验一致）
-                if !name.is_empty()
-                    && name.chars().all(|c| c.is_ascii_uppercase() || c == '_')
-                {
+                if !name.is_empty() && name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
                     if let Some(n) = decode_var(val.trim()) {
                         vars.push((name.to_string(), n));
                     }
@@ -227,9 +229,8 @@ pub fn save(
     vars: &BTreeMap<String, Number>,
     colors: &[(&'static str, &'static str)],
 ) -> std::io::Result<()> {
-    let path = state_path().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "未找到用户主目录")
-    })?;
+    let path = state_path()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "未找到用户主目录"))?;
 
     let mut out = String::new();
     out.push_str("# HiPerCalc 会话状态（自动生成）：显示/角度/计算模式、界面语言、/let 存储变量与 /set 颜色\n");

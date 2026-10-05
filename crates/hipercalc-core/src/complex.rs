@@ -115,10 +115,7 @@ impl ComplexNum {
         let ea = a.exp(prec)?;
         let re = BigFloat::mul(&ea, &b.cos(prec), prec);
         let im = BigFloat::mul(&ea, &b.sin(prec), prec);
-        Ok(ComplexNum::new(
-            Number::Approx(re),
-            Number::Approx(im),
-        ))
+        Ok(ComplexNum::new(Number::Approx(re), Number::Approx(im)))
     }
 
     /// ln(z) = ln|z| + i·arg(z)
@@ -130,10 +127,7 @@ impl ComplexNum {
         let (a, b) = self.approx_pair();
         let ln_abs = self.abs().to_approx().ln(prec);
         let arg = atan2(&b, &a, prec);
-        Ok(ComplexNum::new(
-            Number::Approx(ln_abs),
-            Number::Approx(arg),
-        ))
+        Ok(ComplexNum::new(Number::Approx(ln_abs), Number::Approx(arg)))
     }
 
     /// 平方根：负实数给精确虚根（`-4 → 2i`，虚部为完全平方时精确），其余走极坐标。
@@ -303,8 +297,16 @@ mod tests {
         // sqrt(i) 走数值：≈ 0.7071 + 0.7071i，平方回验 ≈ i
         let si = c(0, 1).sqrt().unwrap();
         let back = si.mul(&si);
-        assert!(display::format_lineio(&back.re).starts_with("0"), "re={}", display::format_lineio(&back.re));
-        assert!(display::format_lineio(&back.im).starts_with("1"), "im={}", display::format_lineio(&back.im));
+        assert!(
+            display::format_lineio(&back.re).starts_with("0"),
+            "re={}",
+            display::format_lineio(&back.re)
+        );
+        assert!(
+            display::format_lineio(&back.im).starts_with("1"),
+            "im={}",
+            display::format_lineio(&back.im)
+        );
     }
 
     #[test]
@@ -315,11 +317,23 @@ mod tests {
             Number::Approx(BigFloat::pi(bigfloat::precision())),
         );
         let e = z.exp().unwrap();
-        assert!(display::format_lineio(&e.re).starts_with("-1"), "{}", display::format_lineio(&e.re));
-        assert!(display::format_lineio(&e.im).starts_with("0"), "{}", display::format_lineio(&e.im));
+        assert!(
+            display::format_lineio(&e.re).starts_with("-1"),
+            "{}",
+            display::format_lineio(&e.re)
+        );
+        assert!(
+            display::format_lineio(&e.im).starts_with("0"),
+            "{}",
+            display::format_lineio(&e.im)
+        );
         // ln(-1) = iπ
         let l = c(-1, 0).ln().unwrap();
-        assert!(display::format_lineio(&l.re).starts_with("0"), "{}", display::format_lineio(&l.re));
+        assert!(
+            display::format_lineio(&l.re).starts_with("0"),
+            "{}",
+            display::format_lineio(&l.re)
+        );
         assert!(
             display::format_lineio(&l.im).starts_with("3.14159"),
             "{}",
@@ -327,7 +341,11 @@ mod tests {
         );
         // sin(i) = i·sinh(1) ≈ 1.1752011936438014569 i
         let s = c(0, 1).sin().unwrap();
-        assert!(display::format_lineio(&s.re).starts_with("0"), "{}", display::format_lineio(&s.re));
+        assert!(
+            display::format_lineio(&s.re).starts_with("0"),
+            "{}",
+            display::format_lineio(&s.re)
+        );
         assert!(
             display::format_lineio(&s.im).starts_with("1.175201193643801456"),
             "{}",

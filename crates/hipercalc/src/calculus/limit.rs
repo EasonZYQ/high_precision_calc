@@ -21,12 +21,12 @@
 //! 三角函数的求导本身受角度模式影响，所以 Deg 模式下 `lim(sin(x)/x, x, 0) = π/180` ——
 //! 这与本机"Deg 模式下 `sin` 的导数带 π/180"的既有语义一致，不是 bug（文档已说明）。
 
-use hipercalc_core::number::Number;
 use crate::parser::{BinOp, Expr, UnaryOp};
+use hipercalc_core::number::Number;
 
 use super::{
-    max_limit_iters, ERROR_LIMIT_ONE_SIDED, ERROR_LIMIT_POINT, ERROR_LIMIT_UNDECIDED,
-    LIMIT_INF_K_MAX, LIMIT_LHOPITAL_MAX,
+    ERROR_LIMIT_ONE_SIDED, ERROR_LIMIT_POINT, ERROR_LIMIT_UNDECIDED, LIMIT_INF_K_MAX,
+    LIMIT_LHOPITAL_MAX, max_limit_iters,
 };
 
 /// 极限结果：有限值，或 ±∞
@@ -41,10 +41,9 @@ impl LimitValue {
         match self {
             LimitValue::Finite(n) => Expr::Number(n),
             LimitValue::Infinity(sign) if sign >= 0 => Expr::Variable("inf".to_string()),
-            LimitValue::Infinity(_) => Expr::Unary(
-                UnaryOp::Neg,
-                Box::new(Expr::Variable("inf".to_string())),
-            ),
+            LimitValue::Infinity(_) => {
+                Expr::Unary(UnaryOp::Neg, Box::new(Expr::Variable("inf".to_string())))
+            }
         }
     }
 }
@@ -68,17 +67,14 @@ pub fn limit(
             Expr::Variable(v) if v == "inf" => Target::Inf(-1),
             _ => Target::Finite,
         },
-        _ if super::has_free_var_named(point, var) => {
-            return Err(ERROR_LIMIT_POINT.to_string())
-        }
+        _ if super::has_free_var_named(point, var) => return Err(ERROR_LIMIT_POINT.to_string()),
         _ => Target::Finite,
     };
 
     // 1) 有限点先直接代入 —— 但**同样要过数值复核**：`floor`/`sign` 这类在点处不连续，
     //    代入值并不等于极限（`lim(floor(x), x, 0)` 代入得 0，实际左右极限是 -1 与 0）。
     if let Target::Finite = target {
-        let a = constant_value(ev, point)
-            .ok_or_else(|| ERROR_LIMIT_POINT.to_string())?;
+        let a = constant_value(ev, point).ok_or_else(|| ERROR_LIMIT_POINT.to_string())?;
         if let Ok(v) = ev.evaluate_with_var(f, var, &a) {
             if !v.is_complex() {
                 let cand = LimitValue::Finite(v.clone());
@@ -148,7 +144,9 @@ fn lhopital(
                     return Ok(None);
                 }
                 // 分子为 0 而分母不为 0 ⇒ 0
-                return Ok(Some(LimitValue::Finite(hipercalc_core::number::Number::div(&nv, &dv))));
+                return Ok(Some(LimitValue::Finite(
+                    hipercalc_core::number::Number::div(&nv, &dv),
+                )));
             }
             // ∞/const 或 const/0 之类：交给数值路径判定符号
             _ => return Ok(None),
@@ -240,7 +238,11 @@ fn rational_at_infinity(
             LimitValue::Finite(q)
         }
         std::cmp::Ordering::Greater => {
-            let dir = if sign < 0 && (dn - dd) % 2 == 1 { -1 } else { 1 };
+            let dir = if sign < 0 && (dn - dd) % 2 == 1 {
+                -1
+            } else {
+                1
+            };
             let sign_of_q = if hipercalc_core::number::Number::div(&ln_, &ld).is_negative() {
                 -1
             } else {
@@ -277,16 +279,12 @@ fn numeric_limit(
             let mut disagree_streak = 0usize;
             for k in 1..=iters {
                 let h = pow10_neg(k as i32);
-                let l = ev.evaluate_with_var(
-                    f,
-                    var,
-                    &hipercalc_core::number::Number::sub(&a, &h),
-                ).ok();
-                let r = ev.evaluate_with_var(
-                    f,
-                    var,
-                    &hipercalc_core::number::Number::add(&a, &h),
-                ).ok();
+                let l = ev
+                    .evaluate_with_var(f, var, &hipercalc_core::number::Number::sub(&a, &h))
+                    .ok();
+                let r = ev
+                    .evaluate_with_var(f, var, &hipercalc_core::number::Number::add(&a, &h))
+                    .ok();
                 let l = l.filter(|v| !v.is_complex());
                 let r = r.filter(|v| !v.is_complex());
                 if let (Some(l), Some(r)) = (&l, &r) {
@@ -300,17 +298,17 @@ fn numeric_limit(
                         disagree_streak = 0;
                     }
                     if close(l, r, tol) {
-                    if let (Some(pl), Some(pr)) = (&prev_l, &prev_r) {
-                        if close(pl, l, tol) && close(pr, r, tol) {
-                            let avg = hipercalc_core::number::Number::div(
-                                &hipercalc_core::number::Number::add(l, r),
-                                &Number::from_int(2),
-                            );
-                            // 收敛值低于显示精度 ⇒ 按精确 0（`lim(sin(x)/x,x,inf)` 应是 0，
-                            // 而不是 `-9.9e-29` 这种把噪声当结果）
-                            return Ok(Expr::Number(snap_tiny(avg)));
+                        if let (Some(pl), Some(pr)) = (&prev_l, &prev_r) {
+                            if close(pl, l, tol) && close(pr, r, tol) {
+                                let avg = hipercalc_core::number::Number::div(
+                                    &hipercalc_core::number::Number::add(l, r),
+                                    &Number::from_int(2),
+                                );
+                                // 收敛值低于显示精度 ⇒ 按精确 0（`lim(sin(x)/x,x,inf)` 应是 0，
+                                // 而不是 `-9.9e-29` 这种把噪声当结果）
+                                return Ok(Expr::Number(snap_tiny(avg)));
+                            }
                         }
-                    }
                     }
                 }
                 if l.is_some() {
@@ -468,7 +466,10 @@ mod tests {
         // 振荡：sin(x) 在 ∞ 处不收敛
         assert!(lim_err("sin(x)", "inf").contains("无法判定"));
         // 左右不一致：|x|/x 在 0 处
-        assert!(lim_err("abs(x)/x", "0").contains("不相等") || lim_err("abs(x)/x", "0").contains("无法判定"));
+        assert!(
+            lim_err("abs(x)/x", "0").contains("不相等")
+                || lim_err("abs(x)/x", "0").contains("无法判定")
+        );
         // 极限点含变量
         assert!(lim_err("x^2", "y").contains("常数"));
     }

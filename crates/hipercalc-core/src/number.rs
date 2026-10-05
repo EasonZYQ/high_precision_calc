@@ -410,9 +410,7 @@ impl Number {
                 }
 
                 // 指数为 ±1/2（平方根/倒数平方根）
-                if exp_r.numer().abs() == BigInt::from(1)
-                    && *exp_r.denom() == BigInt::from(2)
-                {
+                if exp_r.numer().abs() == BigInt::from(1) && *exp_r.denom() == BigInt::from(2) {
                     if self.is_negative() {
                         return Err("负数的平方根在实数范围内无定义".to_string());
                     }
@@ -453,9 +451,7 @@ impl Number {
 
         // 半整数指数（p/2）可直接走 sqrt 组合，避免通用 ln/exp 慢路径
         if let Some(exp_r) = exponent.as_rational() {
-            if *exp_r.denom() == BigInt::from(2)
-                && exp_r.numer().abs() <= BigInt::from(100)
-            {
+            if *exp_r.denom() == BigInt::from(2) && exp_r.numer().abs() <= BigInt::from(100) {
                 if self.is_negative() {
                     return Err("负数的非整数次幂在实数范围内无定义".to_string());
                 }
@@ -494,7 +490,11 @@ impl Number {
         // 回退到数值计算
         let base = self.to_approx();
         let exp = exponent.to_approx();
-        Ok(Number::Approx(BigFloat::pow(&base, &exp, bigfloat::precision())?))
+        Ok(Number::Approx(BigFloat::pow(
+            &base,
+            &exp,
+            bigfloat::precision(),
+        )?))
     }
 
     /// 整数次幂
@@ -628,10 +628,8 @@ impl Number {
                             return Number::from_bigint(root);
                         }
                         // 简化 sqrt(n) = sqrt(简化)
-                        let (coeff, rad) = simplify_radical(
-                            BigRational::from_integer(BigInt::one()),
-                            int_val,
-                        );
+                        let (coeff, rad) =
+                            simplify_radical(BigRational::from_integer(BigInt::one()), int_val);
                         return Number::Exact(ExactExpr {
                             terms: vec![ExactTerm::Sqrt(coeff, rad)],
                             denominator: BigInt::one(),
@@ -858,14 +856,25 @@ impl ExactExpr {
             };
             // self * d
             let self_scaled = ExactExpr {
-                terms: self.terms.iter().map(|t| {
-                    match t {
-                        ExactTerm::Rational(r) => ExactTerm::Rational(r * &BigRational::from_integer(other.denominator.clone())),
-                        ExactTerm::Sqrt(c, rad) => ExactTerm::Sqrt(c * &BigRational::from_integer(other.denominator.clone()), rad.clone()),
-                        ExactTerm::Pi(c) => ExactTerm::Pi(c * &BigRational::from_integer(other.denominator.clone())),
-                        ExactTerm::E(c) => ExactTerm::E(c * &BigRational::from_integer(other.denominator.clone())),
-                    }
-                }).collect(),
+                terms: self
+                    .terms
+                    .iter()
+                    .map(|t| match t {
+                        ExactTerm::Rational(r) => ExactTerm::Rational(
+                            r * &BigRational::from_integer(other.denominator.clone()),
+                        ),
+                        ExactTerm::Sqrt(c, rad) => ExactTerm::Sqrt(
+                            c * &BigRational::from_integer(other.denominator.clone()),
+                            rad.clone(),
+                        ),
+                        ExactTerm::Pi(c) => {
+                            ExactTerm::Pi(c * &BigRational::from_integer(other.denominator.clone()))
+                        }
+                        ExactTerm::E(c) => {
+                            ExactTerm::E(c * &BigRational::from_integer(other.denominator.clone()))
+                        }
+                    })
+                    .collect(),
                 denominator: self.denominator.clone(),
             };
             return self_scaled.div_exact(&other_num);
@@ -895,16 +904,13 @@ impl ExactExpr {
         }
 
         // 如果 other 是单个 sqrt 项（分母有理化）
-        if other.terms.len() == 1
-            && other.denominator == BigInt::one()
-        {
+        if other.terms.len() == 1 && other.denominator == BigInt::one() {
             if let ExactTerm::Sqrt(coeff, rad) = &other.terms[0] {
                 // self / (coeff * sqrt(rad)) = self * sqrt(rad) * 1/(coeff * rad)
                 // 注意：系数 coeff 必须按**有理数**参与（旧实现只取 coeff.numer()，
                 // 丢掉分母后 1/(sqr(2)/2) 会少除以 2、1/(sqr(3)/3) 少除以 3）。
                 // 1/(coeff*rad) 是有理因子，直接吸收进各项系数即可。
-                let scale = BigRational::one()
-                    / (coeff * &BigRational::from_integer(rad.clone()));
+                let scale = BigRational::one() / (coeff * &BigRational::from_integer(rad.clone()));
                 let mut new_terms: Vec<ExactTerm> = Vec::new();
                 for t in &self.terms {
                     let product = mul_terms(t, &ExactTerm::Sqrt(BigRational::one(), rad.clone()))?;
@@ -921,9 +927,7 @@ impl ExactExpr {
 
         // 如果 other 是 sqrt 项的线性组合，尝试分母有理化
         // (a + b*sqrt(c)) 的共轭是有理化因子
-        if other.terms.len() <= 2
-            && other.denominator == BigInt::one()
-        {
+        if other.terms.len() <= 2 && other.denominator == BigInt::one() {
             let sqrt_terms: Vec<_> = other
                 .terms
                 .iter()
@@ -1029,8 +1033,7 @@ fn merge_term(terms: &mut Vec<ExactTerm>, new_term: ExactTerm) {
             for t in terms.iter_mut() {
                 if let ExactTerm::Sqrt(existing_c, existing_rad) = t {
                     if existing_rad == new_rad {
-                        *existing_c =
-                            std::mem::replace(existing_c, BigRational::zero()) + new_c;
+                        *existing_c = std::mem::replace(existing_c, BigRational::zero()) + new_c;
                         return;
                     }
                 }
@@ -1060,9 +1063,7 @@ fn merge_term(terms: &mut Vec<ExactTerm>, new_term: ExactTerm) {
 
 fn mul_terms(t1: &ExactTerm, t2: &ExactTerm) -> Option<ExactTerm> {
     match (t1, t2) {
-        (ExactTerm::Rational(r1), ExactTerm::Rational(r2)) => {
-            Some(ExactTerm::Rational(r1 * r2))
-        }
+        (ExactTerm::Rational(r1), ExactTerm::Rational(r2)) => Some(ExactTerm::Rational(r1 * r2)),
         (ExactTerm::Rational(r), ExactTerm::Sqrt(c, rad)) => {
             Some(ExactTerm::Sqrt(r * c, rad.clone()))
         }
@@ -1143,10 +1144,7 @@ fn simplify_radical(coeff: BigRational, radicand: BigInt) -> (BigRational, BigIn
         p += 1;
     }
 
-    (
-        coeff * BigRational::from_integer(outside),
-        n,
-    )
+    (coeff * BigRational::from_integer(outside), n)
 }
 
 /// 归一化：将 Sqrt(coeff, 1) 转换为 Rational(coeff)，合并同类 Rational
@@ -1211,28 +1209,16 @@ fn simplify_expr(expr: &mut ExactExpr) {
         for t in &mut expr.terms {
             match t {
                 ExactTerm::Rational(r) => {
-                    *r = BigRational::new(
-                        r.numer() / &gcd,
-                        r.denom().clone(),
-                    );
+                    *r = BigRational::new(r.numer() / &gcd, r.denom().clone());
                 }
                 ExactTerm::Sqrt(c, _) => {
-                    *c = BigRational::new(
-                        c.numer() / &gcd,
-                        c.denom().clone(),
-                    );
+                    *c = BigRational::new(c.numer() / &gcd, c.denom().clone());
                 }
                 ExactTerm::Pi(c) => {
-                    *c = BigRational::new(
-                        c.numer() / &gcd,
-                        c.denom().clone(),
-                    );
+                    *c = BigRational::new(c.numer() / &gcd, c.denom().clone());
                 }
                 ExactTerm::E(c) => {
-                    *c = BigRational::new(
-                        c.numer() / &gcd,
-                        c.denom().clone(),
-                    );
+                    *c = BigRational::new(c.numer() / &gcd, c.denom().clone());
                 }
             }
         }

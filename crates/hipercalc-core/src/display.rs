@@ -11,11 +11,7 @@ pub fn format_mathio(num: &Number) -> String {
         Number::Exact(expr) => bigfloat::group_integer_part(&format_exact_expr(expr)),
         Number::Approx(f) => {
             let s = f.to_significant_string(bigfloat::display_digits());
-            if s == "-0" {
-                "0".to_string()
-            } else {
-                s
-            }
+            if s == "-0" { "0".to_string() } else { s }
         }
         Number::Complex(z) => format_complex(z, &format_mathio),
     }
@@ -65,11 +61,7 @@ pub fn format_lineio(num: &Number) -> String {
     }
     let bf = num.to_approx();
     let s = bf.to_significant_string(bigfloat::display_digits());
-    if s == "-0" {
-        "0".to_string()
-    } else {
-        s
-    }
+    if s == "-0" { "0".to_string() } else { s }
 }
 
 /// 小数格式（用于 sd 函数在 mathio 模式下的输出）
@@ -79,11 +71,7 @@ pub fn format_decimal(num: &Number) -> String {
     }
     let bf = num.to_approx();
     let s = bf.to_significant_string(bigfloat::display_digits());
-    if s == "-0" {
-        "0".to_string()
-    } else {
-        s
-    }
+    if s == "-0" { "0".to_string() } else { s }
 }
 
 /// 格式化精确表达式
@@ -93,15 +81,12 @@ fn format_exact_expr(expr: &ExactExpr) -> String {
     }
 
     // 检查是否所有项系数为零
-    let all_zero = expr
-        .terms
-        .iter()
-        .all(|t| match t {
-            ExactTerm::Rational(r) => r.is_zero(),
-            ExactTerm::Sqrt(c, _) => c.is_zero(),
-            ExactTerm::Pi(c) => c.is_zero(),
-            ExactTerm::E(c) => c.is_zero(),
-        });
+    let all_zero = expr.terms.iter().all(|t| match t {
+        ExactTerm::Rational(r) => r.is_zero(),
+        ExactTerm::Sqrt(c, _) => c.is_zero(),
+        ExactTerm::Pi(c) => c.is_zero(),
+        ExactTerm::E(c) => c.is_zero(),
+    });
     if all_zero {
         return "0".to_string();
     }
@@ -166,16 +151,16 @@ fn format_sqrt_term(coeff: &BigRational, rad: &BigInt) -> String {
         return String::new();
     }
 
-    let coeff_str = if coeff.is_integer() && *coeff.numer() == BigInt::from(1) && !coeff.is_negative()
-    {
-        String::new()
-    } else if coeff.is_integer() && *coeff.numer() == BigInt::from(-1) {
-        "-".to_string()
-    } else if coeff.is_integer() {
-        coeff.to_integer().to_string()
-    } else {
-        format_rational(coeff)
-    };
+    let coeff_str =
+        if coeff.is_integer() && *coeff.numer() == BigInt::from(1) && !coeff.is_negative() {
+            String::new()
+        } else if coeff.is_integer() && *coeff.numer() == BigInt::from(-1) {
+            "-".to_string()
+        } else if coeff.is_integer() {
+            coeff.to_integer().to_string()
+        } else {
+            format_rational(coeff)
+        };
 
     if *rad == BigInt::one() {
         if coeff_str.is_empty() {

@@ -151,8 +151,7 @@ fn parse_string(b: &[char], i: &mut usize) -> Result<String, String> {
                                 *i += 2;
                                 let lo = read_hex4(b, i)?;
                                 let cp = 0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00);
-                                char::from_u32(cp)
-                                    .ok_or_else(|| "非法代理对".to_string())?
+                                char::from_u32(cp).ok_or_else(|| "非法代理对".to_string())?
                             } else {
                                 return Err("高代理后缺少低代理".to_string());
                             }
@@ -176,7 +175,9 @@ fn read_hex4(b: &[char], i: &mut usize) -> Result<u32, String> {
             return Err("\\u 后不足 4 位".to_string());
         };
         *i += 1;
-        let d = c.to_digit(16).ok_or_else(|| format!("非法十六进制位 {c:?}"))?;
+        let d = c
+            .to_digit(16)
+            .ok_or_else(|| format!("非法十六进制位 {c:?}"))?;
         v = v * 16 + d;
     }
     Ok(v)

@@ -17,12 +17,12 @@ use std::collections::BTreeMap;
 
 use num_traits::Signed;
 
-use hipercalc_core::calc_mode;
-use hipercalc_core::display;
-use hipercalc_core::number::Number;
 use crate::parser::{DisplayMode, Evaluator, Expr};
 use crate::solve_aux;
 use crate::solver_poly;
+use hipercalc_core::calc_mode;
+use hipercalc_core::display;
+use hipercalc_core::number::Number;
 
 /// Fast 模式下"约束/参数"个数上限（Deep 放开）。次数 ≈ 上限 − 1；
 /// 有理数范德蒙矩阵的分子位数增长很快，16 已经能在毫秒级完成，再大才可能数秒以上。
@@ -101,7 +101,10 @@ impl LinForm {
         let mut k = self.k.add(&other.k);
         let mut terms = self.terms.clone();
         for (name, c) in &other.terms {
-            let mut e = terms.get(name).cloned().unwrap_or_else(|| Number::from_int(0));
+            let mut e = terms
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| Number::from_int(0));
             e = e.add(c);
             terms.insert(name.clone(), e);
         }
@@ -418,7 +421,11 @@ fn solve_with_template(
         }
     }
     // 去掉最高次的高位零系数（保持降幂渲染整洁）
-    while coeffs.len() > 1 && coeffs.last().map(|c| c.render(DisplayMode::MathIO) == "0").unwrap_or(false)
+    while coeffs.len() > 1
+        && coeffs
+            .last()
+            .map(|c| c.render(DisplayMode::MathIO) == "0")
+            .unwrap_or(false)
     {
         coeffs.pop();
     }
@@ -426,11 +433,7 @@ fn solve_with_template(
     // 复验：把参数解代回原模板（数值抽样）看是否满足每个坐标
     verify_solution(&t.rhs, var, &unknowns, &forms, evaluator, pts)?;
 
-    let params: Vec<(String, LinForm)> = unknowns
-        .iter()
-        .cloned()
-        .zip(forms.into_iter())
-        .collect();
+    let params: Vec<(String, LinForm)> = unknowns.iter().cloned().zip(forms.into_iter()).collect();
     Ok(FitSolution {
         params,
         free,
@@ -775,12 +778,7 @@ pub fn format_vertex_form(coeffs: &[LinForm], var: char, mode: DisplayMode) -> O
         }
     };
     let body = if m.is_negative() {
-        format!(
-            "{}({} + {})^2",
-            a_part,
-            var,
-            display_part(&m.neg(), mode)
-        )
+        format!("{}({} + {})^2", a_part, var, display_part(&m.neg(), mode))
     } else {
         format!("{}({} - {})^2", a_part, var, display_part(&m, mode))
     };
@@ -806,7 +804,12 @@ pub fn format_fit_params(sol: &FitSolution, mode: DisplayMode) -> Vec<String> {
             .iter()
             .map(|(name, form)| {
                 let v = form.k.clone();
-                format!("{} {} {}", name, solve_aux::result_prefix(&v, mode), display_part(&v, mode))
+                format!(
+                    "{} {} {}",
+                    name,
+                    solve_aux::result_prefix(&v, mode),
+                    display_part(&v, mode)
+                )
             })
             .collect();
         return vec![items.join(", ")];
@@ -846,10 +849,14 @@ fn prefix_of_form(form: &LinForm, mode: DisplayMode) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::{parse_and_eval, EvalResult};
+    use crate::parser::{EvalResult, parse_and_eval};
 
     /// 跑一行拟合输入，按 `handle_fit` 的规则拼装输出行
-    fn run_with(input: &str, mode: DisplayMode, vars: &[(&str, i64)]) -> Result<Vec<String>, String> {
+    fn run_with(
+        input: &str,
+        mode: DisplayMode,
+        vars: &[(&str, i64)],
+    ) -> Result<Vec<String>, String> {
         let mut ev = Evaluator::new();
         ev.display_mode = mode;
         for (name, v) in vars {
@@ -906,7 +913,10 @@ mod tests {
             vec!["y = -3*x^2 + 6*x", "y = -3*(x - 1)^2 + 3"]
         );
         // P + 2 个点 ⇒ 4 个约束 ⇒ 三次（无顶点式）
-        assert_eq!(mathio("P(1,3) (0,1) (2,5)"), vec!["y = 2*x^3 - 6*x^2 + 6*x + 1"]);
+        assert_eq!(
+            mathio("P(1,3) (0,1) (2,5)"),
+            vec!["y = 2*x^3 - 6*x^2 + 6*x + 1"]
+        );
         // 3 点共线 ⇒ 实际一次，不输出顶点式
         assert_eq!(mathio("(0,0) (1,1) (2,2)"), vec!["y = x"]);
     }
@@ -927,7 +937,10 @@ mod tests {
             vec!["a = 2, b = 0", "y = 2*x"]
         );
         // 其他参数名（大写、多字母）同样可解
-        assert_eq!(mathio("(0,0) (1,2) y = k*x + m"), vec!["k = 2, m = 0", "y = 2*x"]);
+        assert_eq!(
+            mathio("(0,0) (1,2) y = k*x + m"),
+            vec!["k = 2, m = 0", "y = 2*x"]
+        );
     }
 
     #[test]
@@ -937,13 +950,15 @@ mod tests {
             vec!["b = 1", "y = 2*x + 1"]
         );
         // A 固定为 2 时，三点必然矛盾（数据实际对应 a=1）
-        assert!(run_with(
-            "(0,1) (1,3) (2,7) y = A*x^2+b*x+c",
-            DisplayMode::MathIO,
-            &[("A", 2)]
-        )
-        .unwrap_err()
-        .contains("矛盾"));
+        assert!(
+            run_with(
+                "(0,1) (1,3) (2,7) y = A*x^2+b*x+c",
+                DisplayMode::MathIO,
+                &[("A", 2)]
+            )
+            .unwrap_err()
+            .contains("矛盾")
+        );
     }
 
     #[test]
@@ -953,7 +968,10 @@ mod tests {
         assert_eq!(lines.len(), 4, "{lines:?}");
         assert!(lines[3].starts_with("y = "), "{lines:?}");
         assert!(lines[3].contains("*x^2"), "{lines:?}");
-        assert!(lines.iter().any(|l| l.starts_with("自由参数: ")), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.starts_with("自由参数: ")),
+            "{lines:?}"
+        );
         // 模板里同类项合并（a*x^2 + a*x + b*x + c ⇒ x 的系数是 a + b）
         let lines = mathio("(0,1) (1,4) y = a*x^2 + a*x + b*x + c");
         assert!(lines[3].contains("x^2"), "{lines:?}");
@@ -975,7 +993,10 @@ mod tests {
         assert!(err("(1,2) (1,3)").contains("矛盾"));
         assert!(err("p(1,2) (3,4)").contains("大写 P"));
         // Fast 模式规模护栏（17 个坐标 ⇒ 17 次）
-        let many = (0..17).map(|i| format!("({i},{})", i * i)).collect::<Vec<_>>().join(" ");
+        let many = (0..17)
+            .map(|i| format!("({i},{})", i * i))
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(err(&many).contains("Fast 模式上限"));
     }
 
@@ -990,4 +1011,3 @@ mod tests {
         }
     }
 }
-

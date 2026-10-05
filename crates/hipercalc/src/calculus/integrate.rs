@@ -22,13 +22,13 @@
 //!
 //! 不定积分**不写 `+C`**（文档说明"省略积分常数"）。
 
+use crate::parser::{BinOp, Expr};
 use hipercalc_core::bigfloat::BigFloat;
 use hipercalc_core::number::Number;
-use crate::parser::{BinOp, Expr};
 
 use super::{
-    max_int_depth, max_int_evals, ERROR_INT_BOUND, ERROR_INT_BUDGET, ERROR_INT_INF_CONVERGE,
-    ERROR_INT_SINGULAR, ERROR_NO_ANTIDERIVATIVE, ERROR_TABLE_NOT_COVERED,
+    ERROR_INT_BOUND, ERROR_INT_BUDGET, ERROR_INT_INF_CONVERGE, ERROR_INT_SINGULAR,
+    ERROR_NO_ANTIDERIVATIVE, ERROR_TABLE_NOT_COVERED, max_int_depth, max_int_evals,
 };
 
 /// 无穷限积分：`x → ±inf` 时的端点探测指数（10^k），k 上限。
@@ -96,10 +96,7 @@ fn try_integrate(
             let as_pow = Expr::Binary(
                 Box::new(l.as_ref().clone()),
                 BinOp::Mul,
-                Box::new(pow(
-                    r.as_ref().clone(),
-                    Expr::Number(Number::from_int(-1)),
-                )),
+                Box::new(pow(r.as_ref().clone(), Expr::Number(Number::from_int(-1)))),
             );
             return try_integrate(ev, &as_pow, var);
         }
@@ -152,10 +149,7 @@ fn try_integrate(
                         num_rational::BigRational::from_integer(num_bigint::BigInt::from(-1));
                     if n == minus_one {
                         // ∫u⁻¹ du = ln|u| / a
-                        return Ok(Some(div(
-                            call("ln", call("abs", base.as_ref().clone())),
-                            a,
-                        )));
+                        return Ok(Some(div(call("ln", call("abs", base.as_ref().clone())), a)));
                     }
                     let np1 = Number::from_rational(n.clone() + num_rational::BigRational::one());
                     return Ok(Some(div(
@@ -229,7 +223,11 @@ fn special_reciprocal(
     let Expr::Binary(numer, BinOp::Div, denom) = f else {
         return Ok(None);
     };
-    if constant_value(ev, numer).map(|v| v.as_rational()).flatten().is_none() {
+    if constant_value(ev, numer)
+        .map(|v| v.as_rational())
+        .flatten()
+        .is_none()
+    {
         return Ok(None);
     }
     // 1/(1+x²)
@@ -303,9 +301,8 @@ fn linear_parts(
     e: &Expr,
     var: &str,
 ) -> Result<Option<(Expr, Expr)>, String> {
-    let probe = |v: i64| -> Option<Number> {
-        ev.evaluate_with_var(e, var, &Number::from_int(v)).ok()
-    };
+    let probe =
+        |v: i64| -> Option<Number> { ev.evaluate_with_var(e, var, &Number::from_int(v)).ok() };
     let (Some(f0), Some(f1), Some(f2), Some(f3)) = (probe(0), probe(1), probe(2), probe(3)) else {
         return Ok(None);
     };
@@ -315,8 +312,14 @@ fn linear_parts(
         return Ok(None);
     }
     // 验证：f(2) = 2a + b，f(3) = 3a + b
-    let e2 = hipercalc_core::number::Number::add(&hipercalc_core::number::Number::mul(&a, &Number::from_int(2)), &b);
-    let e3 = hipercalc_core::number::Number::add(&hipercalc_core::number::Number::mul(&a, &Number::from_int(3)), &b);
+    let e2 = hipercalc_core::number::Number::add(
+        &hipercalc_core::number::Number::mul(&a, &Number::from_int(2)),
+        &b,
+    );
+    let e3 = hipercalc_core::number::Number::add(
+        &hipercalc_core::number::Number::mul(&a, &Number::from_int(3)),
+        &b,
+    );
     if !num_eq(&e2, &f2) || !num_eq(&e3, &f3) {
         return Ok(None);
     }
@@ -381,10 +384,8 @@ pub fn definite(
     if lower_inf || upper_inf {
         return definite_infinite(ev, f, var, lower, upper);
     }
-    let a = constant_value(ev, lower)
-        .ok_or_else(|| ERROR_INT_BOUND.to_string())?;
-    let b = constant_value(ev, upper)
-        .ok_or_else(|| ERROR_INT_BOUND.to_string())?;
+    let a = constant_value(ev, lower).ok_or_else(|| ERROR_INT_BOUND.to_string())?;
+    let b = constant_value(ev, upper).ok_or_else(|| ERROR_INT_BOUND.to_string())?;
     definite_finite(ev, f, var, &a, &b)
 }
 
@@ -472,7 +473,11 @@ fn bound_value_at_inf(
         let mut mag = hipercalc_core::bigfloat::BigFloat::from_u64(1);
         let ten = hipercalc_core::bigfloat::BigFloat::from_u64(10);
         for _ in 0..k {
-            mag = hipercalc_core::bigfloat::BigFloat::mul(&mag, &ten, hipercalc_core::bigfloat::precision());
+            mag = hipercalc_core::bigfloat::BigFloat::mul(
+                &mag,
+                &ten,
+                hipercalc_core::bigfloat::precision(),
+            );
         }
         let x = if sign > 0 {
             Number::Approx(mag)
@@ -485,7 +490,11 @@ fn bound_value_at_inf(
         }
         let cur = v.to_approx();
         if let Some(p) = &prev {
-            let d = hipercalc_core::bigfloat::BigFloat::sub(&cur, p, hipercalc_core::bigfloat::precision() + 10);
+            let d = hipercalc_core::bigfloat::BigFloat::sub(
+                &cur,
+                p,
+                hipercalc_core::bigfloat::precision() + 10,
+            );
             let tol = (hipercalc_core::bigfloat::display_digits() + 5) as f64;
             let scale = cur.magnitude_log10().max(0.0);
             if d.magnitude_log10() <= -tol + scale {
@@ -493,7 +502,10 @@ fn bound_value_at_inf(
                 // 这样 `∫₀^∞ e^{-x}dx` 得到的是 `1 − 0`（而不是 `1 − 4e-44` 那种把
                 // 垃圾数字带进结果的值）。注意前缀仍可能是 `≈`：原函数在另一端点常含
                 // 近似值（如 `exp(0)` 在求值器里就是近似的），这是诚实反映计算路径。
-                if cur.is_zero() || cur.magnitude_log10() < -(hipercalc_core::bigfloat::display_digits() as f64 + 5.0) {
+                if cur.is_zero()
+                    || cur.magnitude_log10()
+                        < -(hipercalc_core::bigfloat::display_digits() as f64 + 5.0)
+                {
                     return Some(Number::from_int(0));
                 }
                 return Some(v);
@@ -527,7 +539,9 @@ fn singular_inside(
                 }
             }
         }
-        let Some(vc) = var.chars().next() else { return Ok(true) };
+        let Some(vc) = var.chars().next() else {
+            return Ok(true);
+        };
         let roots = crate::solve_aux::collect_all_roots(ev, d, vc);
         for r in roots {
             let r_bf = r.to_approx();
@@ -536,8 +550,16 @@ fn singular_inside(
                 continue;
             }
             // 排除落在端点附近的伪根
-            let fa = hipercalc_core::bigfloat::BigFloat::sub(&r_bf, &a.to_approx(), hipercalc_core::bigfloat::precision());
-            let fb = hipercalc_core::bigfloat::BigFloat::sub(&b.to_approx(), &r_bf, hipercalc_core::bigfloat::precision());
+            let fa = hipercalc_core::bigfloat::BigFloat::sub(
+                &r_bf,
+                &a.to_approx(),
+                hipercalc_core::bigfloat::precision(),
+            );
+            let fb = hipercalc_core::bigfloat::BigFloat::sub(
+                &b.to_approx(),
+                &r_bf,
+                hipercalc_core::bigfloat::precision(),
+            );
             let tol = -(hipercalc_core::bigfloat::display_digits() as f64) * 10.0;
             if fa.magnitude_log10() > tol && fb.magnitude_log10() > tol {
                 return Ok(true);
@@ -626,11 +648,8 @@ fn gauss_legendre(n: usize, prec: usize) -> Vec<(BigFloat, BigFloat)> {
             }
         }
         let dp = legendre_derivative(n, &x, prec);
-        let one_minus_x2 = BigFloat::sub(
-            &BigFloat::from_u64(1),
-            &BigFloat::mul(&x, &x, prec),
-            prec,
-        );
+        let one_minus_x2 =
+            BigFloat::sub(&BigFloat::from_u64(1), &BigFloat::mul(&x, &x, prec), prec);
         let denom = BigFloat::mul(&one_minus_x2, &BigFloat::mul(&dp, &dp, prec), prec);
         if denom.is_zero() {
             continue;
@@ -674,11 +693,7 @@ fn legendre_derivative(n: usize, x: &BigFloat, prec: usize) -> BigFloat {
         return BigFloat::from_u64(0);
     }
     let (pn, pnm1) = legendre_pair(n, x, prec);
-    let num = BigFloat::sub(
-        &BigFloat::mul(x, &pn, prec),
-        &pnm1,
-        prec,
-    );
+    let num = BigFloat::sub(&BigFloat::mul(x, &pn, prec), &pnm1, prec);
     let den = BigFloat::sub(&BigFloat::mul(x, x, prec), &BigFloat::from_u64(1), prec);
     if den.is_zero() {
         return BigFloat::from_u64(0);
@@ -738,12 +753,7 @@ impl<'a> Integrator<'a> {
     }
 
     /// 自适应二分：比较整段与两半的求积结果，误差估计 `|S2 − S1|`
-    fn adaptive(
-        &mut self,
-        a: &Number,
-        b: &Number,
-        depth: usize,
-    ) -> Result<Number, String> {
+    fn adaptive(&mut self, a: &Number, b: &Number, depth: usize) -> Result<Number, String> {
         let s1 = self.rule(a, b)?;
         let m = mid(a, b);
         let l = self.rule(a, &m)?;
@@ -788,7 +798,6 @@ fn numeric(
 
 /// Gauss–Legendre 节点数：10 点对 19 次多项式精确
 const GAUSS_NODES: usize = 10;
-
 
 /* ---------------- 小工具 ---------------- */
 
@@ -915,7 +924,11 @@ mod tests {
         assert_eq!(def("x^2", 1, 0), "-1 / 3"); // 上下限反了 ⇒ 取负
         // sin 的原函数含 cos(3)（无精确值）⇒ 结果按模式显示成小数，但值是对的
         assert!(def("sin(x)", 0, 0) == "0");
-        assert!(def("sin(x)", 0, 3).starts_with("1.9899924966"), "{}", def("sin(x)", 0, 3));
+        assert!(
+            def("sin(x)", 0, 3).starts_with("1.9899924966"),
+            "{}",
+            def("sin(x)", 0, 3)
+        );
     }
 
     #[test]
@@ -960,7 +973,9 @@ mod tests {
 
     /// 取近似 f64（`magnitude_log10` 是用位长估的数量级、粒度约 ±0.25，不能用于精确值比较）
     fn bf_f64(x: &BigFloat) -> f64 {
-        x.to_significant_string(15).parse::<f64>().unwrap_or(f64::NAN)
+        x.to_significant_string(15)
+            .parse::<f64>()
+            .unwrap_or(f64::NAN)
     }
 
     #[test]
@@ -985,16 +1000,17 @@ mod tests {
                 2.0 / (k as f64 + 1.0)
             };
             let got = bf_f64(&sum);
-            assert!(
-                (got - want).abs() < 1e-13,
-                "k={k}: got {got}, want {want}"
-            );
+            assert!((got - want).abs() < 1e-13, "k={k}: got {got}, want {want}");
         }
         // 权重之和 = 2（区间长度）
         let mut wsum = BigFloat::from_u64(0);
         for (_, w) in &nodes {
             wsum = BigFloat::add(&wsum, w, prec);
         }
-        assert!((bf_f64(&wsum) - 2.0).abs() < 1e-13, "Σw = {}", bf_f64(&wsum));
+        assert!(
+            (bf_f64(&wsum) - 2.0).abs() < 1e-13,
+            "Σw = {}",
+            bf_f64(&wsum)
+        );
     }
 }

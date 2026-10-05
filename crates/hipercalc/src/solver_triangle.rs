@@ -20,11 +20,11 @@ use num_integer::Integer;
 use num_rational::BigRational;
 use num_traits::{One, Zero};
 
+use crate::parser::{self, DisplayMode, Evaluator, Expr};
+use crate::solve_aux;
 use hipercalc_core::bigfloat::{self, BigFloat};
 use hipercalc_core::display;
 use hipercalc_core::number::Number;
-use crate::parser::{self, DisplayMode, Evaluator, Expr};
-use crate::solve_aux;
 use hipercalc_core::trig::{self, AngleMode};
 
 /* ---------------- 记号 ---------------- */
@@ -409,13 +409,12 @@ fn underdetermined_message(k: &Known) -> String {
     if all_heights {
         let h: Vec<Number> = k.height.iter().map(|x| x.clone().unwrap()).collect();
         // a : b : c = 1/hA : 1/hB : 1/hC = hB·hC : hA·hC : hA·hB
-        let vals = [
-            h[1].mul(&h[2]),
-            h[0].mul(&h[2]),
-            h[0].mul(&h[1]),
-        ];
+        let vals = [h[1].mul(&h[2]), h[0].mul(&h[2]), h[0].mul(&h[1])];
         if let Some(ratio) = ratio_string(&vals) {
-            return format!("已知信息不足，无法确定三角形（形状已确定 a : b : c = {0}，仅缺一个长度）", ratio);
+            return format!(
+                "已知信息不足，无法确定三角形（形状已确定 a : b : c = {0}，仅缺一个长度）",
+                ratio
+            );
         }
         return "已知信息不足，无法确定三角形（形状已确定，仅缺一个长度）".to_string();
     }
@@ -499,7 +498,9 @@ fn solve_analytic(k: &Known) -> Option<Result<Vec<TriVals>, String>> {
     if ns == 1 && na >= 2 {
         return Some(solve_aas(k));
     }
-    if ns == 2 && let Some(s) = k.area.clone() {
+    if ns == 2
+        && let Some(s) = k.area.clone()
+    {
         let i = side_idx[0];
         let j = side_idx[1];
         return Some(solve_two_sides_area(
@@ -510,7 +511,10 @@ fn solve_analytic(k: &Known) -> Option<Result<Vec<TriVals>, String>> {
             s,
         ));
     }
-    if ns == 1 && na == 1 && let Some(s) = k.area.clone() {
+    if ns == 1
+        && na == 1
+        && let Some(s) = k.area.clone()
+    {
         let i = ang_idx[0];
         if side_idx[0] == i {
             return Some(solve_side_angle_area(
@@ -558,10 +562,7 @@ fn solve_sss(a: Number, b: Number, c: Number) -> Result<Vec<TriVals>, String> {
         return Err("三角形不满足三角不等式".to_string());
     }
     let s = a.add(&b).add(&c).div(&num2());
-    let prod = s
-        .mul(&s.sub(&a))
-        .mul(&s.sub(&b))
-        .mul(&s.sub(&c));
+    let prod = s.mul(&s.sub(&a)).mul(&s.sub(&b)).mul(&s.sub(&c));
     let area = prod.sqrt();
     Ok(vec![from_sides([a, b, c], area)?])
 }
@@ -667,7 +668,10 @@ fn solve_aas(k: &Known) -> Result<Vec<TriVals>, String> {
             two_r.mul(&sin_rad(&known.angle[i].clone().unwrap()))
         };
     }
-    let area = sides[0].mul(&sides[1]).mul(&sides[2]).div(&two_r.mul(&num2()));
+    let area = sides[0]
+        .mul(&sides[1])
+        .mul(&sides[2])
+        .div(&two_r.mul(&num2()));
     Ok(vec![from_sides(sides, area)?])
 }
 
@@ -734,14 +738,8 @@ fn solve_side_angle_area(
     let diff = minus_sq.sqrt();
     let two = num2();
     let pairs = [
-        (
-            sum.add(&diff).div(&two),
-            sum.sub(&diff).div(&two),
-        ),
-        (
-            sum.sub(&diff).div(&two),
-            sum.add(&diff).div(&two),
-        ),
+        (sum.add(&diff).div(&two), sum.sub(&diff).div(&two)),
+        (sum.sub(&diff).div(&two), sum.add(&diff).div(&two)),
     ];
     let j = (i + 1) % 3;
     let m = (i + 2) % 3;
@@ -798,12 +796,10 @@ fn residuals(givens: &[(TriPart, BigFloat)], x: &Xyz) -> Vec<BigFloat> {
     let sc = bf_sin(&ang_c);
     let s = x[2].clone();
     let side = |sin: &BigFloat| BigFloat::mul(&s, sin, prec);
-    let norm = |calc: BigFloat, v: &BigFloat| {
-        BigFloat::div(&BigFloat::sub(&calc, v, prec), v, prec)
-    };
-    let norm_pi = |calc: BigFloat, v: &BigFloat| {
-        BigFloat::div(&BigFloat::sub(&calc, v, prec), &pi, prec)
-    };
+    let norm =
+        |calc: BigFloat, v: &BigFloat| BigFloat::div(&BigFloat::sub(&calc, v, prec), v, prec);
+    let norm_pi =
+        |calc: BigFloat, v: &BigFloat| BigFloat::div(&BigFloat::sub(&calc, v, prec), &pi, prec);
     let mut out = Vec::with_capacity(givens.len());
     for (part, v) in givens {
         let r = match part {
@@ -813,18 +809,9 @@ fn residuals(givens: &[(TriPart, BigFloat)], x: &Xyz) -> Vec<BigFloat> {
             TriPart::Angle(0) => norm_pi(ang_a.clone(), v),
             TriPart::Angle(1) => norm_pi(ang_b.clone(), v),
             TriPart::Angle(_) => norm_pi(ang_c.clone(), v),
-            TriPart::Height(0) => norm(
-                BigFloat::mul(&side(&sb), &sc, prec),
-                v,
-            ),
-            TriPart::Height(1) => norm(
-                BigFloat::mul(&side(&sa), &sc, prec),
-                v,
-            ),
-            TriPart::Height(_) => norm(
-                BigFloat::mul(&side(&sa), &sb, prec),
-                v,
-            ),
+            TriPart::Height(0) => norm(BigFloat::mul(&side(&sb), &sc, prec), v),
+            TriPart::Height(1) => norm(BigFloat::mul(&side(&sa), &sc, prec), v),
+            TriPart::Height(_) => norm(BigFloat::mul(&side(&sa), &sb, prec), v),
         };
         out.push(r);
     }
@@ -876,28 +863,18 @@ fn solve3(mut a: [[BigFloat; 3]; 3], mut b: [BigFloat; 3]) -> Option<[BigFloat; 
 }
 
 /// 数值兜底：多起点 Gauss-Newton（法方程 `JᵀJ Δ = −Jᵀ r`）
-fn solve_numeric(
-    k: &Known,
-    givens: &[(TriPart, Number)],
-) -> Result<Vec<TriVals>, String> {
+fn solve_numeric(k: &Known, givens: &[(TriPart, Number)]) -> Result<Vec<TriVals>, String> {
     let prec = bigfloat::precision();
     let pi = BigFloat::pi(prec);
-    let bfs: Vec<(TriPart, BigFloat)> = givens
-        .iter()
-        .map(|(p, v)| (*p, v.to_approx()))
-        .collect();
+    let bfs: Vec<(TriPart, BigFloat)> = givens.iter().map(|(p, v)| (*p, v.to_approx())).collect();
     if bfs.len() < 3 {
         return Err(underdetermined_message(k));
     }
     // 步长：角度用绝对步长，尺度用相对步长
-    let h_step = BigFloat::from_big_rational(&BigRational::new(
-        BigInt::from(1),
-        BigInt::from(10).pow(40),
-    ));
-    let tol = BigFloat::from_big_rational(&BigRational::new(
-        BigInt::from(1),
-        BigInt::from(10).pow(35),
-    ));
+    let h_step =
+        BigFloat::from_big_rational(&BigRational::new(BigInt::from(1), BigInt::from(10).pow(40)));
+    let tol =
+        BigFloat::from_big_rational(&BigRational::new(BigInt::from(1), BigInt::from(10).pow(35)));
 
     // 种子：A、B 取 π/8 的整数倍（剔除 A+B ≥ π）
     let mut seeds: Vec<(BigFloat, BigFloat)> = Vec::new();
@@ -906,16 +883,8 @@ fn solve_numeric(
             if ka + kb >= 8 {
                 continue;
             }
-            let a = BigFloat::mul(
-                &pi,
-                &bf_frac(ka, 8),
-                prec,
-            );
-            let b = BigFloat::mul(
-                &pi,
-                &bf_frac(kb, 8),
-                prec,
-            );
+            let a = BigFloat::mul(&pi, &bf_frac(ka, 8), prec);
+            let b = BigFloat::mul(&pi, &bf_frac(kb, 8), prec);
             seeds.push((a, b));
         }
     }
@@ -1014,9 +983,9 @@ fn solve_numeric(
             continue;
         }
         // 去重
-        let dup = solutions.iter().any(|y| {
-            (0..3).all(|i| small_diff(&x[i], &y[i]))
-        });
+        let dup = solutions
+            .iter()
+            .any(|y| (0..3).all(|i| small_diff(&x[i], &y[i])));
         if !dup {
             solutions.push(x);
         }
@@ -1127,9 +1096,7 @@ fn verify_givens(givens: &[(TriPart, Number)], vals: &TriVals) -> Result<(), Str
         let calc = match part {
             TriPart::Side(i) => vals.sides[*i as usize].clone(),
             TriPart::Angle(i) => vals.angles[*i as usize].clone(),
-            TriPart::Height(i) => num2()
-                .mul(&area)
-                .div(&vals.sides[*i as usize]),
+            TriPart::Height(i) => num2().mul(&area).div(&vals.sides[*i as usize]),
         };
         if !approx_eq(&calc, v) {
             return Err("已知量之间存在矛盾，无法构成三角形".to_string());
@@ -1258,7 +1225,7 @@ pub fn format_triangle_solution(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::{parse_and_eval, EvalResult};
+    use crate::parser::{EvalResult, parse_and_eval};
 
     /// 测试辅助：把裸的"已知量"包成新的 `triangle(...)` 调用形式。
     /// 这样各个用例仍可只写 `a=3 b=4 c=5`，但实际走的是**新语法**（旧裸写法已移除）。
@@ -1341,8 +1308,14 @@ mod tests {
     #[test]
     fn sss_lineio_shows_finite_decimals() {
         let lines = deg_lineio("a=3 b=4 c=5");
-        assert!(line_starting(&lines, "hA ").contains("hC = 2.4"), "{lines:?}");
-        assert!(line_starting(&lines, "外接圆半径 ").contains("2.5"), "{lines:?}");
+        assert!(
+            line_starting(&lines, "hA ").contains("hC = 2.4"),
+            "{lines:?}"
+        );
+        assert!(
+            line_starting(&lines, "外接圆半径 ").contains("2.5"),
+            "{lines:?}"
+        );
     }
 
     #[test]
@@ -1351,16 +1324,16 @@ mod tests {
         assert_eq!(line_starting(&lines, "a "), "a = 1, b = 1, c = sqrt(2)");
         assert!(line_starting(&lines, "A ").contains("A = 45"), "{lines:?}");
         assert!(line_starting(&lines, "A ").contains("B = 45"), "{lines:?}");
-        assert!(line_starting(&lines, "面积 ").contains("面积 = 1 / 2"), "{lines:?}");
+        assert!(
+            line_starting(&lines, "面积 ").contains("面积 = 1 / 2"),
+            "{lines:?}"
+        );
     }
 
     #[test]
     fn aas_two_angles_and_side_are_exact() {
         let lines = deg("A=30 B=60 a=5");
-        assert_eq!(
-            line_starting(&lines, "a "),
-            "a = 5, b = 5*sqrt(3), c = 10"
-        );
+        assert_eq!(line_starting(&lines, "a "), "a = 5, b = 5*sqrt(3), c = 10");
         assert!(line_starting(&lines, "A ").contains("C = 90"), "{lines:?}");
     }
 
@@ -1419,9 +1392,18 @@ mod tests {
     #[test]
     fn radian_mode_keeps_exact_pi_multiples() {
         let lines = rad("A=pi/6 b=5 C=pi/3");
-        assert!(line_starting(&lines, "A ").contains("A = pi / 6"), "{lines:?}");
-        assert!(line_starting(&lines, "A ").contains("B = pi / 2"), "{lines:?}");
-        assert_eq!(line_starting(&lines, "a "), "a = 5 / 2, b = 5, c = 5*sqrt(3) / 2");
+        assert!(
+            line_starting(&lines, "A ").contains("A = pi / 6"),
+            "{lines:?}"
+        );
+        assert!(
+            line_starting(&lines, "A ").contains("B = pi / 2"),
+            "{lines:?}"
+        );
+        assert_eq!(
+            line_starting(&lines, "a "),
+            "a = 5 / 2, b = 5, c = 5*sqrt(3) / 2"
+        );
     }
 
     #[test]

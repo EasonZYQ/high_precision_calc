@@ -2,9 +2,9 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{Signed, ToPrimitive, Zero};
 
+use crate::parser::{DisplayMode, Evaluator, Expr};
 use hipercalc_core::bigfloat::{self, BigFloat};
 use hipercalc_core::number::Number;
-use crate::parser::{DisplayMode, Evaluator, Expr};
 
 /// 高次数值求根被规模护栏拒绝时的错误前缀。
 /// 调用方（main.rs::handle_equation）据此判断"这是明确拒绝"而不是"求根失败"，
@@ -57,7 +57,9 @@ pub fn newton_solve(
     // 收敛判据阈值（不随迭代变化，循环外算一次即可）
     let zero_compare = BigFloat::div(
         &BigFloat::from_u64(1),
-        &BigInt::from(10).pow(bigfloat::precision().div_ceil(2) as u32 + 10).into(),
+        &BigInt::from(10)
+            .pow(bigfloat::precision().div_ceil(2) as u32 + 10)
+            .into(),
         bigfloat::precision(),
     );
 
@@ -67,10 +69,12 @@ pub fn newton_solve(
         // 计算 f(x)
         // 复数结果（如 `ln(-1)`、`sqrt(-4)`）说明该初值落在实数域之外：
         // `Number::to_approx` 对复数会 debug_assert（不能静默丢虚部）⇒ 必须先分流、当作无效初值放弃。
-        let fx = match evaluator.evaluate_with_var(f_expr, &var.to_string(), &Number::Approx(x.clone())) {
-            Ok(v) if !v.is_complex() => v.to_approx(),
-            _ => return None,
-        };
+        let fx =
+            match evaluator.evaluate_with_var(f_expr, &var.to_string(), &Number::Approx(x.clone()))
+            {
+                Ok(v) if !v.is_complex() => v.to_approx(),
+                _ => return None,
+            };
 
         // 检查与 0 的接近程度
         if fx.value.abs() <= zero_compare.value.abs()
@@ -83,21 +87,19 @@ pub fn newton_solve(
         let x_plus = BigFloat::add(&x, &h, bigfloat::precision());
         let x_minus = BigFloat::sub(&x, &h, bigfloat::precision());
 
-        let f_plus = match evaluator.evaluate_with_var(f_expr, &var.to_string(), &Number::Approx(x_plus)) {
-            Ok(v) if !v.is_complex() => v.to_approx(),
-            _ => return None,
-        };
-        let f_minus = match evaluator.evaluate_with_var(f_expr, &var.to_string(), &Number::Approx(x_minus)) {
-            Ok(v) if !v.is_complex() => v.to_approx(),
-            _ => return None,
-        };
+        let f_plus =
+            match evaluator.evaluate_with_var(f_expr, &var.to_string(), &Number::Approx(x_plus)) {
+                Ok(v) if !v.is_complex() => v.to_approx(),
+                _ => return None,
+            };
+        let f_minus =
+            match evaluator.evaluate_with_var(f_expr, &var.to_string(), &Number::Approx(x_minus)) {
+                Ok(v) if !v.is_complex() => v.to_approx(),
+                _ => return None,
+            };
 
         let df = BigFloat::sub(&f_plus, &f_minus, bigfloat::precision());
-        let two_h = BigFloat::mul(
-            &BigFloat::from_u64(2),
-            &h,
-            bigfloat::precision(),
-        );
+        let two_h = BigFloat::mul(&BigFloat::from_u64(2), &h, bigfloat::precision());
         let derivative = BigFloat::div(&df, &two_h, bigfloat::precision());
 
         // 导数为零 ⇒ 该初值不可用。**必须显式判零**：`BigFloat::div` 内部是 `assert!`，除数为零会
@@ -132,7 +134,10 @@ pub fn newton_solve(
     match evaluator.evaluate_with_var(f_expr, &var.to_string(), &Number::Approx(x.clone())) {
         Ok(v) if !v.is_complex() => {
             let bf = v.to_approx();
-            if bf.value.abs() <= BigInt::from(10).pow(bigfloat::precision().div_ceil(2) as u32).into()
+            if bf.value.abs()
+                <= BigInt::from(10)
+                    .pow(bigfloat::precision().div_ceil(2) as u32)
+                    .into()
             {
                 Some(x.rounded(bigfloat::precision()))
             } else {
@@ -144,11 +149,7 @@ pub fn newton_solve(
 }
 
 /// 从 Expr 中提取多项式系数（按升幂排列: coeffs[i] = x^i 的系数）
-pub fn extract_polynomial(
-    evaluator: &Evaluator,
-    expr: &Expr,
-    var: char,
-) -> Option<Vec<Number>> {
+pub fn extract_polynomial(evaluator: &Evaluator, expr: &Expr, var: char) -> Option<Vec<Number>> {
     // 先判断是否多项式：仅含常数、变量、+-*^(整数)
     if !crate::equation::is_polynomial(expr) {
         return None;
@@ -159,11 +160,7 @@ pub fn extract_polynomial(
 }
 
 /// 直接从 AST 提取多项式系数
-fn extract_coeffs_direct(
-    evaluator: &Evaluator,
-    expr: &Expr,
-    var: char,
-) -> Option<Vec<Number>> {
+fn extract_coeffs_direct(evaluator: &Evaluator, expr: &Expr, var: char) -> Option<Vec<Number>> {
     // 收集所有项: (系数, 次数)
     let mut terms: Vec<(Number, u32)> = Vec::new();
     collect_terms(evaluator, expr, var, &mut terms)?;
@@ -389,7 +386,7 @@ fn number_to_rational(n: &Number) -> Option<BigRational> {
             .as_rational()
             .or_else(|| expr.as_integer().map(BigRational::from_integer)),
         Number::Approx(_) => None,
-       Number::Complex(_) => None,
+        Number::Complex(_) => None,
     }
 }
 
@@ -424,7 +421,10 @@ pub fn solve_poly_full(coeffs: &[Number]) -> Result<Vec<PolySolution>, String> {
                 vec![PolySolution::Real(Number::from_rational(r))]
             }
             2 => {
-                let nums: Vec<Number> = fc.iter().map(|c| Number::from_rational(c.clone())).collect();
+                let nums: Vec<Number> = fc
+                    .iter()
+                    .map(|c| Number::from_rational(c.clone()))
+                    .collect();
                 solve_quadratic(&nums[2], &nums[1], &nums[0])
             }
             // 高次不可约因子：数值求全部复数根
@@ -598,7 +598,9 @@ fn durand_kerner(coeffs: &[BigFloat]) -> Result<Vec<Cx>, String> {
 
     let tol = BigFloat::div(
         &BigFloat::from_u64(1),
-        &BigInt::from(10).pow(bigfloat::precision().div_ceil(2) as u32).into(),
+        &BigInt::from(10)
+            .pow(bigfloat::precision().div_ceil(2) as u32)
+            .into(),
         bigfloat::precision(),
     );
 
@@ -672,7 +674,8 @@ fn durand_kerner(coeffs: &[BigFloat]) -> Result<Vec<Cx>, String> {
         );
         (0..n)
             .map(|k| {
-                let k_half = BigFloat::add(&BigFloat::from_u64(k as u64), &half, bigfloat::precision());
+                let k_half =
+                    BigFloat::add(&BigFloat::from_u64(k as u64), &half, bigfloat::precision());
                 let angle = BigFloat::div(
                     &BigFloat::mul(&two_pi, &k_half, bigfloat::precision()),
                     &nf,
@@ -722,7 +725,9 @@ fn durand_kerner(coeffs: &[BigFloat]) -> Result<Vec<Cx>, String> {
 fn complex_to_solution(z: Cx) -> PolySolution {
     let t = BigFloat::div(
         &BigFloat::from_u64(1),
-        &BigInt::from(10).pow((bigfloat::precision() * 3 / 8) as u32).into(),
+        &BigInt::from(10)
+            .pow((bigfloat::precision() * 3 / 8) as u32)
+            .into(),
         bigfloat::precision(),
     );
     if z.im.value.abs() <= t.value.abs() {
@@ -749,22 +754,37 @@ mod tests {
     #[test]
     fn quadratic_two_distinct_roots() {
         // x² - 3x + 2 = (x-1)(x-2)
-        let sols = solve_quadratic(&Number::from_int(1), &Number::from_int(-3), &Number::from_int(2));
+        let sols = solve_quadratic(
+            &Number::from_int(1),
+            &Number::from_int(-3),
+            &Number::from_int(2),
+        );
         assert_eq!(root_set(&sols, DisplayMode::MathIO), set(&["1", "2"]));
     }
 
     #[test]
     fn quadratic_double_root() {
         // x² - 2x + 1 = (x-1)² ⇒ 两个相等的根
-        let sols = solve_quadratic(&Number::from_int(1), &Number::from_int(-2), &Number::from_int(1));
+        let sols = solve_quadratic(
+            &Number::from_int(1),
+            &Number::from_int(-2),
+            &Number::from_int(1),
+        );
         assert_eq!(root_set(&sols, DisplayMode::MathIO), set(&["1", "1"]));
     }
 
     #[test]
     fn quadratic_complex_pair() {
         // x² + 1 = 0 ⇒ ±i（判别式为负的分支）
-        let sols = solve_quadratic(&Number::from_int(1), &Number::from_int(0), &Number::from_int(1));
-        assert_eq!(root_set(&sols, DisplayMode::MathIO), set(&["0 + 1i", "0 - 1i"]));
+        let sols = solve_quadratic(
+            &Number::from_int(1),
+            &Number::from_int(0),
+            &Number::from_int(1),
+        );
+        assert_eq!(
+            root_set(&sols, DisplayMode::MathIO),
+            set(&["0 + 1i", "0 - 1i"])
+        );
     }
 
     #[test]
@@ -791,7 +811,10 @@ mod tests {
             Number::from_int(1),
         ];
         let sols = solve_poly_full(&coeffs).expect("应能求解");
-        assert_eq!(root_set(&sols, DisplayMode::MathIO), set(&["-2", "-1", "1", "2"]));
+        assert_eq!(
+            root_set(&sols, DisplayMode::MathIO),
+            set(&["-2", "-1", "1", "2"])
+        );
     }
 
     #[test]
@@ -825,7 +848,10 @@ mod tests {
         coeffs[0] = Number::from_int(-2); // -2
         coeffs[211] = Number::from_int(1); // + x^211
         let err = solve_poly_full(&coeffs).unwrap_err();
-        assert!(err.starts_with(DEGREE_GUARD_PREFIX), "错误应带护栏前缀: {err}");
+        assert!(
+            err.starts_with(DEGREE_GUARD_PREFIX),
+            "错误应带护栏前缀: {err}"
+        );
     }
 
     #[test]
@@ -834,10 +860,18 @@ mod tests {
         let ev = Evaluator::new();
         let expr = Parser::new("x^2-4").parse_expression().unwrap();
         let coeffs = extract_polynomial(&ev, &expr, 'x').expect("应识别为多项式");
-        let want = [Number::from_int(-4), Number::from_int(0), Number::from_int(1)];
+        let want = [
+            Number::from_int(-4),
+            Number::from_int(0),
+            Number::from_int(1),
+        ];
         assert_eq!(coeffs.len(), want.len(), "系数个数不符: {coeffs:?}");
         for (got, w) in coeffs.iter().zip(want.iter()) {
-            assert_eq!(hipercalc_core::display::format_mathio(got), hipercalc_core::display::format_mathio(w), "升幂系数不符: {coeffs:?}");
+            assert_eq!(
+                hipercalc_core::display::format_mathio(got),
+                hipercalc_core::display::format_mathio(w),
+                "升幂系数不符: {coeffs:?}"
+            );
         }
     }
 }

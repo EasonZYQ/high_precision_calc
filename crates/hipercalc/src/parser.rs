@@ -2,7 +2,7 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
-use hipercalc_core::bigfloat::self;
+use hipercalc_core::bigfloat;
 use hipercalc_core::number::{ExactExpr, Number};
 use hipercalc_core::trig::{self, AngleMode};
 
@@ -15,11 +15,65 @@ pub const VALID_VARIABLES: &str = "xyzabcdefghjklmnopqrstuvwABCDEFGHIJKLMNOPQRST
 /// 白名单函数名：解析校验、多字母拆分、REPL 高亮共用同一份常量。
 /// 新增函数时只需改这里 + `Evaluator::eval_function` 两处（旧实现有三份重复数组，易漏改）。
 pub const FUNCTIONS: &[&str] = &[
-    "sqr", "sqrt", "sin", "cos", "tan", "cot", "sec", "csc", "arcsin", "arccos", "arctan",
-    "arccot", "arcsec", "arccsc", "abs", "sd", "factor", "fac", "primefac", "triangle", "diff", "int", "lim", "taylor", "sum", "prod", "ln", "exp", "log", "log10",
-    "log2", "floor", "ceil", "round", "frac", "sign", "sinh", "cosh", "tanh", "coth", "sech",
-    "csch", "arcsinh", "arccosh", "arctanh", "cbrt", "nroot", "mod", "idiv", "nCr", "nPr",
-    "gcd", "lcm", "isprime", "nextprime", "re", "im", "conj", "arg",
+    "sqr",
+    "sqrt",
+    "sin",
+    "cos",
+    "tan",
+    "cot",
+    "sec",
+    "csc",
+    "arcsin",
+    "arccos",
+    "arctan",
+    "arccot",
+    "arcsec",
+    "arccsc",
+    "abs",
+    "sd",
+    "factor",
+    "fac",
+    "primefac",
+    "triangle",
+    "diff",
+    "int",
+    "lim",
+    "taylor",
+    "sum",
+    "prod",
+    "ln",
+    "exp",
+    "log",
+    "log10",
+    "log2",
+    "floor",
+    "ceil",
+    "round",
+    "frac",
+    "sign",
+    "sinh",
+    "cosh",
+    "tanh",
+    "coth",
+    "sech",
+    "csch",
+    "arcsinh",
+    "arccosh",
+    "arctanh",
+    "cbrt",
+    "nroot",
+    "mod",
+    "idiv",
+    "nCr",
+    "nPr",
+    "gcd",
+    "lcm",
+    "isprime",
+    "nextprime",
+    "re",
+    "im",
+    "conj",
+    "arg",
 ];
 
 /// 需要两个参数的函数（其余函数都是单参；`log` 有专门的报错文案，单独处理）
@@ -147,7 +201,7 @@ impl Parser {
                 return Err("sd 函数需要参数: sd(表达式)".to_string());
             }
             self.next(); // 跳过 '('
-            let inner = self.parse_equation()?;  // 允许内部含有等式
+            let inner = self.parse_equation()?; // 允许内部含有等式
             self.skip_whitespace();
             if self.peek() != Some(')') {
                 return Err("缺少右括号 ')'".to_string());
@@ -355,9 +409,7 @@ impl Parser {
                     self.next();
                     self.skip_whitespace();
                     if self.peek() == Some('(') {
-                        return Err(
-                            "顶点标记必须是大写 P（小写 p 是普通变量）".to_string()
-                        );
+                        return Err("顶点标记必须是大写 P（小写 p 是普通变量）".to_string());
                     }
                     self.pos = save;
                     break;
@@ -475,7 +527,9 @@ impl Parser {
                 if let Ok(exp) = exp_str.parse::<i64>() {
                     // 死算模式 (/mode deep) 取消指数上限（会真的去算 10^exp，慎用）
                     if exp.abs() > 100000 && !hipercalc_core::calc_mode::is_deep() {
-                        return Err("科学计数法指数超出支持范围（/mode deep 可取消限制）".to_string());
+                        return Err(
+                            "科学计数法指数超出支持范围（/mode deep 可取消限制）".to_string()
+                        );
                     }
                     let mantissa = Self::parse_decimal_rational(&num_str, has_dot)?;
                     let exp_u32 = u32::try_from(exp.abs())
@@ -608,7 +662,9 @@ impl Parser {
             "pi" | "π" => Ok(Expr::Number(Number::from_pi_times(BigRational::one()))),
             "e" => Ok(Expr::Number(Number::from_e_times(BigRational::one()))),
             // tau = 2π（精确）；phi/φ = 黄金比 (1+√5)/2（精确）
-            "tau" => Ok(Expr::Number(Number::from_pi_times(BigRational::from_integer(BigInt::from(2u32))))),
+            "tau" => Ok(Expr::Number(Number::from_pi_times(
+                BigRational::from_integer(BigInt::from(2u32)),
+            ))),
             "phi" | "φ" => Ok(Expr::Number(Number::phi())),
             // 虚数单位 i（与 pi/e 同级；小写 i 已从 VALID_VARIABLES 移除，不再作为未知数）
             "i" => Ok(Expr::Number(Number::Complex(Box::new(
@@ -628,9 +684,7 @@ impl Parser {
                 }
                 // 全大写标识符（可含下划线）视为单个存储变量名（如 X、AB、PI_VAR），不做拆分。
                 // 单大写 X/Y/Z 不在 VALID_VARIABLES 中（那边大写段只到 W），必须在此处接收。
-                let all_upper = ident
-                    .chars()
-                    .all(|c| c.is_ascii_uppercase() || c == '_');
+                let all_upper = ident.chars().all(|c| c.is_ascii_uppercase() || c == '_');
                 if all_upper {
                     return Ok(Expr::Variable(ident));
                 }
@@ -702,11 +756,7 @@ fn power_of_two(n: &BigInt) -> Option<u64> {
     }
     let k = bits - 1;
     let pow = BigInt::from(1) << k;
-    if n == &pow {
-        Some(k)
-    } else {
-        None
-    }
+    if n == &pow { Some(k) } else { None }
 }
 
 /// 判断 n 是否 10 的整数次幂，返回指数（仅处理位数不超大的情况，避免纯大数逐位除法卡顿）
@@ -727,11 +777,7 @@ fn power_of_ten(n: &BigInt) -> Option<u64> {
         x = &x / BigInt::from(10);
         k += 1;
     }
-    if x == BigInt::from(1) {
-        Some(k)
-    } else {
-        None
-    }
+    if x == BigInt::from(1) { Some(k) } else { None }
 }
 
 /// 对正有理数做小质数分解：返回（质数 → 指数），分母贡献负指数。
@@ -828,18 +874,19 @@ impl Evaluator {
                 let result = self.evaluate(inner)?;
                 Ok(result)
             }
-            Expr::Factor(_) => {
-                Err("factor 必须作为最外层函数使用".to_string())
-            }
-            Expr::Equation(_, _) => {
-                Err("等式需要在求解模式下处理，不应直接计算".to_string())
-            }
+            Expr::Factor(_) => Err("factor 必须作为最外层函数使用".to_string()),
+            Expr::Equation(_, _) => Err("等式需要在求解模式下处理，不应直接计算".to_string()),
             _ => Ok(self.eval_node(expr, &[])?),
         }
     }
 
     /// 带单变量替换的求值（兼容接口）
-    pub fn evaluate_with_var(&self, expr: &Expr, var: &str, value: &Number) -> Result<Number, String> {
+    pub fn evaluate_with_var(
+        &self,
+        expr: &Expr,
+        var: &str,
+        value: &Number,
+    ) -> Result<Number, String> {
         // 中断检查点：长循环（数值求和/积分、DK 求根…）每次迭代至少走一次求值入口
         hipercalc_core::cancel::check()?;
         self.eval_node(expr, &[(var.to_string(), value)])
@@ -910,15 +957,9 @@ impl Evaluator {
                 self.eval_function(name, &vals)
             }
             Expr::Sd(_) => unreachable!(),
-            Expr::Factor(_) => {
-                Err("factor 必须作为最外层函数使用".to_string())
-            }
-            Expr::Equation(_, _) => {
-                Err("等式不能在求值中使用".to_string())
-            }
-            Expr::System(_) => {
-                Err("方程组不能在求值中使用".to_string())
-            }
+            Expr::Factor(_) => Err("factor 必须作为最外层函数使用".to_string()),
+            Expr::Equation(_, _) => Err("等式不能在求值中使用".to_string()),
+            Expr::System(_) => Err("方程组不能在求值中使用".to_string()),
         }
     }
 
@@ -959,7 +1000,11 @@ impl Evaluator {
             return Err("log 需要两个参数: log(底数, 真数)".to_string());
         }
         if name != "log" {
-            let want = if TWO_ARG_FUNCTIONS.contains(&name) { 2 } else { 1 };
+            let want = if TWO_ARG_FUNCTIONS.contains(&name) {
+                2
+            } else {
+                1
+            };
             if args.len() != want {
                 return Err(if want == 2 {
                     format!("函数 {} 需要两个参数", name)
@@ -1027,9 +1072,7 @@ impl Evaluator {
                     // C(n,r) = C(n,n-r)：取较小的那个，乘除次数最少
                     let r_neg = &n - &r;
                     let r_use = if r_neg < r { r_neg } else { r };
-                    let steps = r_use
-                        .to_u32()
-                        .ok_or_else(|| "组合数参数过大".to_string())?;
+                    let steps = r_use.to_u32().ok_or_else(|| "组合数参数过大".to_string())?;
                     let mut acc = BigInt::one();
                     for i in 1..=steps {
                         // 每步都能整除（部分积恰为 C(n-r+i, i)），无需整体约分
@@ -1064,33 +1107,32 @@ impl Evaluator {
             "isprime" => {
                 let n = as_int(arg, "isprime 需要整数参数")?;
                 if !hipercalc_core::calc_mode::is_deep() && n > BigInt::from(10u32).pow(24) {
-                    return Err(
-                        "素性判定参数过大（上限 10^24，/mode deep 可取消限制）".to_string()
-                    );
+                    return Err("素性判定参数过大（上限 10^24，/mode deep 可取消限制）".to_string());
                 }
-                Ok(Number::from_int(if hipercalc_core::bigint_ext::is_prime(&n) {
-                    1
-                } else {
-                    0
-                }))
+                Ok(Number::from_int(
+                    if hipercalc_core::bigint_ext::is_prime(&n) {
+                        1
+                    } else {
+                        0
+                    },
+                ))
             }
             "nextprime" => {
                 let n = as_int(arg, "nextprime 需要整数参数")?;
                 if !hipercalc_core::calc_mode::is_deep() && n > BigInt::from(10u32).pow(24) {
-                    return Err(
-                        "素性判定参数过大（上限 10^24，/mode deep 可取消限制）".to_string()
-                    );
+                    return Err("素性判定参数过大（上限 10^24，/mode deep 可取消限制）".to_string());
                 }
-                Ok(Number::from_bigint(hipercalc_core::bigint_ext::next_prime(&n)))
+                Ok(Number::from_bigint(hipercalc_core::bigint_ext::next_prime(
+                    &n,
+                )))
             }
             "sqr" | "sqrt" => {
                 if arg.is_negative() {
                     // 负实数：实数域无定义，但复数域是纯虚数（sqrt(-4) = 2i、sqrt(-2) = sqrt(2)i）
                     let pos = arg.neg().sqrt();
-                    return Ok(Number::from_complex(hipercalc_core::complex::ComplexNum::new(
-                        Number::from_int(0),
-                        pos,
-                    )));
+                    return Ok(Number::from_complex(
+                        hipercalc_core::complex::ComplexNum::new(Number::from_int(0), pos),
+                    ));
                 }
                 Ok(arg.sqrt())
             }
@@ -1153,7 +1195,8 @@ impl Evaluator {
                 }
                 if arg.is_negative() {
                     // 负实数：实数域无定义，复数域给 ln(-1) = iπ（ln(-x) = ln x + iπ）
-                    let z = hipercalc_core::complex::ComplexNum::new(arg.clone(), Number::from_int(0));
+                    let z =
+                        hipercalc_core::complex::ComplexNum::new(arg.clone(), Number::from_int(0));
                     return Ok(Number::from_complex(z.ln()?));
                 }
                 Ok(Number::Approx(arg.to_approx().ln(bigfloat::precision())))
@@ -1201,10 +1244,8 @@ impl Evaluator {
                     }
                 }
                 let ln_x = arg.to_approx().ln(bigfloat::precision());
-                let ln_2 = bigfloat::BigFloat::ln(
-                    &bigfloat::BigFloat::from_i64(2),
-                    bigfloat::precision(),
-                );
+                let ln_2 =
+                    bigfloat::BigFloat::ln(&bigfloat::BigFloat::from_i64(2), bigfloat::precision());
                 Ok(Number::Approx(bigfloat::BigFloat::div(
                     &ln_x,
                     &ln_2,
@@ -1362,7 +1403,11 @@ impl Evaluator {
                     &bigfloat::BigFloat::from_u64(2),
                     prec,
                 );
-                Ok(Number::Approx(bigfloat::BigFloat::mul(&half, &q.ln(prec), prec)))
+                Ok(Number::Approx(bigfloat::BigFloat::mul(
+                    &half,
+                    &q.ln(prec),
+                    prec,
+                )))
             }
             "tanh" => {
                 // |x| > 100 时双曲正切在 80 位精度下已经饱和：
@@ -1386,7 +1431,8 @@ impl Evaluator {
                     }));
                 }
                 let two = bigfloat::BigFloat::from_i64(2);
-                let t = bigfloat::BigFloat::mul(&two, &b, bigfloat::precision()).exp(bigfloat::precision())?;
+                let t = bigfloat::BigFloat::mul(&two, &b, bigfloat::precision())
+                    .exp(bigfloat::precision())?;
                 let one = bigfloat::BigFloat::from_i64(1);
                 let num = bigfloat::BigFloat::sub(&t, &one, bigfloat::precision());
                 let den = bigfloat::BigFloat::add(&t, &one, bigfloat::precision());
@@ -1627,7 +1673,9 @@ pub(crate) fn radians_to_degrees(result: Number) -> Number {
                     _other => {
                         // 非 pi 项无法精确转换，回退到数值
                         let approx = expr.to_bigfloat();
-                        let pi = hipercalc_core::bigfloat::BigFloat::pi(hipercalc_core::bigfloat::precision());
+                        let pi = hipercalc_core::bigfloat::BigFloat::pi(
+                            hipercalc_core::bigfloat::precision(),
+                        );
                         let deg_factor = hipercalc_core::bigfloat::BigFloat::div(
                             &hipercalc_core::bigfloat::BigFloat::from_u64(180),
                             &pi,
@@ -1979,10 +2027,7 @@ pub fn parse_primefac(input: &str, evaluator: &mut Evaluator) -> Result<Option<N
 }
 
 /// 解析并求值顶层输入
-pub fn parse_and_eval(
-    input: &str,
-    evaluator: &mut Evaluator,
-) -> Result<EvalResult, String> {
+pub fn parse_and_eval(input: &str, evaluator: &mut Evaluator) -> Result<EvalResult, String> {
     let mut parser = Parser::new(input);
     parser.skip_whitespace();
 
@@ -2043,10 +2088,7 @@ pub fn parse_and_eval(
     let expr = parser.parse_system()?;
     parser.skip_whitespace();
     if parser.pos != parser.input.len() {
-        return Err(format!(
-            "位置 {} 处多余的字符",
-            parser.pos
-        ));
+        return Err(format!("位置 {} 处多余的字符", parser.pos));
     }
 
     // 高等数学：**解析完成后、分类/求值前**把 `diff(...)` 之类就地展开成等价普通表达式。
@@ -2072,9 +2114,7 @@ pub fn parse_and_eval(
             }
             Ok(EvalResult::System(pairs))
         }
-        Expr::Equation(left, right) => {
-            Ok(EvalResult::Equation(left, right))
-        }
+        Expr::Equation(left, right) => Ok(EvalResult::Equation(left, right)),
         _ => {
             // 含自由变量的**符号结果**（如 `diff(x^2,x)` → `2*x`）交给 REPL 渲染。
             // 只在输入里真的用了高等数学函数时才走这条路：否则 `x+1` 这类输入
@@ -2121,7 +2161,10 @@ mod func_tests {
         assert_eq!(eval_mathio("cbrt(0)").unwrap(), "0");
         // 非完全立方走数值：2 的立方根 1.2599210498948731648…
         let v = eval_lineio("cbrt(2)").unwrap();
-        assert!(v.starts_with("1.2599210498948731647") || v.starts_with("1.2599210498948731648"), "{v}");
+        assert!(
+            v.starts_with("1.2599210498948731647") || v.starts_with("1.2599210498948731648"),
+            "{v}"
+        );
         // 回验：(cbrt(2))^3 在 20 位显示精度下就是 2
         let back = eval_lineio("cbrt(2)^3").unwrap();
         assert!(back.starts_with("2"), "{back}");
@@ -2162,9 +2205,17 @@ mod func_tests {
     fn constants_tau_and_phi() {
         // tau = 2π（MathIO 显示为 2*pi）
         assert_eq!(eval_mathio("tau").unwrap(), "2*pi");
-        assert!(eval_lineio("tau").unwrap().starts_with("6.2831853071795864769"));
+        assert!(
+            eval_lineio("tau")
+                .unwrap()
+                .starts_with("6.2831853071795864769")
+        );
         // phi = (1+√5)/2 ≈ 1.6180339887…
-        assert!(eval_lineio("phi").unwrap().starts_with("1.6180339887498948482"));
+        assert!(
+            eval_lineio("phi")
+                .unwrap()
+                .starts_with("1.6180339887498948482")
+        );
         // 黄金比满足 φ² = φ + 1（精确）
         assert_eq!(eval_mathio("phi^2 - phi - 1").unwrap(), "0");
         // 与显式写法一致
@@ -2186,7 +2237,13 @@ mod func_tests {
         // 有理数：mod(7/2, 1) = 1/2
         assert_eq!(eval_mathio("mod(7/2,1)").unwrap(), "1 / 2");
         // 恒等式 idiv(a,b)·b + mod(a,b) = a（多个组合）
-        for (a, b) in [("17", "5"), ("-17", "5"), ("17", "-5"), ("-17", "-5"), ("7", "1/3")] {
+        for (a, b) in [
+            ("17", "5"),
+            ("-17", "5"),
+            ("17", "-5"),
+            ("-17", "-5"),
+            ("7", "1/3"),
+        ] {
             let lhs = eval_lineio(&format!("idiv({a},{b})*{b} + mod({a},{b})")).unwrap();
             let rhs = eval_lineio(&format!("{a}")).unwrap();
             assert_eq!(lhs, rhs, "恒等式在 a={a}, b={b} 下不成立");
@@ -2266,7 +2323,10 @@ mod func_tests {
         assert_eq!(eval_mathio("nextprime(0)").unwrap(), "2");
         // 大素数 2^61-1 判定为素数、nextprime 接着它
         assert_eq!(eval_mathio("isprime(2^61-1)").unwrap(), "1");
-        assert_eq!(eval_mathio("nextprime(2^61-1)").unwrap(), "2305843009213693967");
+        assert_eq!(
+            eval_mathio("nextprime(2^61-1)").unwrap(),
+            "2305843009213693967"
+        );
         // Fast 规模护栏
         assert!(eval_lineio("isprime(10^25)").is_err());
         assert!(eval_lineio("nextprime(10^25)").is_err());
@@ -2329,18 +2389,18 @@ mod func_tests {
         }
         // 绝不能认领：这些在现有文法里有别的含义（合法或另有报错）
         for bad in [
-            "a=3",                 // 合法：解方程
-            "a=3, b=4, c=5",       // 合法：解方程组
-            "x=1 y=2",             // 名字不在记号表
-            "h=1 a=2 b=3",         // h 不是合法高度名（只认 hA/hB/hC）
-            "hD=1 a=2 b=3",        // 同上
-            "sinA=0.5 B=30",       // sinA 不在记号表
-            "a = 3 b = 4",         // 只支持紧凑写法
-            "(1,2) (3,4)",         // 拟合输入
-            "3+4",                 // 普通表达式
-            "",                    // 空
-            "a=3 b=",              // RHS 为空
-            "a=3 b=4+",            // 尾随运算符：语法上认领，但解析会报错（见下）
+            "a=3",           // 合法：解方程
+            "a=3, b=4, c=5", // 合法：解方程组
+            "x=1 y=2",       // 名字不在记号表
+            "h=1 a=2 b=3",   // h 不是合法高度名（只认 hA/hB/hC）
+            "hD=1 a=2 b=3",  // 同上
+            "sinA=0.5 B=30", // sinA 不在记号表
+            "a = 3 b = 4",   // 只支持紧凑写法
+            "(1,2) (3,4)",   // 拟合输入
+            "3+4",           // 普通表达式
+            "",              // 空
+            "a=3 b=",        // RHS 为空
+            "a=3 b=4+",      // 尾随运算符：语法上认领，但解析会报错（见下）
         ] {
             if bad == "a=3 b=4+" {
                 continue; // 这一条属于"空白区认领后解析报错"，单独验证
@@ -2446,7 +2506,12 @@ mod func_tests {
             assert!(err.contains("最外层"), "{bad} → {err}");
         }
         // 严格参数：小数 / 0 / 非整数一律拒绝
-        for bad in ["primefac(0)", "primefac(2.5)", "primefac(1/2)", "primefac(1e-3)"] {
+        for bad in [
+            "primefac(0)",
+            "primefac(2.5)",
+            "primefac(1/2)",
+            "primefac(1e-3)",
+        ] {
             assert!(perr(bad, &mut ev).contains("非零整数"), "{bad}");
         }
         // 缺括号 / 缺参数
@@ -2483,7 +2548,11 @@ mod func_tests {
         assert_eq!(eval_mathio("im(pi)").unwrap(), "0");
         assert_eq!(eval_mathio("re(i)").unwrap(), "0");
         assert!(eval_lineio("arg(2)").unwrap().starts_with("0"));
-        assert!(eval_lineio("arg(-1)").unwrap().starts_with("3.141592653589793238"));
+        assert!(
+            eval_lineio("arg(-1)")
+                .unwrap()
+                .starts_with("3.141592653589793238")
+        );
         assert!(eval_lineio("arg(0)").unwrap_err().contains("辐角"));
         // 复数路径不受影响
         assert_eq!(eval_mathio("re(2+3i)").unwrap(), "2");
@@ -2499,11 +2568,18 @@ mod func_tests {
         assert_eq!(eval_mathio("arccosh(1)").unwrap(), "0");
         assert_eq!(eval_mathio("arctanh(0)").unwrap(), "0");
         // 非零点仍走数值
-        assert!(eval_lineio("arccosh(2)").unwrap().starts_with("1.3169578969248167086"));
-        assert!(eval_lineio("arctanh(1/2)").unwrap().starts_with("0.5493061443340548457"));
+        assert!(
+            eval_lineio("arccosh(2)")
+                .unwrap()
+                .starts_with("1.3169578969248167086")
+        );
+        assert!(
+            eval_lineio("arctanh(1/2)")
+                .unwrap()
+                .starts_with("0.5493061443340548457")
+        );
         // 定义域错误不能被零点短路吞掉
         assert!(eval_lineio("arccosh(1/2)").unwrap_err().contains("定义域"));
         assert!(eval_lineio("arctanh(1)").unwrap_err().contains("定义域"));
     }
-
 }

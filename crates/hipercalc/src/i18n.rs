@@ -48,7 +48,10 @@ impl Lang {
     /// 解析语言代码 / 名称 / 序号（`/lang zh-tw`、`/lang 2`、`/lang English` 等）
     pub fn parse(s: &str) -> Option<Lang> {
         let t = s.trim().to_lowercase();
-        let t = t.trim_start_matches('/').trim_start_matches("language").trim_start_matches("lang");
+        let t = t
+            .trim_start_matches('/')
+            .trim_start_matches("language")
+            .trim_start_matches("lang");
         match t.trim() {
             "zh-cn" | "zh_cn" | "zhcn" | "cn" | "zh" | "chinese" | "1" | "简体" | "简体中文" => {
                 Some(Lang::ZhCn)
@@ -115,7 +118,10 @@ pub fn detect_system() -> Lang {
             if let Ok(v) = std::env::var(key) {
                 let v = v.to_lowercase();
                 if v.starts_with("zh") {
-                    if v.contains("tw") || v.contains("hk") || v.contains("mo") || v.contains("hant")
+                    if v.contains("tw")
+                        || v.contains("hk")
+                        || v.contains("mo")
+                        || v.contains("hant")
                     {
                         return Lang::ZhTw;
                     }

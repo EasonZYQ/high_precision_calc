@@ -5,9 +5,9 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use crate::parser::{DisplayMode, Evaluator, Expr};
 use hipercalc_core::bigfloat::BigFloat;
 use hipercalc_core::number::Number;
-use crate::parser::{DisplayMode, Evaluator, Expr};
 
 /// 变量指数向量（长度 = 变量数）
 type Mono = Vec<u32>;
@@ -28,7 +28,11 @@ struct Poly {
 impl Poly {
     /// 最高单项式总次数
     fn total_deg(&self) -> u32 {
-        self.terms.iter().map(|t| t.mono.iter().sum()).max().unwrap_or(0)
+        self.terms
+            .iter()
+            .map(|t| t.mono.iter().sum())
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -103,8 +107,11 @@ fn poly_linear(vars: &[char], coeffs: &[BigRational]) -> Poly {
 }
 
 fn poly_sub(a: &Poly, b: &Poly) -> Poly {
-    let ab: Vec<(Mono, BigRational)> =
-        a.terms.iter().map(|t| (t.mono.clone(), t.coeff.clone())).collect();
+    let ab: Vec<(Mono, BigRational)> = a
+        .terms
+        .iter()
+        .map(|t| (t.mono.clone(), t.coeff.clone()))
+        .collect();
     let mut items = ab;
     for t in &b.terms {
         items.push((t.mono.clone(), -&t.coeff));
@@ -116,7 +123,12 @@ fn poly_mul(a: &Poly, b: &Poly) -> Poly {
     let mut items = Vec::new();
     for ta in &a.terms {
         for tb in &b.terms {
-            let mono: Mono = ta.mono.iter().zip(tb.mono.iter()).map(|(x, y)| x + y).collect();
+            let mono: Mono = ta
+                .mono
+                .iter()
+                .zip(tb.mono.iter())
+                .map(|(x, y)| x + y)
+                .collect();
             items.push((mono, &ta.coeff * &tb.coeff));
         }
     }
@@ -128,7 +140,11 @@ fn poly_equal(a: &Poly, b: &Poly) -> bool {
         return false;
     }
     for t in &a.terms {
-        if !b.terms.iter().any(|u| u.mono == t.mono && u.coeff == t.coeff) {
+        if !b
+            .terms
+            .iter()
+            .any(|u| u.mono == t.mono && u.coeff == t.coeff)
+        {
             return false;
         }
     }
@@ -165,8 +181,11 @@ fn extract_content(p: &Poly) -> (BigRational, Poly) {
     } else {
         BigRational::from_integer(gcd.clone())
     };
-    let rest: Vec<(Mono, BigRational)> =
-        p.terms.iter().map(|t| (t.mono.clone(), &t.coeff / &scale)).collect();
+    let rest: Vec<(Mono, BigRational)> = p
+        .terms
+        .iter()
+        .map(|t| (t.mono.clone(), &t.coeff / &scale))
+        .collect();
     (scale, poly_of(rest))
 }
 
@@ -219,7 +238,9 @@ fn div_linear_by_pivot(p: &Poly, lin: &Poly, pivot: usize) -> Option<(Poly, Poly
             .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| {
-                a.mono[pivot].cmp(&b.mono[pivot]).then_with(|| mono_cmp(&a.mono, &b.mono))
+                a.mono[pivot]
+                    .cmp(&b.mono[pivot])
+                    .then_with(|| mono_cmp(&a.mono, &b.mono))
             })
             .unwrap()
             .0;
@@ -262,7 +283,9 @@ fn int_divisors(n: &BigInt) -> Option<Vec<BigInt>> {
     match n.to_u64() {
         Some(nu) => {
             // sqrt 为整数开方（向下取整），i ≤ sqrt ⇒ i*i ≤ n ≤ u64::MAX，不会溢出
-            let sqrt = hipercalc_core::bigint_ext::int_sqrt(&n).to_u64().unwrap_or(u64::MAX);
+            let sqrt = hipercalc_core::bigint_ext::int_sqrt(&n)
+                .to_u64()
+                .unwrap_or(u64::MAX);
             let mut i = 2u64;
             while i <= sqrt {
                 if nu % i == 0 {
@@ -448,11 +471,7 @@ fn format_rat(r: &BigRational, mode: DisplayMode) -> String {
         DisplayMode::LineIO => {
             let bf = BigFloat::from_big_rational(r);
             let s = bf.to_significant_string(hipercalc_core::bigfloat::display_digits());
-            if s == "-0" {
-                "0".to_string()
-            } else {
-                s
-            }
+            if s == "-0" { "0".to_string() } else { s }
         }
     }
 }
@@ -809,7 +828,13 @@ fn push_factor_rep(factors: &mut Vec<FactorRep>, rep: FactorRep) {
     match &rep {
         FactorRep::SqrtPair { p, q, d, exp } => {
             for f in factors.iter_mut() {
-                if let FactorRep::SqrtPair { p: ep, q: eq, d: ed, exp: e2 } = f {
+                if let FactorRep::SqrtPair {
+                    p: ep,
+                    q: eq,
+                    d: ed,
+                    exp: e2,
+                } = f
+                {
                     if *ep == *p && *eq == *q && *ed == *d {
                         *e2 += exp;
                         return;
@@ -876,7 +901,11 @@ fn factor_univariate(p: &Poly, vars: &[char], mode: DisplayMode) -> FactorOutcom
             gcd = gcd.gcd(&a);
         }
     }
-    let content = if gcd.is_zero() { BigRational::one() } else { BigRational::from_integer(gcd.clone()) };
+    let content = if gcd.is_zero() {
+        BigRational::one()
+    } else {
+        BigRational::from_integer(gcd.clone())
+    };
     if !content.is_one() {
         for c in coeffs.iter_mut() {
             *c = &*c / &content;
@@ -1068,7 +1097,10 @@ fn factor_multivariate(p: &Poly, vars: &[char], mode: DisplayMode) -> FactorOutc
         factors.push(FactorRep::Poly(poly_const(&content), 1));
     }
     if mono_total(&common) > 0 {
-        factors.push(FactorRep::Poly(poly_of(vec![(common.clone(), BigRational::one())]), 1));
+        factors.push(FactorRep::Poly(
+            poly_of(vec![(common.clone(), BigRational::one())]),
+            1,
+        ));
     }
     let mut cur = p2;
 
@@ -1292,7 +1324,11 @@ fn find_linear_factor(p: &Poly, vars: &[char]) -> Option<(Poly, usize)> {
     for i in 0..n {
         for ci in [0usize, 1, 2] {
             // 常数项: 0, +1, -1
-            let const_vals = [BigRational::zero(), BigRational::one(), BigRational::from_integer(BigInt::from(-1))];
+            let const_vals = [
+                BigRational::zero(),
+                BigRational::one(),
+                BigRational::from_integer(BigInt::from(-1)),
+            ];
             let cconst = const_vals[ci % 3].clone();
             for code in 0..code_limit {
                 let mut other_idx = vec![0usize; n - 1];
@@ -1338,9 +1374,11 @@ fn find_linear_factor(p: &Poly, vars: &[char]) -> Option<(Poly, usize)> {
 
 fn rational_of_number(n: &Number) -> Option<BigRational> {
     match n {
-        Number::Exact(expr) => expr.as_rational().or_else(|| expr.as_integer().map(BigRational::from_integer)),
+        Number::Exact(expr) => expr
+            .as_rational()
+            .or_else(|| expr.as_integer().map(BigRational::from_integer)),
         Number::Approx(_) => None,
-       Number::Complex(_) => None,
+        Number::Complex(_) => None,
     }
 }
 
@@ -1513,9 +1551,7 @@ fn merge_raw_terms(items: Vec<(Mono, Number)>) -> Vec<(Mono, Number)> {
         if c.is_zero() {
             continue;
         }
-        map.entry(m)
-            .and_modify(|x| *x = x.add(&c))
-            .or_insert(c);
+        map.entry(m).and_modify(|x| *x = x.add(&c)).or_insert(c);
     }
     map.into_iter().collect()
 }
@@ -1525,9 +1561,7 @@ fn merge_raw_terms(items: Vec<(Mono, Number)>) -> Vec<(Mono, Number)> {
 /// Q 域完整分解：供方程求解复用。
 /// 输入升幂系数（有理数），返回 (不可约因子升幂系数, 重数) 列表，
 /// 以及是否含 deg>=3 仍无法精确分解的剩余（需数值求根）。
-pub fn factor_univariate_coeffs(
-    coeffs: &[BigRational],
-) -> (Vec<(Vec<BigRational>, u32)>, bool) {
+pub fn factor_univariate_coeffs(coeffs: &[BigRational]) -> (Vec<(Vec<BigRational>, u32)>, bool) {
     let items: Vec<(Mono, BigRational)> = coeffs
         .iter()
         .enumerate()
@@ -1697,7 +1731,10 @@ mod tests {
         // x⁴ - 1 = (x²-1)(x²+1) = (x-1)(x+1)(x²+1)；x²+1 在有理数上不可约 ⇒ 应标记
         let (f, irreducible) = factor_univariate_coeffs(&[r(-1), r(0), r(0), r(0), r(1)]);
         assert!(irreducible, "二次残余应标记为不可约: {f:?}");
-        assert!(f.iter().any(|(c, _)| c == &vec![r(1), r(0), r(1)]), "缺 x²+1: {f:?}");
+        assert!(
+            f.iter().any(|(c, _)| c == &vec![r(1), r(0), r(1)]),
+            "缺 x²+1: {f:?}"
+        );
     }
 
     #[test]
@@ -1719,6 +1756,9 @@ mod tests {
         let lineio = factor_expr(&ev, &expr, crate::parser::DisplayMode::LineIO).unwrap();
         assert!(mathio.contains("sqrt(2)"), "实数域应拆出根式: {mathio}");
         assert!(!lineio.contains("sqrt"), "有理数域不该出现根式: {lineio}");
-        assert!(lineio.contains("不可再分解"), "有理数域应给不可约提示: {lineio}");
+        assert!(
+            lineio.contains("不可再分解"),
+            "有理数域应给不可约提示: {lineio}"
+        );
     }
 }

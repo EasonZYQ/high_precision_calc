@@ -58,11 +58,7 @@ fn render_exponent(e: &Expr, mode: DisplayMode) -> String {
     };
     // 内层按最低优先级渲染（括号由本函数统一加，避免出现 `x^((1 + 1))`）
     let text = render_prec(e, mode, P_ADD);
-    if ok {
-        text
-    } else {
-        format!("({})", text)
-    }
+    if ok { text } else { format!("({})", text) }
 }
 
 fn render_number(n: &hipercalc_core::number::Number, mode: DisplayMode) -> String {
@@ -131,7 +127,11 @@ fn render_own(e: &Expr, mode: DisplayMode) -> (String, u8) {
         Expr::Unary(UnaryOp::Pos, x) => render_own(x, mode),
         Expr::Binary(l, op, r) => match op {
             BinOp::Add => (
-                format!("{} + {}", render_prec(l, mode, P_ADD), render_prec(r, mode, P_ADD)),
+                format!(
+                    "{} + {}",
+                    render_prec(l, mode, P_ADD),
+                    render_prec(r, mode, P_ADD)
+                ),
                 P_ADD,
             ),
             // 右操作数要求更高优先级：`x - (y + z)` 的括号不能被去掉
@@ -248,23 +248,36 @@ mod tests {
     fn precedence_edges() {
         let m = DisplayMode::LineIO;
         // 减法右侧的和必须带括号
-        assert_eq!(render_expr(&sub(var("x"), add(var("y"), num(1))), m), "x - (y + 1)");
+        assert_eq!(
+            render_expr(&sub(var("x"), add(var("y"), num(1))), m),
+            "x - (y + 1)"
+        );
         // 幂的指数含运算符时必须带括号
         assert_eq!(
             render_expr(&pow(var("x"), add(num(1), num(1))), m),
             "x^(1 + 1)"
         );
         // 幂的底是乘积时带括号
-        assert_eq!(render_expr(&pow(mul(num(2), var("x")), num(3)), m), "(2*x)^3");
+        assert_eq!(
+            render_expr(&pow(mul(num(2), var("x")), num(3)), m),
+            "(2*x)^3"
+        );
         // 负号优先级高于幂：-x^2 = -(x^2)
         assert_eq!(
-            render_expr(&Expr::Unary(UnaryOp::Neg, Box::new(pow(var("x"), num(2)))), m),
+            render_expr(
+                &Expr::Unary(UnaryOp::Neg, Box::new(pow(var("x"), num(2)))),
+                m
+            ),
             "-x^2"
         );
         // 除法的右侧要求更高优先级
         assert_eq!(
             render_expr(
-                &Expr::Binary(Box::new(var("x")), BinOp::Div, Box::new(mul(num(2), var("y")))),
+                &Expr::Binary(
+                    Box::new(var("x")),
+                    BinOp::Div,
+                    Box::new(mul(num(2), var("y")))
+                ),
                 m
             ),
             "x / (2*y)"

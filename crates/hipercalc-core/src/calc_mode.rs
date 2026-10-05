@@ -64,9 +64,5 @@ pub fn is_deep() -> bool {
 
 /// 模式名（用于状态显示）
 pub fn name() -> &'static str {
-    if is_deep() {
-        "Deep"
-    } else {
-        "Fast"
-    }
+    if is_deep() { "Deep" } else { "Fast" }
 }
