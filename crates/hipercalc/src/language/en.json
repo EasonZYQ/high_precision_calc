@@ -298,5 +298,6 @@
   "进制字面量缺少数字（0x / 0o / 0b 后要跟对应进制的数字）": "base literal needs digits (0x / 0o / 0b must be followed by digits of that base)",
   "不是合法的 {0} 进制数: {1}": "not a valid base-{0} number: {1}",
   "用法: /base dec|hex|oct|bin": "usage: /base dec|hex|oct|bin",
-  "结果数制已设为 {0}（只影响整数）": "result base set to {0} (integers only)"
+  "结果数制已设为 {0}（只影响整数）": "result base set to {0} (integers only)",
+  "参数在快速模式下超出上限（/mode deep 可取消限制）": "argument exceeds the fast-mode limit (use /mode deep to lift it)"
 }

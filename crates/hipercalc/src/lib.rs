@@ -67,7 +67,7 @@ const COMMANDS: &[&str] = &[
 const COMMAND_HINTS: &[(&str, &str)] = &[
     (
         "/mode",
-        "mathio|lineio|deg|rad|fast|deep|prec|digits|sci|group",
+        "mathio|lineio|latex|deg|rad|fast|deep|prec|digits|sci|group",
     ),
     ("/lang", "zh-CN|zh-TW|en（无参数进入选择菜单）"),
     ("/timing", "on|off"),
@@ -96,6 +96,25 @@ struct FnMeta {
 }
 
 const FUNCTIONS_META: &[FnMeta] = &[
+    // 整数序列
+    FnMeta {
+        name: "fib",
+        min: 1,
+        max: 1,
+        sig: "(n)",
+    },
+    FnMeta {
+        name: "catalan",
+        min: 1,
+        max: 1,
+        sig: "(n)",
+    },
+    FnMeta {
+        name: "doublefac",
+        min: 1,
+        max: 1,
+        sig: "(n)",
+    },
     // 位运算（只支持非负整数）
     FnMeta {
         name: "and",
@@ -3655,6 +3674,7 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   prod(f, k, a, b)   求積：prod(k, k, 1, 10) → 3628800
   位運算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（僅限非負整數）
   進位     /base dec|hex|oct|bin 切換結果進位（僅整數）；輸入可寫 0xFF / 0o17 / 0b1010
+  整數序列 fib(n) catalan(n) doublefac(n)（斐波那契 / 卡塔蘭數 / 雙階乘；快速模式有上限，/mode deep 可取消）
   LaTeX    /mode latex 讓結果用 LaTeX 記號（\\frac{}{}、\\sqrt{}、\\pi），可直接貼進論文；切回 /mode mathio
   ── 鍵盤與輸入 ──
   Tab                補全函數/指令/常數/變數；函數補成 name() 並把游標放進括號
@@ -3726,6 +3746,7 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   prod(f, k, a, b)   product: prod(k, k, 1, 10) -> 3628800
   Bitwise   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n) (non-negative integers only)
   Bases     /base dec|hex|oct|bin switches the result base (integers only); input accepts 0xFF / 0o17 / 0b1010
+  Sequences fibonacci fib(n), Catalan catalan(n), double factorial doublefac(n) (fast mode caps them; /mode deep lifts the cap)
   LaTeX     /mode latex renders results in LaTeX (\\frac{}{}, \\sqrt{}, \\pi) ready to paste into a paper; /mode mathio switches back
   -- Keyboard & input --
   Tab                complete functions/commands/constants/variables; a function becomes name() with the cursor inside
@@ -3805,7 +3826,20 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   prod(f, k, a, b)   求积：prod(k, k, 1, 10) → 3628800
   位运算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（仅限非负整数）
   进制     /base dec|hex|oct|bin 切换结果数制（仅整数）；输入可写 0xFF / 0o17 / 0b1010
+  整数序列 fib(n) catalan(n) doublefac(n)（斐波那契 / 卡塔兰数 / 双阶乘；快速模式有上限，/mode deep 可取消）
   LaTeX    /mode latex 让结果用 LaTeX 记号（\\frac{}{}、\\sqrt{}、\\pi），可直接粘进论文；切回 /mode mathio
+  ── 显示与计算模式（/mode）──
+  /mode mathio      数学显示：分数 / 根式 / π 保持符号形式
+  /mode lineio      线性显示：一律换算成小数
+  /mode latex       第三种显示，与 mathio / lineio 并列：结果用 LaTeX 记号
+                    （\\frac{}{}、\\sqrt{}、\\pi），可直接粘进论文；切回用 /mode mathio
+  /mode deg | rad   角度制 / 弧度制（三角函数与反三角函数按此解释）
+  /mode fast | deep 快速（有规模护栏，超限给提示）/ 死算（取消上限，可能很慢）
+  /mode prec N      内部计算精度（十进制位，默认 80）
+  /mode digits N    显示的有效数字位数（默认 20）
+  /mode sci on|off  结果是否允许科学计数法；/mode group on|off 整数千分位
+  /base dec|hex|oct|bin  结果数制（只影响整数，带前缀便于粘回输入）
+
   ── 键盘与输入 ──
   Tab                补全函数/指令/常数/变量；函数补成 name() 并把光标放进括号
   Ctrl+C             计算中：中断当前运算；空闲：退出程序
@@ -4264,6 +4298,44 @@ mod cli_tests {
         }
         let total: u128 = rows.iter().map(|r| r.0).sum();
         println!("--- 合计 {} us / {} 条 ---", total, rows.len());
+    }
+
+    /// 整数序列：期望值全部来自**已知序列**（不是抄程序输出）
+    #[test]
+    fn integer_sequences() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        for (input, want) in [
+            // 斐波那契
+            ("fib(0)", "= 0"),
+            ("fib(1)", "= 1"),
+            ("fib(10)", "= 55"),
+            ("fib(20)", "= 6765"),
+            ("fib(100)", "= 354224848179261915075"),
+            // 卡塔兰数 1,1,2,5,14,42,…,16796
+            ("catalan(0)", "= 1"),
+            ("catalan(1)", "= 1"),
+            ("catalan(4)", "= 14"),
+            ("catalan(5)", "= 42"),
+            ("catalan(10)", "= 16796"),
+            // 双阶乘：n!! = n(n-2)(n-4)…
+            ("doublefac(0)", "= 1"),
+            ("doublefac(1)", "= 1"),
+            ("doublefac(5)", "= 15"),  // 5·3·1
+            ("doublefac(6)", "= 48"),  // 6·4·2
+            ("doublefac(9)", "= 945"), // 9·7·5·3·1
+            ("doublefac(20)", "= 3715891200"),
+        ] {
+            let (out, err) = run_line(input, &mut st);
+            assert!(!err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 {want}");
+        }
+        // 负数参数拒绝；快速模式下超限也拒绝（而不是算出几十万位的数）
+        for bad in ["fib(-1)", "catalan(-1)", "doublefac(-1)"] {
+            let (out, err) = run_line(bad, &mut st);
+            assert!(err, "{bad} 应被拒绝，却得到 {out}");
+        }
+        let (out, err) = run_line("catalan(30000)", &mut st);
+        assert!(err, "catalan(30000) 在快速模式下应被拒绝: {out}");
     }
 
     /// 进制字面量：`0x` / `0o` / `0b`（进制字母大小写均可），值仍按十进制显示

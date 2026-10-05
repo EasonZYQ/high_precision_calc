@@ -80,6 +80,9 @@ pub const FUNCTIONS: &[&str] = &[
     "not",
     "shl",
     "shr",
+    "fib",
+    "catalan",
+    "doublefac",
 ];
 
 /// 需要两个参数的函数（其余函数都是单参；`log` 有专门的报错文案，单独处理）
@@ -781,6 +784,55 @@ pub struct Evaluator {
     pub vars: std::collections::BTreeMap<String, Number>,
 }
 
+/// 整数序列在快速模式下的统一上限提示
+const SEQUENCE_LIMIT: &str = "参数在快速模式下超出上限（/mode deep 可取消限制）";
+
+/// 斐波那契：**快速倍增法**，O(log n)。用朴素递推的话 fib(10^6) 要迭代百万次，
+/// 而倍增法只要约 20 轮大整数乘法（结果有 20 万位，代价主要在乘法本身）。
+fn fibonacci(n: u64) -> BigInt {
+    fn go(n: u64) -> (BigInt, BigInt) {
+        if n == 0 {
+            return (BigInt::from(0), BigInt::from(1));
+        }
+        let (a, b) = go(n / 2);
+        let two_b = &b * 2;
+        let c = &a * (&two_b - &a);
+        let d = &a * &a + &b * &b;
+        if n % 2 == 0 {
+            (c, d)
+        } else {
+            (d.clone(), &c + &d)
+        }
+    }
+    go(n).0
+}
+
+/// 卡塔兰数 C_n = (2n)! / (n! (n+1)!)
+///
+/// 实现成 ∏_{k=2}^{n}(n+k) ÷ n! —— **分子分母各自累乘、最后只除一次**。
+/// 曾经写成每步 "acc*(n+k)/k" 的逐步整除，结果 n=5 时第一步 1×7/2 就被截断成 3，
+/// 算出 36（正确是 42）。逐步整除在这里不成立：单独看每一步都不保证整除。
+fn catalan(n: u64) -> BigInt {
+    let mut num = BigInt::from(1);
+    let mut den = BigInt::from(1);
+    for k in 2..=n {
+        num *= BigInt::from(n + k);
+        den *= BigInt::from(k);
+    }
+    num / den
+}
+
+/// 双阶乘 n!! = n(n-2)(n-4)…（偶数到 2、奇数到 1）；0!! = 1
+fn double_factorial(n: u64) -> BigInt {
+    let mut acc = BigInt::from(1);
+    let mut k = n;
+    while k > 1 {
+        acc *= BigInt::from(k);
+        k -= 2;
+    }
+    acc
+}
+
 /// 判断 n 是否 2 的整数次幂，返回指数（如 8 → Some(3)）
 fn power_of_two(n: &BigInt) -> Option<u64> {
     if n <= &BigInt::from(0) {
@@ -1112,6 +1164,31 @@ impl Evaluator {
                 };
                 let out = if name == "shl" { a << nv } else { a >> nv };
                 Ok(Number::from_bigint(out))
+            }
+            // 整数序列：快速模式给上限（否则会算出几十万位的数），/mode deep 可取消
+            "fib" => {
+                let n = as_nonneg_int(&args[0], "fib 需要非负整数参数")?;
+                let nv = match n.to_u32() {
+                    Some(v) if v <= 1_000_000 || hipercalc_core::calc_mode::is_deep() => v as u64,
+                    _ => return Err(SEQUENCE_LIMIT.to_string()),
+                };
+                Ok(Number::from_bigint(fibonacci(nv)))
+            }
+            "catalan" => {
+                let n = as_nonneg_int(&args[0], "catalan 需要非负整数参数")?;
+                let nv = match n.to_u32() {
+                    Some(v) if v <= 20_000 || hipercalc_core::calc_mode::is_deep() => v as u64,
+                    _ => return Err(SEQUENCE_LIMIT.to_string()),
+                };
+                Ok(Number::from_bigint(catalan(nv)))
+            }
+            "doublefac" => {
+                let n = as_nonneg_int(&args[0], "doublefac 需要非负整数参数")?;
+                let nv = match n.to_u32() {
+                    Some(v) if v <= 20_000 || hipercalc_core::calc_mode::is_deep() => v as u64,
+                    _ => return Err(SEQUENCE_LIMIT.to_string()),
+                };
+                Ok(Number::from_bigint(double_factorial(nv)))
             }
             "mod" => args[0].modulo(&args[1]),
             "idiv" => args[0].idiv(&args[1]),
