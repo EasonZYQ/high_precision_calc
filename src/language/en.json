@@ -1,7 +1,6 @@
 {
   "超高精度命令行计算器 (HiPerCalc) v1.1": "HiPerCalc — Ultra-Precision CLI Calculator v1.1",
   "当前模式: {0}": "Current modes: {0}",
-  "输入 {0} 查看帮助，输入表达式进行计算，{1} 退出": "Type {0} for help, enter an expression to compute, {1} to quit",
   "已恢复上次会话设置，含 {0} 个存储变量（/var 查看，/del all 清空）": "Restored previous session: {0} stored variables (/var to list, /del all to clear)",
   "\r用时：{0}秒": "\rTime: {0}s",
   "用时：{0}秒": "Time: {0}s",
@@ -289,5 +288,8 @@
   "↑/↓ 选择，回车确认（也可直接输入序号或 /lang <代码>）": "↑/↓ to choose, Enter to confirm (or type the index / `/lang <code>`)",
   "已切换语言：{0}（仅对后续输出生效）": "Language switched to {0} (applies to subsequent output only)",
   "{0}: 无法识别的语言，可选: 1 简体中文 / 2 繁體中文 / 3 English": "{0}: unknown language; choose 1 简体中文 / 2 繁體中文 / 3 English",
-  "求和/求积范围过大且无闭式（已超过 Deep 模式上限）": "the summation/product range is too large with no closed form (beyond the Deep-mode limit)"
+  "求和/求积范围过大且无闭式（已超过 Deep 模式上限）": "the summation/product range is too large with no closed form (beyond the Deep-mode limit)",
+  "参数过多：最多 {0} 个": "too many arguments: at most {0}",
+  "(f, x) 或 (f, x, a, b)": "(f, x) or (f, x, a, b)",
+  "输入 {0} 查看帮助，输入表达式进行计算，{1} 连按两次退出": "Type {0} for help, enter an expression to compute, press {1} twice to quit"
 }

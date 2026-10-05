@@ -61,7 +61,7 @@ cargo test           # 131 项单元测试
 | `primefac.rs`         | 整数素因数分解：小素数表 + 6k±1 试除 + 确定性 Miller-Rabin + Brent 版 Pollard's rho（u64/BigInt 双路），格式化成 `12 = 2^2 * 3`（负数 `-12 = -2^2 * 3`）；带单元测试 |
 | `solve_aux.rs`        | `=`/`≈` 前缀、周期通式、根收集等辅助工具                                                               |
 | `state.rs`            | 会话状态持久化：显示/角度/计算模式 + `/let` 变量 + `/set` 颜色的读写（`~/.hipercalc_state`）                              |
-| `main.rs`             | REPL、`/` 指令、`/help` 正文与着色器、颜色配置（`/set` 持久化）、rustyline 实时高亮、变量存储、历史持久化、运算计时（`Timing`） |
+| `main.rs`             | REPL、`/` 指令、`/help` 正文与着色器、颜色配置（`/set` 持久化）、rustyline 实时高亮、变量存储、历史持久化、运算计时（`Timing`） ；**键位绑定**（Ctrl+C 清行/连按退出、全角转半角）、**括号配对高亮与标红**、**框内参数提示** |
 | `README.md`           | 功能手册 + 代码架构文档；改动功能后须同步                                                                 |
 
 ## 容易改错的地方

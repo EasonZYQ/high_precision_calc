@@ -723,6 +723,24 @@ Language switched to English (applies to subsequent output only)
 
 The REPL highlights keywords **live** (functions green, operators yellow, commands cyan, brackets magenta, constants blue, …); **results use the very same highlighting** (`colorize_result`): `=`/`≈` take the operator color, digits the number color, `sqrt` etc. the function color, `( )` the bracket color, and everything else (variable names, Chinese labels, commas) is painted with the `result` color as a base. So a result line looks just as "structured" as the line you typed, instead of being one flat color. The `/help` body and command usage hints share the same palette (`colorize_text`): the same keyword is the same color on the input line, in results, in the help list, and in the hints. Commands are recognized only at the **line start** (whitespace allowed); a `/` mid-line is division (`1/2`, `1/x` are not commands).
 
+### Input Experience (bracket pairing / argument hints / keys / full-width conversion)
+
+- **Tab completion**: a function is completed to `name()` with the **cursor placed inside the parentheses**
+  (`sin` + Tab -> `sin(|)`); commands, constants and stored variables complete as-is. Single-letter tokens
+  still get no candidates (so implicit multiplication like `xy` is never broken). Candidates cycle on repeated Tab.
+- **Argument hints inside brackets**: when the cursor sits inside a function call, the parameter signature is
+  shown in dim text to the right; too few arguments shows the signature, too many turns it red
+  ("too many arguments: at most N"). Hints are **display-only** — pressing Right no longer inserts them.
+- **Bracket pairing and marking**: the bracket at the cursor and its partner are bolded; a surplus `)` is always
+  red, while an unclosed `(` turns red only when the cursor is not to its right (so typing never floods the line
+  with red). **Enter is never blocked** — the parser still reports the real error.
+- **Keys**: `Ctrl+C` clears the current line (press twice within 1s to quit); `Ctrl+L` clears the screen;
+  `Ctrl+R` reverse-searches history.
+- **Full-width to half-width**: `。` `（` `）` `，` `＝` `＋` `－` `×` `÷` and full-width digits are converted
+  automatically, so an IME-produced full-width punctuation no longer causes an error.
+- Completion and hints rely on `FUNCTIONS_META` (arities + signatures, in `main.rs`), kept in sync with the
+  `parser::FUNCTIONS` whitelist by a two-way unit test.
+
 ## 12. Special-Angle Exact Values
 
 | Meaning | Description |

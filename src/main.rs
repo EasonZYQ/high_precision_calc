@@ -26,13 +26,21 @@ use num_rational::BigRational;
 use num_traits::Signed;
 use number::Number;
 use parser::{parse_and_eval, DisplayMode, EvalResult, Evaluator};
-use rustyline::completion::Completer;
+use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
-use rustyline::hint::Hinter;
+use rustyline::hint::{Hint, Hinter};
 use rustyline::validate::Validator;
-use rustyline::{Context, Editor, Helper, Result as RlResult};
+use rustyline::history::DefaultHistory;
+use rustyline::line_buffer::LineBuffer;
+use rustyline::{
+    Cmd, ConditionalEventHandler, Context, Editor, Event, EventContext, EventHandler, Helper,
+    KeyEvent, Movement, RepeatCount, Result as RlResult,
+};
+use rustyline::Changeset;
+use std::cell::Cell;
 use std::io::{IsTerminal, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -55,26 +63,222 @@ const COMMAND_HINTS: &[(&str, &str)] = &[
     ("/load", "<文件路径>"),
 ];
 
-/// 函数参数签名（内联提示用；多参函数在这里能一眼看出参数顺序）
-const SIGNATURES: &[(&str, &str)] = &[
-    ("log", "(base, x)"),
-    ("nroot", "(x, n)"),
-    ("mod", "(a, b)"),
-    ("idiv", "(a, b)"),
-    ("nCr", "(n, r)"),
-    ("nPr", "(n, r)"),
-    ("gcd", "(a, b)"),
-    ("lcm", "(a, b)"),
-    ("isprime", "(n)"),
-    ("nextprime", "(n)"),
-    ("cbrt", "(x)"),
-    ("diff", "(f, x)"),
-    ("int", "(f, x) 或 (f, x, a, b)"),
-    ("lim", "(f, x, a)"),
-    ("taylor", "(f, x, a, n)"),
-    ("sum", "(f, k, a, b)"),
-    ("prod", "(f, k, a, b)"),
+/// 函数元数据：**元数 + 参数签名**，供 Tab 补全提示与"括号内参数提示"使用。
+///
+/// 这是**唯一**的函数元数据表；函数名单一真源仍是 `parser::FUNCTIONS`，
+/// 由单测 `functions_meta_covers_parser_functions` 双向抽检，防止两处漂移。
+///
+/// - `min` / `max`：允许的参数个数区间（用于"参数不足/过多"提示）；`triangle` 是命名参数特例，
+///   不参与元数校验（`max` 取 `usize::MAX` 即永不报"过多"）。
+/// - `sig`：参数签名文案；纯 ASCII 的签名在词条表里查不到就原样输出（也是允许的）。
+struct FnMeta {
+    name: &'static str,
+    min: usize,
+    max: usize,
+    sig: &'static str,
+}
+
+const FUNCTIONS_META: &[FnMeta] = &[
+    // 单参
+    FnMeta { name: "sqr", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "sqrt", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "sin", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "cos", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "tan", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "cot", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "sec", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "csc", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "arcsin", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "arccos", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "arctan", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "arccot", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "arcsec", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "arccsc", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "abs", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "sd", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "factor", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "fac", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "ln", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "exp", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "log10", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "log2", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "sinh", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "cosh", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "tanh", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "coth", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "sech", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "csch", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "arcsinh", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "arccosh", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "arctanh", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "cbrt", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "re", min: 1, max: 1, sig: "(z)" },
+    FnMeta { name: "im", min: 1, max: 1, sig: "(z)" },
+    FnMeta { name: "conj", min: 1, max: 1, sig: "(z)" },
+    FnMeta { name: "arg", min: 1, max: 1, sig: "(z)" },
+    FnMeta { name: "isprime", min: 1, max: 1, sig: "(n)" },
+    FnMeta { name: "nextprime", min: 1, max: 1, sig: "(n)" },
+    FnMeta { name: "primefac", min: 1, max: 1, sig: "(n)" },
+    FnMeta { name: "floor", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "ceil", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "round", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "frac", min: 1, max: 1, sig: "(x)" },
+    FnMeta { name: "sign", min: 1, max: 1, sig: "(x)" },
+    // 双参
+    FnMeta { name: "log", min: 2, max: 2, sig: "(base, x)" },
+    FnMeta { name: "nroot", min: 2, max: 2, sig: "(x, n)" },
+    FnMeta { name: "mod", min: 2, max: 2, sig: "(a, b)" },
+    FnMeta { name: "idiv", min: 2, max: 2, sig: "(a, b)" },
+    FnMeta { name: "nCr", min: 2, max: 2, sig: "(n, r)" },
+    FnMeta { name: "nPr", min: 2, max: 2, sig: "(n, r)" },
+    FnMeta { name: "gcd", min: 2, max: 2, sig: "(a, b)" },
+    FnMeta { name: "lcm", min: 2, max: 2, sig: "(a, b)" },
+    // 高等数学
+    FnMeta { name: "diff", min: 2, max: 2, sig: "(f, x)" },
+    FnMeta { name: "lim", min: 3, max: 3, sig: "(f, x, a)" },
+    FnMeta { name: "int", min: 2, max: 4, sig: "(f, x) 或 (f, x, a, b)" },
+    FnMeta { name: "taylor", min: 4, max: 4, sig: "(f, x, a, n)" },
+    FnMeta { name: "sum", min: 4, max: 4, sig: "(f, k, a, b)" },
+    FnMeta { name: "prod", min: 4, max: 4, sig: "(f, k, a, b)" },
+    // 命名参数特例：不做元数校验（a/b/c/A/B/C 任意组合，可逗号可空白）
+    FnMeta { name: "triangle", min: 0, max: usize::MAX, sig: "(a, b, c, A, B, C)" },
 ];
+
+/// 全角 → 半角映射：中文输入法下最容易打出的全角标点（`。` 是最高频痛点）。
+/// 只做符号与数字，**不做全角字母**（会干扰变量名的单字母/全大写规则）。
+const FULLWIDTH_MAP: &[(char, &str)] = &[
+    ('。', "."), ('．', "."), ('，', ","), ('；', ";"), ('：', ":"),
+    ('（', "("), ('）', ")"), ('［', "["), ('］', "]"),
+    ('＝', "="), ('＋', "+"), ('－', "-"), ('×', "*"), ('÷', "/"),
+    ('０', "0"), ('１', "1"), ('２', "2"), ('３', "3"), ('４', "4"),
+    ('５', "5"), ('６', "6"), ('７', "7"), ('８', "8"), ('９', "9"),
+];
+
+/// 在 `FUNCTIONS_META` 里查函数元数据
+fn fn_meta(name: &str) -> Option<&'static FnMeta> {
+    FUNCTIONS_META.iter().find(|m| m.name == name)
+}
+
+/// 光标处（或其左邻）的括号 → `(自身下标, 配对下标)`；没括号或找不到配对返回 None。
+fn match_bracket_pair(line: &str, pos: usize) -> Option<(usize, usize)> {
+    let chars: Vec<char> = line.chars().collect();
+    let idx = if pos < chars.len() && matches!(chars[pos], '(' | ')') {
+        pos
+    } else if pos > 0 && matches!(chars[pos - 1], '(' | ')') {
+        pos - 1
+    } else {
+        return None;
+    };
+    let forward = chars[idx] == '(';
+    let (open, close) = if forward { ('(', ')') } else { (')', '(') };
+    let mut depth = 0i32;
+    if forward {
+        for (j, c) in chars.iter().enumerate().skip(idx) {
+            if *c == open {
+                depth += 1;
+            } else if *c == close {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((idx, j));
+                }
+            }
+        }
+    } else {
+        for j in (0..=idx).rev() {
+            if chars[j] == open {
+                depth += 1;
+            } else if chars[j] == close {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((idx, j));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 需要标红的括号下标：
+/// - **多余的 `)` 一律标红**（永远是明显不合法）；
+/// - **未闭合的 `(` 只在光标不在其右侧时标红** —— 正在输入参数（`sin(1+` 光标在末尾）时不标，
+///   避免打字全程满屏红；光标移开或回车前才提示。
+fn unmatched_brackets(line: &str, pos: usize) -> Vec<usize> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut stack: Vec<usize> = Vec::new();
+    let mut bad: Vec<usize> = Vec::new();
+    for (i, c) in chars.iter().enumerate() {
+        match c {
+            '(' => stack.push(i),
+            ')' => {
+                if stack.pop().is_none() {
+                    bad.push(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    for o in stack {
+        if pos <= o {
+            bad.push(o);
+        }
+    }
+    bad.sort_unstable();
+    bad
+}
+
+/// 定位"包裹住光标的函数调用"：返回 `(函数名, 开括号下标, 已输入的一级参数个数)`。
+///
+/// 用于"光标在函数括号内时提示参数"。一级参数个数 = 一级逗号数 + 1（括号内为空则 0）；
+/// 统计时忽略嵌套括号与 `|…|` 内的逗号。
+fn enclosing_function_call(line: &str, pos: usize) -> Option<(String, usize, usize)> {
+    let chars: Vec<char> = line.chars().collect();
+    let pos = pos.min(chars.len());
+    // 1) 向左找最近的"未闭合 '('"
+    let mut depth = 0i32;
+    let mut open = None;
+    let mut i = pos;
+    while i > 0 {
+        i -= 1;
+        match chars[i] {
+            ')' => depth += 1,
+            '(' => {
+                if depth == 0 {
+                    open = Some(i);
+                    break;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    let open = open?;
+    // 2) 取 '(' 左侧紧邻标识符作为函数名
+    let mut j = open;
+    while j > 0 && (chars[j - 1].is_ascii_alphanumeric() || chars[j - 1] == '_') {
+        j -= 1;
+    }
+    if j == open {
+        return None; // 裸括号分组，不是函数调用
+    }
+    let name: String = chars[j..open].iter().collect();
+    // 3) 统计 '(' 到光标之间的一级逗号数
+    let mut depth = 0i32;
+    let mut in_abs = false;
+    let mut commas = 0usize;
+    let mut has_content = false;
+    for c in chars[open + 1..pos].iter() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            '|' => in_abs = !in_abs,
+            ',' if depth == 0 && !in_abs => commas += 1,
+            c if !c.is_whitespace() => has_content = true,
+            _ => {}
+        }
+    }
+    let argc = if !has_content && commas == 0 { 0 } else { commas + 1 };
+    Some((name, open, argc))
+}
 
 /// 函数白名单（高亮用）：直接引用 `parser::FUNCTIONS`，避免多处数组不同步
 const VALID_FUNCTIONS: &[&str] = parser::FUNCTIONS;
@@ -397,19 +601,67 @@ fn inline_hint(line: &str) -> Option<String> {
             .find(|(c, _)| *c == t)
             .map(|(_, h)| format!("  {}", i18n::t(h)));
     }
-    let bytes = line.as_bytes();
-    let mut start = line.len();
-    while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+    let chars: Vec<char> = line.chars().collect();
+    let mut start = chars.len();
+    while start > 0 && (chars[start - 1].is_ascii_alphanumeric() || chars[start - 1] == '_') {
         start -= 1;
     }
-    let ident = &line[start..];
-    if ident.is_empty() {
+    if start == chars.len() {
         return None;
     }
-    SIGNATURES
-        .iter()
-        .find(|(n, _)| *n == ident)
-        .map(|(_, sig)| (*sig).to_string())
+    let ident: String = chars[start..].iter().collect();
+    // 签名经 `i18n::t`：`int` 的签名含中文，英/繁界面必须翻译
+    // （旧实现直接返回原文，英/繁模式下会残留中文）
+    fn_meta(&ident).map(|m| i18n::t(m.sig))
+}
+
+/// 补全要替换的区间与**光标落点**（纯函数，便于单测）。
+///
+/// - 区间固定为 `start..orig_pos`：`orig_pos` 是 `complete()` 时的光标位置。
+///   **不能**用当前 `line.pos()` —— 我们随后会把光标挪进括号，循环补全时读它就会越替换越短。
+/// - 落点：候选以 `)` 结尾（函数补成 `name()`）时落在**右括号之前** ⇒ 光标在括号内；
+///   其余（指令/常数/变量）落在替换文本末尾。
+fn completion_edit(
+    start: usize,
+    orig_pos: usize,
+    elected: &str,
+) -> (std::ops::Range<usize>, usize) {
+    let len = elected.chars().count();
+    let pos = if elected.ends_with(')') && len > 0 {
+        start + len - 1
+    } else {
+        start + len
+    };
+    (start..orig_pos.max(start), pos)
+}
+
+/// 本帧参数的提示种类（决定右侧提示的颜色）。
+/// 之所以用 `Cell` 而不是把颜色塞进 `display()`：`display()` 参与终端宽度计算，**不能含 ANSI**。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HintKind {
+    /// 参数个数正常；或只是指令/签名的普通提示
+    Normal,
+    /// 参数个数不足
+    Incomplete,
+    /// 参数个数过多（标红）
+    TooMany,
+}
+
+/// 右侧内联提示：**只显示、不补全**。
+///
+/// `Hint::completion()` 的默认实现返回 `Some(self)` —— 那会让"按右箭头"把提示文本直接插进输入行
+/// （旧实现用的是裸 `String`，就有这个毛病）。显式返回 `None` 后右箭头只会 beep。
+struct ArgHint {
+    text: String,
+}
+
+impl Hint for ArgHint {
+    fn display(&self) -> &str {
+        &self.text
+    }
+    fn completion(&self) -> Option<&str> {
+        None
+    }
 }
 
 #[derive(Clone)]
@@ -417,35 +669,95 @@ struct CalcHelper {
     colors: ColorConfig,
     /// 存储变量名（`/let`），供 Tab 补全；随颜色一起在增删变量后刷新
     vars: Vec<String>,
+    /// 本帧提示种类（见 `HintKind`）
+    hint_kind: Cell<HintKind>,
+    /// `complete()` 时记录的光标位置（字符下标）。
+    /// `update()` 必须用它来界定"原区间" —— 因为那里我们已把光标挪进括号，
+    /// 若读 `line.pos()` 会越补越短。
+    orig_pos: Cell<usize>,
 }
 
 impl Completer for CalcHelper {
-    type Candidate = String;
-    fn complete(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> RlResult<(usize, Vec<String>)> {
-        // 取光标左侧的 token（字母数字下划线，以及行首指令的 `/`）
-        let bytes = line.as_bytes();
-        let mut start = pos.min(line.len());
+    type Candidate = Pair;
+
+    fn complete(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> RlResult<(usize, Vec<Pair>)> {
+        // 取光标左侧的 token（字母数字下划线，以及行首指令的 `/`）。
+        // 按**字符**扫描而不是字节：行内可能出现中文（变量之外的说明性文字），字节下标会与
+        // rustyline 的字符下标错位。
+        let chars: Vec<char> = line.chars().collect();
+        let pos = pos.min(chars.len());
+        let mut start = pos;
         while start > 0 {
-            let c = bytes[start - 1];
-            if c.is_ascii_alphanumeric() || c == b'_' || c == b'/' {
+            let c = chars[start - 1];
+            if c.is_ascii_alphanumeric() || c == '_' || c == '/' {
                 start -= 1;
             } else {
                 break;
             }
         }
-        let token = &line[start..pos.min(line.len())];
-        Ok((start, completion_candidates(token, &self.vars)))
+        self.orig_pos.set(pos);
+        let token: String = chars[start..pos].iter().collect();
+        let cands = completion_candidates(&token, &self.vars)
+            .into_iter()
+            .map(|name| match fn_meta(&name) {
+                // 函数：补成 `name()`，参数留给用户在括号内输入
+                Some(m) => Pair {
+                    display: format!("{}{}", name, m.sig),
+                    replacement: format!("{}()", name),
+                },
+                // 指令 / 常数 / 变量：原样补全
+                None => Pair {
+                    display: name.clone(),
+                    replacement: name,
+                },
+            })
+            .collect();
+        Ok((start, cands))
+    }
+
+    /// **实现"Tab 补成 `sin()` 且光标落在括号内"**。
+    ///
+    /// rustyline 的默认实现用 `line.replace(start..line.pos(), elected)`，光标会停在 `)` 之后；
+    /// 这里插入后再把光标左移一格。注意 `line.pos()` 已被我们改过，所以原区间必须用
+    /// `complete()` 记下的 `orig_pos` 来界定（循环补全每次都会回到同一区间重放）。
+    fn update(&self, line: &mut LineBuffer, start: usize, elected: &str, cl: &mut Changeset) {
+        let orig = self.orig_pos.get().clamp(start, line.len());
+        let (range, pos) = completion_edit(start, orig, elected);
+        line.replace(range, elected, cl);
+        line.set_pos(pos);
     }
 }
 
 impl Hinter for CalcHelper {
-    type Hint = String;
-    fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<String> {
-        // 只在光标位于行尾时提示，避免干扰对已有文本的编辑
-        if pos != line.len() {
-            return None;
+    type Hint = ArgHint;
+
+    fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<ArgHint> {
+        // A. 光标落在某个函数调用的括号内 ⇒ 显示参数提示（不再要求光标在行尾）
+        if let Some((name, _open, argc)) = enclosing_function_call(line, pos) {
+            if let Some(m) = fn_meta(&name) {
+                let (kind, text) = if argc > m.max {
+                    (
+                        HintKind::TooMany,
+                        i18n::fmt("参数过多：最多 {0} 个", &[&m.max.to_string()]),
+                    )
+                } else if argc < m.min {
+                    (HintKind::Incomplete, i18n::t(m.sig))
+                } else {
+                    (HintKind::Normal, i18n::t(m.sig))
+                };
+                self.hint_kind.set(kind);
+                return Some(ArgHint {
+                    text: format!("  {}", text),
+                });
+            }
         }
-        inline_hint(line)
+        self.hint_kind.set(HintKind::Normal);
+        // B. 退回原有的"行尾"提示（指令用法 / 函数签名）
+        if pos == line.len() {
+            inline_hint(line).map(|text| ArgHint { text })
+        } else {
+            None
+        }
     }
 }
 
@@ -454,26 +766,98 @@ impl Validator for CalcHelper {
         &self,
         _ctx: &mut rustyline::validate::ValidationContext,
     ) -> RlResult<rustyline::validate::ValidationResult> {
+        // 刻意恒为合法：**不拦回车**。括号问题靠实时染色 + 参数提示引导，
+        // 回车后仍由解析器给正式报错（文案三语已有）。
         Ok(rustyline::validate::ValidationResult::Valid(None))
     }
 }
 
 impl Highlighter for CalcHelper {
-    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> std::borrow::Cow<'l, str> {
-        highlight_input(line, &self.colors).into()
+    fn highlight<'l>(&self, line: &'l str, pos: usize) -> std::borrow::Cow<'l, str> {
+        let pair = match_bracket_pair(line, pos);
+        let bad = unmatched_brackets(line, pos);
+        colorize_impl(line, &self.colors, false, None, pair, &bad).into()
     }
 
     fn highlight_char(&self, _line: &str, _pos: usize, _forced: bool) -> bool {
+        // 恒 true：光标移动也要重绘，配对高亮才能跟着光标走
         true
+    }
+
+    fn highlight_hint<'h>(&self, hint: &'h str) -> std::borrow::Cow<'h, str> {
+        match self.hint_kind.get() {
+            HintKind::TooMany => hint.color(self.colors.error).bold().to_string().into(),
+            HintKind::Incomplete => hint.color(self.colors.operator).to_string().into(),
+            HintKind::Normal => hint.dimmed().to_string().into(),
+        }
     }
 }
 
 impl Helper for CalcHelper {}
 
-/// 实时高亮输入行：仅对完整有效函数/常量/运算符着色。
-/// 指令只在行首（忽略空白）识别——行内的 `/` 是除法运算符（`1/2`、`1/x`）。
-fn highlight_input(line: &str, colors: &ColorConfig) -> String {
-    colorize_text(line, colors, false)
+/// Ctrl+C：第一次清空当前行，1 秒内连按第二次才退出（Python REPL 的习惯）。
+/// rustyline 一次按键只能返回一个 `Cmd`，多步动作只能靠这里的状态机实现。
+struct CtrlCHandler {
+    last: AtomicU64,
+}
+
+impl ConditionalEventHandler for CtrlCHandler {
+    fn handle(
+        &self,
+        _evt: &Event,
+        _n: RepeatCount,
+        _positive: bool,
+        _ctx: &EventContext,
+    ) -> Option<Cmd> {
+        let now = now_millis();
+        let prev = self.last.swap(now, Ordering::Relaxed);
+        if now.saturating_sub(prev) <= 1000 {
+            Some(Cmd::Interrupt) // 第二次 ⇒ 走主循环既有的 Interrupted 分支退出
+        } else {
+            Some(Cmd::Kill(Movement::WholeBuffer)) // 第一次 ⇒ 清空当前行
+        }
+    }
+}
+
+/// 全角字符 → 半角（中文输入法下 `。`（ 等极易打出）
+struct FullwidthHandler {
+    to: &'static str,
+}
+
+impl ConditionalEventHandler for FullwidthHandler {
+    fn handle(
+        &self,
+        _evt: &Event,
+        _n: RepeatCount,
+        _positive: bool,
+        _ctx: &EventContext,
+    ) -> Option<Cmd> {
+        Some(Cmd::Insert(1, self.to.to_string()))
+    }
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 注册自定义键位：Ctrl+C 清行/连按退出 + 全角转半角。
+/// （Ctrl+L 清屏、Ctrl+R 反向历史搜索是 rustyline 的 Emacs 默认绑定，无需注册。）
+fn install_key_bindings(rl: &mut Editor<CalcHelper, DefaultHistory>) {
+    rl.bind_sequence(
+        KeyEvent::ctrl('C'),
+        EventHandler::Conditional(Box::new(CtrlCHandler {
+            last: AtomicU64::new(0),
+        })),
+    );
+    for (full, half) in FULLWIDTH_MAP {
+        rl.bind_sequence(
+            KeyEvent::from(*full),
+            EventHandler::Conditional(Box::new(FullwidthHandler { to: half })),
+        );
+    }
 }
 
 /// 按类别给一段文本着色（REPL 输入行、/help 列表与各指令提示共用）：
@@ -482,7 +866,7 @@ fn highlight_input(line: &str, colors: &ColorConfig) -> String {
 /// `command_anywhere = true` 时文本中任意位置的 `/xxx` 都按指令着色（/help 列表场景），
 /// 为 false 时只认行首指令（输入行场景）。
 fn colorize_text(line: &str, colors: &ColorConfig, command_anywhere: bool) -> String {
-    colorize_impl(line, colors, command_anywhere, None)
+    colorize_impl(line, colors, command_anywhere, None, None, &[])
 }
 
 /// 结果行着色：与输入行**共用同一套** token 着色（函数/运算符/括号/常量/数字各按类别上色），
@@ -490,7 +874,7 @@ fn colorize_text(line: &str, colors: &ColorConfig, command_anywhere: bool) -> St
 /// 于是结果既保留了"这是结果"的整体色感，又能一眼看出表达式结构。
 /// （旧实现把整行刷成单一的 `result` 颜色，看起来和没高亮一样。）
 fn colorize_result(line: &str, colors: &ColorConfig) -> String {
-    colorize_impl(line, colors, false, Some(colors.result))
+    colorize_impl(line, colors, false, Some(colors.result), None, &[])
 }
 
 /// `colorize_text` / `colorize_result` 的公共实现。
@@ -502,6 +886,8 @@ fn colorize_impl(
     colors: &ColorConfig,
     command_anywhere: bool,
     base: Option<Color>,
+    pair: Option<(usize, usize)>,
+    bad: &[usize],
 ) -> String {
     let chars: Vec<char> = line.chars().collect();
     let len = chars.len();
@@ -545,10 +931,17 @@ fn colorize_impl(
             seen_non_space = true;
         }
 
-        // 括号
+        // 括号：不合法的标红 > 光标配对高亮（同色加粗）> 常规色
         if BRACKETS.contains(&chars[i]) {
             flush_plain!();
-            result.push_str(&style_char(chars[i], colors.bracket).to_string());
+            if bad.contains(&i) {
+                result.push_str(&style_char(chars[i], colors.error).to_string());
+            } else if matches!(pair, Some((a, b)) if a == i || b == i) {
+                // 加粗要经 ColoredString（ 本身没有 bold），故这里直接构造
+                result.push_str(&chars[i].to_string().color(colors.bracket).bold().to_string());
+            } else {
+                result.push_str(&style_char(chars[i], colors.bracket).to_string());
+            }
             i += 1;
             continue;
         }
@@ -842,11 +1235,14 @@ fn main() {
     }
 
     let helper = CalcHelper {
+        hint_kind: Cell::new(HintKind::Normal),
+        orig_pos: Cell::new(0),
         colors: colors.clone(),
         vars: state.evaluator.vars.keys().cloned().collect(),
     };
     let mut rl = Editor::new().expect("创建 readline 编辑器失败");
     rl.set_helper(Some(helper));
+    install_key_bindings(&mut rl);
 
     // 加载历史（失败则忽略，首次运行无历史文件）
     if let Some(path) = history_path() {
@@ -877,7 +1273,7 @@ fn main() {
     lprint!(
         "{}",
         i18n::fmt(
-            "输入 {0} 查看帮助，输入表达式进行计算，{1} 退出",
+            "输入 {0} 查看帮助，输入表达式进行计算，{1} 连按两次退出",
             &[
                 &"/help".color(state.colors.command).bold().to_string(),
                 &"Ctrl+C".dimmed().to_string(),
@@ -2629,7 +3025,7 @@ mod rawkey {
 
 /// 繁體中文帮助（结构与 HELP_TEXT 一致）
 const HELP_TEXT_TW: &str = "\
-HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離開，Ctrl+C 中斷）
+HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離開，Ctrl+C 清行、連按兩次離開）
 
 【基本運算】
   + - * / ^ !        加 減 乘 除、幂（右結合）、階乘（優先於幂）
@@ -2667,6 +3063,12 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   taylor(f, x, a, n) 泰勒展開（a=0 即麥克勞林）：taylor(sin(x), x, 0, 5) → x - 1 / 6 * x^3 + 1 / 120 * x^5（n 為最高次數，不含餘項）
   sum(f, k, a, b)    求和：sum(k, k, 1, 100) → 5050、sum(k, k, 1, 1000000) → 500000500000（先閉式後逐項）
   prod(f, k, a, b)   求積：prod(k, k, 1, 10) → 3628800
+  ── 鍵盤與輸入 ──
+  Tab                補全函數/指令/常數/變數；函數補成 name() 並把游標放進括號
+  Ctrl+C             清空當前行；1 秒內連按兩次才離開
+  Ctrl+L             清屏          Ctrl+R  反向搜尋歷史
+  括號               游標處的括號與其配對括號加粗；不合法的括號標紅（不擋 Enter）
+  輸入法             全角（）、。，等自動轉成半角
 
 【變數儲存】
   /let A = 5         儲存變數（全大寫名），在算式、方程、fac 中自動取值
@@ -2691,7 +3093,7 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
 
 /// English help (same layout as HELP_TEXT)
 const HELP_TEXT_EN: &str = "\
-HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exit to quit, Ctrl+C to interrupt)
+HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exit to quit, Ctrl+C clears the line, twice to exit)
 
 [Basics]
   + - * / ^ !        add, sub, mul, div, power (right-assoc), factorial (binds tighter than ^)
@@ -2729,6 +3131,12 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   taylor(f, x, a, n) Taylor series (a=0 gives Maclaurin): taylor(sin(x), x, 0, 5) -> x - 1/6*x^3 + 1/120*x^5 (n = highest degree, no remainder)
   sum(f, k, a, b)    summation: sum(k, k, 1, 100) -> 5050, sum(k, k, 1, 1000000) -> 500000500000 (closed form first)
   prod(f, k, a, b)   product: prod(k, k, 1, 10) -> 3628800
+  -- Keyboard & input --
+  Tab                complete functions/commands/constants/variables; a function becomes name() with the cursor inside
+  Ctrl+C             clear the current line; press twice within 1s to quit
+  Ctrl+L             clear screen   Ctrl+R  reverse history search
+  Brackets           the brackets at the cursor and their match are bolded; invalid ones turn red (Enter is never blocked)
+  IME                full-width ( ) , . etc. are converted to half-width automatically
 
 [Variables]
   /let A = 5         store a variable (UPPERCASE name), usable in expressions, equations and fac
@@ -2761,7 +3169,7 @@ fn help_text() -> &'static str {
 }
 
 const HELP_TEXT: &str = "\
-HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit 退出，Ctrl+C 中断）
+HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit 退出，Ctrl+C 清行、连按两次退出）
 
 【基本运算】
   + - * / ^ !        加 减 乘 除、幂（右结合）、阶乘（优先级高于幂）
@@ -2799,6 +3207,12 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   taylor(f, x, a, n) 泰勒展开（a=0 即麦克劳林）：taylor(sin(x), x, 0, 5) → x - 1 / 6 * x^3 + 1 / 120 * x^5（n 是最高次数，不含余项）
   sum(f, k, a, b)    求和：sum(k, k, 1, 100) → 5050、sum(k, k, 1, 1000000) → 500000500000（先闭式后逐项）
   prod(f, k, a, b)   求积：prod(k, k, 1, 10) → 3628800
+  ── 键盘与输入 ──
+  Tab                补全函数/指令/常数/变量；函数补成 name() 并把光标放进括号
+  Ctrl+C             清空当前行；1 秒内连按两次才退出
+  Ctrl+L             清屏          Ctrl+R  反向搜索历史
+  括号               光标处的括号与其配对括号加粗；不合法的括号标红（不挡回车）
+  输入法             全角（）、。，等自动转成半角
 
 【变量存储】
   /let A = 5         存储变量（全大写名），在表达式、方程、fac 中自动取值
@@ -3254,6 +3668,81 @@ mod cli_tests {
         assert!(out.contains("≈"), "数值结果应标 ≈（精确值不会带 ≈）: {out}");
         // Σ_{k=1}^{3000} 1/k^3 = ζ(3) − 约 5.6e-8 ⇒ 前缀 1.2020568 足够抓住算错的情况
         assert!(out.contains("1.2020568"), "数值累加结果不对: {out}");
+    }
+
+    #[test]
+    fn bracket_pair_matching() {
+        assert_eq!(match_bracket_pair("(1+2)", 0), Some((0, 4)));
+        assert_eq!(match_bracket_pair("(1+2)", 5), Some((4, 0))); // 光标在右括号之后 ⇒ 取左邻
+        assert_eq!(match_bracket_pair("sin(x)", 3), Some((3, 5)));
+        assert_eq!(match_bracket_pair("((1))", 2), Some((1, 3)));
+        assert_eq!(match_bracket_pair("(", 0), None); // 无配对
+        assert_eq!(match_bracket_pair("1+2", 2), None); // 没有括号
+    }
+
+    #[test]
+    fn unmatched_bracket_marking() {
+        assert_eq!(unmatched_brackets("1+2)", 4), vec![3]); // 多余 ')' 一律标
+        assert!(unmatched_brackets("sin(1+", 6).is_empty()); // 光标在最右 ⇒ 正在输入，不标
+        assert_eq!(unmatched_brackets("sin(1+", 0), vec![3]); // 光标移开 ⇒ 标
+        assert!(unmatched_brackets("(1+2", 5).is_empty());
+    }
+
+    #[test]
+    fn enclosing_function_detection() {
+        assert_eq!(enclosing_function_call("sin(1,2", 7), Some(("sin".into(), 3, 2)));
+        assert_eq!(enclosing_function_call("sin(", 4), Some(("sin".into(), 3, 0)));
+        assert_eq!(enclosing_function_call("1+log(2,", 8), Some(("log".into(), 5, 2)));
+        assert_eq!(enclosing_function_call("(1+2)", 3), None); // 裸括号分组不算函数调用
+        // `|…|` 内的逗号不计入参数分隔
+        assert_eq!(enclosing_function_call("abs(|-3|,", 9), Some(("abs".into(), 3, 2)));
+        // 嵌套：内层括号里的逗号属于内层函数
+        assert_eq!(enclosing_function_call("diff(sin(x),x)", 12), Some(("diff".into(), 4, 2)));
+    }
+
+    /// **核心用例**：验证"补成 `sin()` 且光标落在括号内"的落点计算。
+    /// （不能直接调 `Completer::update`：它要 `rustyline::Changeset`，而 `Changeset::new()`
+    ///   是 `pub(crate)`；把落点逻辑抽成纯函数后即可直接断言。）
+    #[test]
+    fn completion_edit_puts_cursor_inside_parens() {
+        let (range, pos) = completion_edit(0, 3, "sin()");
+        assert_eq!(range, 0..3);
+        assert_eq!(pos, 4, "光标应落在括号内：sin(|)");
+        // 指令/常数/变量：原样补全，光标在末尾
+        let (_, pos) = completion_edit(0, 2, "pi");
+        assert_eq!(pos, 2);
+        // 循环补全：第二次仍按"原区间"替换，不会越补越短
+        let (range, pos) = completion_edit(0, 3, "sinh()");
+        assert_eq!(range, 0..3);
+        assert_eq!(pos, 5);
+    }
+
+    #[test]
+    fn functions_meta_covers_parser_functions() {
+        // 元数据表与函数白名单必须双向一致，否则新函数会没有参数提示/补全括号
+        for f in parser::FUNCTIONS {
+            assert!(fn_meta(f).is_some(), "{f} 缺 FUNCTIONS_META 元数据");
+        }
+        for m in FUNCTIONS_META {
+            assert!(
+                parser::FUNCTIONS.contains(&m.name),
+                "{} 不在 parser::FUNCTIONS 里",
+                m.name
+            );
+        }
+    }
+
+    #[test]
+    fn fullwidth_map_is_sane() {
+        // 无重复键、不能映射到自己、不含字母（会干扰变量名规则）
+        let mut seen = std::collections::HashSet::new();
+        for (full, half) in FULLWIDTH_MAP {
+            assert!(seen.insert(*full), "全角字符重复: {full}");
+            assert!(!half.chars().all(|c| c.is_alphabetic()), "{half} 不该映射到字母");
+            assert!(!full.is_ascii(), "{full} 不是全角字符");
+        }
+        assert!(FULLWIDTH_MAP.iter().any(|(f, h)| *f == '。' && *h == "."));
+        assert!(FULLWIDTH_MAP.iter().any(|(f, h)| *f == '（' && *h == "("));
     }
 
     #[test]
