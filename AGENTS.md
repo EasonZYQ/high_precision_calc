@@ -21,6 +21,11 @@ crates/hipercalc/        parser / equation / primefac / solver_* / solve_aux / c
   拆成不同 crate 会直接编译不过；`calc_mode` / `cancel` 被四层共用，必须沉在 core。
 - 二进制名必须保持 `hipercalc`（CI 冒烟与 release 产物名都按它引用）；**不要改包名**。
 
+## 路线图
+
+待做功能的清单（含每项的现有基础 / 要改的接口 / 成本 / 风险）见 [](docs/ROADMAP.md)，
+其中也登记了三笔技术债：左括号自动配对、clippy 那 2 条疑似精度隐患的 、非 Windows 的计算中中断。
+
 ## 构建与验证
 
 ```powershell
