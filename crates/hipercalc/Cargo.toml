@@ -2,7 +2,7 @@
 # 包名必须保持 hipercalc：CI 的冒烟测试与 release 的产物名都按 `hipercalc(.exe)` 引用，
 # 改名会牵动 ci.yml 与 release.yml 的多处路径。
 name = "hipercalc"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2024"
 description = "超高精度命令行计算器"
 license = "MIT"

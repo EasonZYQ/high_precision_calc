@@ -262,19 +262,32 @@ fn enclosing_function_call(line: &str, pos: usize) -> Option<(String, usize, usi
     // 3) 统计 '(' 到光标之间的一级逗号数
     let mut depth = 0i32;
     let mut in_abs = false;
-    let mut commas = 0usize;
-    let mut has_content = false;
+    // 逐段计数：**只数"已有内容的"参数段**。
+    // 早先的写法是"逗号数 + 1"，于是 `sum(k,` 会被算成 2 个参数 ⇒ 提示把 k 跳过去了
+    // （用户反馈"输入逗号后第二个参数又没了"）。现在末尾的空段不算数。
+    let mut argc = 0usize;
+    let mut seg_has_content = false;
     for c in chars[open + 1..pos].iter() {
         match c {
-            '(' => depth += 1,
+            '(' => {
+                depth += 1;
+                seg_has_content = true;
+            }
             ')' => depth -= 1,
             '|' => in_abs = !in_abs,
-            ',' if depth == 0 && !in_abs => commas += 1,
-            c if !c.is_whitespace() => has_content = true,
+            ',' if depth == 0 && !in_abs => {
+                if seg_has_content {
+                    argc += 1;
+                }
+                seg_has_content = false;
+            }
+            c if !c.is_whitespace() => seg_has_content = true,
             _ => {}
         }
     }
-    let argc = if !has_content && commas == 0 { 0 } else { commas + 1 };
+    if seg_has_content {
+        argc += 1;
+    }
     Some((name, open, argc))
 }
 
@@ -625,7 +638,11 @@ fn completion_edit(
     elected: &str,
 ) -> (std::ops::Range<usize>, usize) {
     let len = elected.chars().count();
-    let pos = if elected.ends_with(')') && len > 0 {
+    let pos = if len == 0 {
+        // 空替换：不改文本，只把光标右移一格 —— 用于"跳过已有的右括号"
+        orig_pos + 1
+    } else if elected.ends_with(')') {
+        // 函数补成 `name()` / 自动补右括号：光标落在右括号**之前**
         start + len - 1
     } else {
         start + len
@@ -650,7 +667,14 @@ fn remaining_args_hint(sig: &str, argc: usize) -> String {
     if argc >= params.len() {
         return ")".to_string();
     }
-    format!("{})", params[argc..].join(", "))
+    let rest = params[argc..].join(", ");
+    if argc == 0 {
+        // 还没写任何参数：直接给第一个参数名
+        format!("{rest})")
+    } else {
+        // 已经写了若干参数：前面补一个 `, ` —— 告诉用户"接下来先敲逗号"
+        format!(", {rest})")
+    }
 }
 
 /// 本帧参数的提示种类（决定右侧提示的颜色）。
@@ -723,11 +747,20 @@ impl Completer for CalcHelper {
                     display: format!("{}{}", name, m.sig),
                     replacement: format!("{}()", name),
                 },
-                // 指令 / 常数 / 变量：原样补全
-                None => Pair {
-                    display: name.clone(),
-                    replacement: name,
-                },
+                // 指令：候选里带上用法提示（与行尾 hint 同一张表）；常数 / 变量原样补全
+                None => {
+                    let usage = COMMAND_HINTS
+                        .iter()
+                        .find(|(c, _)| *c == name)
+                        .map(|(_, h)| i18n::t(h));
+                    Pair {
+                        display: match usage {
+                            Some(h) => format!("{name}  {h}"),
+                            None => name.clone(),
+                        },
+                        replacement: name,
+                    }
+                }
             })
             .collect();
         Ok((start, cands))
@@ -810,9 +843,10 @@ impl Highlighter for CalcHelper {
 
     fn highlight_hint<'h>(&self, hint: &'h str) -> std::borrow::Cow<'h, str> {
         match self.hint_kind.get() {
+            // 只有"参数过多"要醒目；其余一律**不上色** —— 与计时行同一种灰（终端默认前景）。
+            // 之前 Incomplete 用 operator（黄），用户反馈看起来像警告色；dimmed 在部分终端也会偏黄。
             HintKind::TooMany => hint.color(self.colors.error).bold().to_string().into(),
-            HintKind::Incomplete => hint.color(self.colors.operator).to_string().into(),
-            HintKind::Normal => hint.dimmed().to_string().into(),
+            HintKind::Incomplete | HintKind::Normal => hint.into(),
         }
     }
 }
@@ -3716,12 +3750,16 @@ mod cli_tests {
     fn enclosing_function_detection() {
         assert_eq!(enclosing_function_call("sin(1,2", 7), Some(("sin".into(), 3, 2)));
         assert_eq!(enclosing_function_call("sin(", 4), Some(("sin".into(), 3, 0)));
-        assert_eq!(enclosing_function_call("1+log(2,", 8), Some(("log".into(), 5, 2)));
+        // 末尾逗号不算"已写第二个参数"（用户反馈过：写完逗号提示把第二个参数跳过去了）
+        assert_eq!(enclosing_function_call("1+log(2,", 8), Some(("log".into(), 5, 1)));
+        assert_eq!(enclosing_function_call("sum(k,", 6), Some(("sum".into(), 3, 1)));
+        assert_eq!(enclosing_function_call("sum(k,2", 7), Some(("sum".into(), 3, 2)));
         assert_eq!(enclosing_function_call("(1+2)", 3), None); // 裸括号分组不算函数调用
         // `|…|` 内的逗号不计入参数分隔
-        assert_eq!(enclosing_function_call("abs(|-3|,", 9), Some(("abs".into(), 3, 2)));
+        assert_eq!(enclosing_function_call("abs(|-3|,", 9), Some(("abs".into(), 3, 1)));
         // 嵌套：内层括号里的逗号属于内层函数
-        assert_eq!(enclosing_function_call("diff(sin(x),x)", 12), Some(("diff".into(), 4, 2)));
+        // 游标在末尾（x 之后）才是"写了 2 个参数"
+        assert_eq!(enclosing_function_call("diff(sin(x),x)", 13), Some(("diff".into(), 4, 2)));
     }
 
     /// **核心用例**：验证"补成 `sin()` 且光标落在括号内"的落点计算。
@@ -3735,6 +3773,14 @@ mod cli_tests {
         // 指令/常数/变量：原样补全，光标在末尾
         let (_, pos) = completion_edit(0, 2, "pi");
         assert_eq!(pos, 2);
+        // 自动配对 `()` 的落点：光标在括号内
+        let (range, pos) = completion_edit(3, 3, "()");
+        assert_eq!(range, 3..3, "自动配对不该替换已有文字");
+        assert_eq!(pos, 4, "光标应在括号内：(|)");
+        // 空替换 = 跳过已有的 `)`：文本不动、光标右移一格
+        let (range, pos) = completion_edit(5, 5, "");
+        assert_eq!(range, 5..5);
+        assert_eq!(pos, 6);
         // 循环补全：第二次仍按"原区间"替换，不会越补越短
         let (range, pos) = completion_edit(0, 3, "sinh()");
         assert_eq!(range, 0..3);
@@ -3747,8 +3793,9 @@ mod cli_tests {
         assert_eq!(remaining_args_hint("(x)", 0), "x)");
         assert_eq!(remaining_args_hint("(x)", 1), ")");
         assert_eq!(remaining_args_hint("(base, x)", 0), "base, x)");
-        assert_eq!(remaining_args_hint("(base, x)", 1), "x)");
-        assert_eq!(remaining_args_hint("(f, x, a, b)", 2), "a, b)");
+        // 写过参数后，提示前带一个 ", " —— 告诉用户接下来先敲逗号
+        assert_eq!(remaining_args_hint("(base, x)", 1), ", x)");
+        assert_eq!(remaining_args_hint("(f, x, a, b)", 2), ", a, b)");
         assert_eq!(sig_params("(f, x, a, b)"), vec!["f", "x", "a", "b"]);
     }
 
