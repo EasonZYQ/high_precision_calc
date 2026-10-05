@@ -174,7 +174,7 @@ fn split_u64(m: u64, out: &mut Vec<BigInt>) -> Result<(), String> {
         out.push(BigInt::from(m));
         return Ok(());
     }
-    let budget = if crate::calc_mode::is_deep() {
+    let budget = if hipercalc_core::calc_mode::is_deep() {
         POLLARD_ITERS_DEEP
     } else {
         POLLARD_ITERS_FAST
@@ -372,7 +372,7 @@ fn factor_bigint(n: &BigInt, out: &mut Vec<BigInt>) -> Result<(), String> {
         return Ok(());
     }
     // 3) 先判素（同 u64 路径：素数不该被一路试除掉）
-    if crate::bigint_ext::is_prime(&m) {
+    if hipercalc_core::bigint_ext::is_prime(&m) {
         out.push(m);
         return Ok(());
     }
@@ -384,11 +384,11 @@ fn split_bigint(m: BigInt, out: &mut Vec<BigInt>) -> Result<(), String> {
     if m.is_one() {
         return Ok(());
     }
-    if crate::bigint_ext::is_prime(&m) {
+    if hipercalc_core::bigint_ext::is_prime(&m) {
         out.push(m);
         return Ok(());
     }
-    let budget = if crate::calc_mode::is_deep() {
+    let budget = if hipercalc_core::calc_mode::is_deep() {
         POLLARD_ITERS_DEEP
     } else {
         POLLARD_ITERS_FAST

@@ -182,7 +182,7 @@ fn contains_var(ev: &crate::parser::Evaluator, e: &Expr, var: &str) -> bool {
 /* ---------------- 构造 Expr 的小工具 ---------------- */
 
 fn num(v: i64) -> Expr {
-    Expr::Number(crate::number::Number::from_int(v))
+    Expr::Number(hipercalc_core::number::Number::from_int(v))
 }
 
 fn num_expr(v: i64) -> Expr {

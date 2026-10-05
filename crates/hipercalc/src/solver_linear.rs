@@ -1,4 +1,4 @@
-use crate::number::Number;
+use hipercalc_core::number::Number;
 use crate::parser::DisplayMode;
 
 /// 线性方程组求解结果
@@ -134,8 +134,8 @@ pub fn format_linear_solution(sol: &LinearSolution, mode: DisplayMode) -> String
         .iter()
         .map(|(v, n)| {
             let s = match mode {
-                DisplayMode::MathIO => crate::display::format_mathio(n),
-                DisplayMode::LineIO => crate::display::format_lineio(n),
+                DisplayMode::MathIO => hipercalc_core::display::format_mathio(n),
+                DisplayMode::LineIO => hipercalc_core::display::format_lineio(n),
             };
             format!("{} {} {}", v, crate::solve_aux::result_prefix(n, mode), s)
         })

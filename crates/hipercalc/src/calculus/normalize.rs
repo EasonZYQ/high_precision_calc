@@ -12,7 +12,7 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
 
-use crate::number::Number;
+use hipercalc_core::number::Number;
 use crate::parser::{BinOp, Expr, UnaryOp};
 
 use super::{max_terms, ERROR_TOO_MANY_TERMS};
@@ -125,7 +125,7 @@ fn to_terms(ev: &crate::parser::Evaluator, e: &Expr) -> Result<Vec<NTerm>, Strin
                     for t in &a {
                         ok_div_exact(&t.coeff, d)?;
                         out.push(NTerm {
-                            coeff: crate::number::Number::div(&t.coeff, d),
+                            coeff: hipercalc_core::number::Number::div(&t.coeff, d),
                             factors: t.factors.clone(),
                         });
                     }
@@ -227,7 +227,7 @@ fn to_terms_pow(
                             if t.coeff.is_zero() {
                                 return Err("除以零错误".to_string());
                             }
-                            t.coeff = crate::number::Number::div(&Number::from_int(1), &t.coeff);
+                            t.coeff = hipercalc_core::number::Number::div(&Number::from_int(1), &t.coeff);
                             for f in t.factors.iter_mut() {
                                 f.1 = f.1.neg();
                             }
@@ -291,7 +291,7 @@ fn mul_terms(a: &NTerm, b: &NTerm) -> Result<NTerm, String> {
         }
     }
     Ok(NTerm {
-        coeff: crate::number::Number::mul(&a.coeff, &b.coeff),
+        coeff: hipercalc_core::number::Number::mul(&a.coeff, &b.coeff),
         factors,
     })
 }
@@ -406,7 +406,7 @@ fn term_key(t: &NTerm) -> String {
 fn exp_key(e: &Number) -> String {
     match e.as_rational() {
         Some(r) => format!("{}/{}", r.numer(), r.denom()),
-        None => crate::display::format_lineio(e),
+        None => hipercalc_core::display::format_lineio(e),
     }
 }
 

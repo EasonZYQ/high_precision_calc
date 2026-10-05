@@ -5,8 +5,8 @@ use num_traits::{One, Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
-use crate::bigfloat::BigFloat;
-use crate::number::Number;
+use hipercalc_core::bigfloat::BigFloat;
+use hipercalc_core::number::Number;
 use crate::parser::{DisplayMode, Evaluator, Expr};
 
 /// 变量指数向量（长度 = 变量数）
@@ -254,7 +254,7 @@ fn int_divisors(n: &BigInt) -> Option<Vec<BigInt>> {
     if n.is_zero() {
         return None;
     }
-    let deep = crate::calc_mode::is_deep();
+    let deep = hipercalc_core::calc_mode::is_deep();
     if !deep && n > BigInt::from(10_000_000_000_000u64) {
         return None;
     }
@@ -262,7 +262,7 @@ fn int_divisors(n: &BigInt) -> Option<Vec<BigInt>> {
     match n.to_u64() {
         Some(nu) => {
             // sqrt 为整数开方（向下取整），i ≤ sqrt ⇒ i*i ≤ n ≤ u64::MAX，不会溢出
-            let sqrt = crate::bigint_ext::int_sqrt(&n).to_u64().unwrap_or(u64::MAX);
+            let sqrt = hipercalc_core::bigint_ext::int_sqrt(&n).to_u64().unwrap_or(u64::MAX);
             let mut i = 2u64;
             while i <= sqrt {
                 if nu % i == 0 {
@@ -277,7 +277,7 @@ fn int_divisors(n: &BigInt) -> Option<Vec<BigInt>> {
         }
         None => {
             // 仅死算模式可达：BigInt 逐 1 试除
-            let sqrt = crate::bigint_ext::int_sqrt(&n);
+            let sqrt = hipercalc_core::bigint_ext::int_sqrt(&n);
             let mut i = BigInt::from(2);
             while i <= sqrt {
                 if &n % &i == BigInt::zero() {
@@ -315,7 +315,7 @@ fn rational_root_candidates(coeffs: &[BigRational]) -> (Vec<BigRational>, bool) 
     let mut set: Vec<BigRational> = Vec::new();
     let mut truncated = false;
     // 死算模式 (/mode deep) 不限制候选个数
-    let deep = crate::calc_mode::is_deep();
+    let deep = hipercalc_core::calc_mode::is_deep();
     'outer: for p in &ps {
         for q in &qs {
             let r = BigRational::new(p.clone(), q.clone());
@@ -399,13 +399,13 @@ fn simplify_sqrt(n: &BigInt) -> (BigInt, BigInt) {
         return (BigInt::one(), n);
     }
     // 完全平方直接返回（如 Δ = 4×10^24 这类，旧实现要走 10^12 次试除）
-    let root = crate::bigint_ext::int_sqrt(&n);
+    let root = hipercalc_core::bigint_ext::int_sqrt(&n);
     if &root * &root == n {
         return (root, BigInt::one());
     }
     let mut m = n.clone();
     let mut outside = BigInt::one();
-    let deep = crate::calc_mode::is_deep();
+    let deep = hipercalc_core::calc_mode::is_deep();
     let words = (m.bits() as usize).div_ceil(64).max(1);
     let max_p = (2_000_000usize / words).clamp(256, 1_000_000) as u64;
 
@@ -447,7 +447,7 @@ fn format_rat(r: &BigRational, mode: DisplayMode) -> String {
         }
         DisplayMode::LineIO => {
             let bf = BigFloat::from_big_rational(r);
-            let s = bf.to_significant_string(crate::bigfloat::display_digits());
+            let s = bf.to_significant_string(hipercalc_core::bigfloat::display_digits());
             if s == "-0" {
                 "0".to_string()
             } else {
@@ -700,7 +700,7 @@ fn extract_quadratic_factor(
         .unwrap_or_else(|| BigInt::one());
     // 柯西界 |B| ≤ 2(1 + max|a_i|)，超过上限时截断并在返回值中标记
     let bmax = BigInt::from(2) * (BigInt::one() + max_c);
-    let deep = crate::calc_mode::is_deep();
+    let deep = hipercalc_core::calc_mode::is_deep();
     let mut truncated = false;
     let bmax_i64 = match bmax.to_i64() {
         // 快速模式把 B 枚举截断到 QUADRATIC_BMAX_LIMIT；死算模式取完整柯西界（可能极慢）

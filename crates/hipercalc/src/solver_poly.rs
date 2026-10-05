@@ -2,8 +2,8 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{Signed, ToPrimitive, Zero};
 
-use crate::bigfloat::{self, BigFloat};
-use crate::number::Number;
+use hipercalc_core::bigfloat::{self, BigFloat};
+use hipercalc_core::number::Number;
 use crate::parser::{DisplayMode, Evaluator, Expr};
 
 /// 高次数值求根被规模护栏拒绝时的错误前缀。
@@ -63,7 +63,7 @@ pub fn newton_solve(
 
     for _ in 0..max_iter {
         // 中断检查：本函数返回 Option，故中断表现为"放弃这个初值"（外层循环另有检查点）
-        crate::cancel::check().ok()?;
+        hipercalc_core::cancel::check().ok()?;
         // 计算 f(x)
         // 复数结果（如 `ln(-1)`、`sqrt(-4)`）说明该初值落在实数域之外：
         // `Number::to_approx` 对复数会 debug_assert（不能静默丢虚部）⇒ 必须先分流、当作无效初值放弃。
@@ -376,8 +376,8 @@ pub fn format_solution(sol: &PolySolution, mode: DisplayMode) -> String {
 
 fn format_number(n: &Number, mode: DisplayMode) -> String {
     match mode {
-        DisplayMode::MathIO => crate::display::format_mathio(n),
-        DisplayMode::LineIO => crate::display::format_lineio(n),
+        DisplayMode::MathIO => hipercalc_core::display::format_mathio(n),
+        DisplayMode::LineIO => hipercalc_core::display::format_lineio(n),
     }
 }
 
@@ -583,7 +583,7 @@ fn durand_kerner(coeffs: &[BigFloat]) -> Result<Vec<Cx>, String> {
     // Fast 模式的次数护栏：DK 每轮 O(n²) 复数乘除，实测 n≈200 已需约 25 秒、
     // n≥300 超过 1 分钟。Deep 模式放开（死算由用户承担代价）。
     const DK_MAX_DEGREE_FAST: usize = 200;
-    if n > DK_MAX_DEGREE_FAST && !crate::calc_mode::is_deep() {
+    if n > DK_MAX_DEGREE_FAST && !hipercalc_core::calc_mode::is_deep() {
         return Err(format!(
             "{DEGREE_GUARD_PREFIX}（{n} 次，Fast 模式上限 {DK_MAX_DEGREE_FAST}）；\
              如确认需要继续，请先执行 /mode deep",

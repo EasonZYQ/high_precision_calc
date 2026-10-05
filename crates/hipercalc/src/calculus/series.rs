@@ -16,7 +16,7 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::One;
 
-use crate::number::Number;
+use hipercalc_core::number::Number;
 use crate::parser::{BinOp, Expr, UnaryOp};
 
 use super::{
@@ -60,7 +60,7 @@ pub fn taylor(
             return Err(ERROR_TAYLOR_SINGULAR.to_string());
         }
         let value = snap_exact(&value);
-        let coeff = crate::number::Number::div(&value, &kfact);
+        let coeff = hipercalc_core::number::Number::div(&value, &kfact);
         if !coeff.is_zero() {
             terms.push((coeff, k));
         }
@@ -75,7 +75,7 @@ pub fn taylor(
             }
             Err(e) => return Err(e),
         };
-        kfact = crate::number::Number::mul(&kfact, &Number::from_int((k + 1) as i64));
+        kfact = hipercalc_core::number::Number::mul(&kfact, &Number::from_int((k + 1) as i64));
     }
     if terms.is_empty() {
         return Ok(Expr::Number(Number::from_int(0)));
@@ -155,12 +155,12 @@ pub fn snap_exact(v: &Number) -> Number {
     }
     // 用近似值再确认一次（防止还原出错）
     let back = Number::from_rational(r);
-    let d = crate::bigfloat::BigFloat::sub(
+    let d = hipercalc_core::bigfloat::BigFloat::sub(
         &back.to_approx(),
         &v.to_approx(),
-        crate::bigfloat::precision(),
+        hipercalc_core::bigfloat::precision(),
     );
-    if !d.is_zero() && d.magnitude_log10() > -((crate::bigfloat::precision() / 2) as f64) {
+    if !d.is_zero() && d.magnitude_log10() > -((hipercalc_core::bigfloat::precision() / 2) as f64) {
         return v.clone();
     }
     back

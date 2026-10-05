@@ -65,7 +65,7 @@ const SUM_NUMERIC_DEEP: usize = 1_000_000;
 
 /// 规范化后项数上限
 pub fn max_terms() -> usize {
-    if crate::calc_mode::is_deep() {
+    if hipercalc_core::calc_mode::is_deep() {
         CALC_EXPR_MAX_TERMS_DEEP
     } else {
         CALC_EXPR_MAX_TERMS_FAST
@@ -74,7 +74,7 @@ pub fn max_terms() -> usize {
 
 /// 求导递归深度上限
 pub fn max_diff_depth() -> usize {
-    if crate::calc_mode::is_deep() {
+    if hipercalc_core::calc_mode::is_deep() {
         CALC_DIFF_MAX_DEPTH_DEEP
     } else {
         CALC_DIFF_MAX_DEPTH_FAST
@@ -83,7 +83,7 @@ pub fn max_diff_depth() -> usize {
 
 /// 数值积分的被积函数求值次数上限
 pub fn max_int_evals() -> usize {
-    if crate::calc_mode::is_deep() {
+    if hipercalc_core::calc_mode::is_deep() {
         INT_MAX_EVALS_DEEP
     } else {
         INT_MAX_EVALS_FAST
@@ -92,7 +92,7 @@ pub fn max_int_evals() -> usize {
 
 /// 数值极限的最大迭代步数
 pub fn max_limit_iters() -> usize {
-    if crate::calc_mode::is_deep() {
+    if hipercalc_core::calc_mode::is_deep() {
         LIMIT_NUM_ITERS_DEEP
     } else {
         LIMIT_NUM_ITERS_FAST
@@ -101,7 +101,7 @@ pub fn max_limit_iters() -> usize {
 
 /// 泰勒展开的最高次数上限
 pub fn max_taylor_degree() -> usize {
-    if crate::calc_mode::is_deep() {
+    if hipercalc_core::calc_mode::is_deep() {
         TAYLOR_MAX_DEGREE_DEEP
     } else {
         TAYLOR_MAX_DEGREE_FAST
@@ -110,7 +110,7 @@ pub fn max_taylor_degree() -> usize {
 
 /// 逐项求和的项数上限（整数项）
 pub fn max_sum_terms() -> usize {
-    if crate::calc_mode::is_deep() {
+    if hipercalc_core::calc_mode::is_deep() {
         SUM_MAX_TERMS_DEEP
     } else {
         SUM_MAX_TERMS_FAST
@@ -119,7 +119,7 @@ pub fn max_sum_terms() -> usize {
 
 /// 逐项求和的项数上限（**含除法/负幂**的项：有理数分母会爆炸，预算收紧）
 pub fn max_sum_exact_terms() -> usize {
-    if crate::calc_mode::is_deep() {
+    if hipercalc_core::calc_mode::is_deep() {
         SUM_EXACT_MAX_TERMS_DEEP
     } else {
         SUM_EXACT_MAX_TERMS_FAST
@@ -132,7 +132,7 @@ pub fn max_sum_exact_terms() -> usize {
 /// 约 260 万位），所以超过精确预算后改为**数值累加**：每项先转 BigFloat 再相加。
 /// 实测每项 2~4µs ⇒ Fast 10 万项约 0.3 秒、Deep 200 万项约 6 秒（交互时有动态计时行）。
 pub fn max_sum_numeric_terms() -> usize {
-    if crate::calc_mode::is_deep() {
+    if hipercalc_core::calc_mode::is_deep() {
         SUM_NUMERIC_DEEP
     } else {
         SUM_NUMERIC_FAST
@@ -141,7 +141,7 @@ pub fn max_sum_numeric_terms() -> usize {
 
 /// 逐项求积的项数上限（阶乘型输出位数增长极快，单独收紧）
 pub fn max_prod_terms() -> usize {
-    if crate::calc_mode::is_deep() {
+    if hipercalc_core::calc_mode::is_deep() {
         PROD_MAX_TERMS_DEEP
     } else {
         PROD_MAX_TERMS_FAST
@@ -160,7 +160,7 @@ pub const LIMIT_INF_K_MAX: i32 = 30;
 
 /// 数值积分的二分递归深度上限
 pub fn max_int_depth() -> usize {
-    if crate::calc_mode::is_deep() {
+    if hipercalc_core::calc_mode::is_deep() {
         INT_MAX_DEPTH_DEEP
     } else {
         INT_MAX_DEPTH_FAST
@@ -606,7 +606,7 @@ mod tests {
         assert!(has_free_variables(&ev, &parse("2*x")));
         assert!(!has_free_variables(&ev, &parse("1+2*3")));
         ev.vars
-            .insert("A".to_string(), crate::number::Number::from_int(3));
+            .insert("A".to_string(), hipercalc_core::number::Number::from_int(3));
         assert!(!has_free_variables(&ev, &parse("A+1")));
     }
 }

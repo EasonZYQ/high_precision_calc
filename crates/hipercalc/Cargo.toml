@@ -9,6 +9,7 @@ license = "MIT"
 repository = "https://github.com/EasonZYQ/high_precision_calc"
 
 [dependencies]
+hipercalc-core = { path = "../hipercalc-core", version = "0.1" }
 num-bigint.workspace = true
 num-rational.workspace = true
 num-traits.workspace = true

@@ -1,8 +1,8 @@
 use num_bigint::BigInt;
 use num_traits::Signed;
 
-use crate::bigfloat::{self, BigFloat};
-use crate::number::Number;
+use hipercalc_core::bigfloat::{self, BigFloat};
+use hipercalc_core::number::Number;
 use crate::parser::{Evaluator, Expr};
 use crate::solver_linear;
 

@@ -922,7 +922,12 @@ accumulation). `a > b` gives an empty sum (0) / empty product (1); a product who
 ## 14. Module Overview
 
 ```
-src/
+> **The repo is now a two-crate workspace**: the numeric core lives in `crates/hipercalc-core/` (bigfloat /
+> bigint_ext / number / complex / trig / display / calc_mode / cancel), everything else (parser, solvers,
+> higher mathematics, trilingual UI, REPL) in `crates/hipercalc/`. The tree below lists *modules*; the binary
+> is still `target/debug/hipercalc`.
+
+crates/hipercalc/
 ├── bigfloat.rs       arbitrary-precision float (the numeric core: +−×÷/root/power/exp/ln/trig series + scale guards)
 ├── bigint_ext.rs     big-integer helpers (own long division + integer sqrt, bypassing num-bigint's BZ defect)
 ├── calc_mode.rs      calc mode switch (Fast has scale guards / Deep brute-forces)

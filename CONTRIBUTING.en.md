@@ -22,7 +22,8 @@ system dependencies:
 cargo build            # debug build
 cargo build --release  # release build
 cargo run              # start the interactive REPL
-cargo test             # run all unit tests
+cargo test --workspace # run all unit tests (144: core 11 + hipercalc 133)
+cargo test -p hipercalc-core   # numeric core only (much faster when iterating on bignum/precision work)
 ```
 
 > On Windows, `failed to remove ... hipercalc.exe (os error 5)` means the binary is still running —
@@ -30,7 +31,7 @@ cargo test             # run all unit tests
 
 ## Checklist before you submit
 
-1. **`cargo build` and `cargo test` both pass, with no new compiler warnings** — and **note the elapsed
+1. **`cargo build` and `cargo test --workspace` both pass, with no new compiler warnings** — and **note the elapsed
    time** (the `finished in …` line at the end of `cargo test`, or `time cargo test` to include compilation);
    without it there is no way to tell whether a change made the solvers much slower;
 2. **New behaviour needs unit tests** (tests live in `#[cfg(test)] mod tests` at the bottom of the source file);

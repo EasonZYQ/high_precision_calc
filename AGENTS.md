@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`hipercalc`：中文超高精度命令行计算器。单 crate Rust 项目（edition 2024），**含 62 项单元测试（分布于 9 个源文件）、暂无 CI、已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）**。
+`hipercalc`：中文超高精度命令行计算器。Rust 双 crate workspace（edition 2024），**含 62 项单元测试（分布于 9 个源文件）、暂无 CI、已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）**。
 
 ## 硬性要求（用户指定）
 
@@ -9,19 +9,31 @@
 - 每次编辑代码后，要在工作目录下的 `change_logs/` 文件夹内新增一个变更日志文件（`change_log1.md`、`change_log2.md`……序号依次加一），用几句话简述本次项目编辑内容，可包含代码讲解。**该目录已加入 `.gitignore`，仅本地保留，不要提交到仓库。**
 - 每次编辑代码或修改增加功能，如果需要的话应当对README.md和AGENT.md进行更新。
 
+## 仓库结构（两 crate workspace）
+
+```text
+crates/hipercalc-core/   数值底座：bigfloat / bigint_ext / number / complex / trig / display / calc_mode / cancel
+crates/hipercalc/        parser / equation / primefac / solver_* / solve_aux / calculus / i18n / language / state / lib.rs + main.rs
+```
+
+- **依赖方向严格单向**：`hipercalc-core ← hipercalc`。core 不依赖 colored / rustyline，也不引用任何上层模块。
+- 为什么不拆更多：`parser ↔ calculus`、`parser ↔ solver_fit`、`parser ↔ solver_triangle` 三处**真实双向依赖**，
+  拆成不同 crate 会直接编译不过；`calc_mode` / `cancel` 被四层共用，必须沉在 core。
+- 二进制名必须保持 `hipercalc`（CI 冒烟与 release 产物名都按它引用）；**不要改包名**。
+
 ## 构建与验证
 
 ```powershell
 cargo build
 cargo run            # 交互式 REPL（rustyline）
-cargo test           # 131 项单元测试
+cargo test --workspace   # 144 项单元测试（core 11 + hipercalc 133，其中 1 项 perf_scan 默认 ignore）
 ```
 
 - **跑构建/测试必须计时**（硬性要求）：不要只贴 `test result: ok` —— 必须带上耗时。
   `cargo test` 结尾自带 `finished in X.XXs`（纯测试耗时），需要连编译一起看时用 `time cargo test`。
   多轮验证（反复跑测试、跑全语料扫描）要写清**总耗时**。
   原因：不看时间就发现不了"某次改动把求解拖慢了十倍"，也无法判断某个预算是真有必要的。
-- 已有 `#[cfg(test)]` 单元测试（**131 项**，`cargo test` 全绿），
+- 已有 `#[cfg(test)]` 单元测试（**144 项**：core 11 + hipercalc 133，`cargo test --workspace` 全绿），
   其余验证靠管道喂输入人工核对结果：  
   `Write-Output "1+2*3", "x^2-4=0", "x+y=5,2x-y=1", "sin(pi/6)", "/exit" | cargo run`
 - 新增了**非交互入口**：`-e "表达式"`（裸结果、无耗时行）、`-f 脚本文件`、`--stdin`、
@@ -464,7 +476,7 @@ cargo test           # 131 项单元测试
   `(类别, 颜色名)` 字符串，**合法性由 main.rs 用 `parse_color`/`set_category` 校验后应用**，非法项跳过）。
   **删除状态文件即恢复默认**——不要把默认值也写进文件逻辑里造成"删不掉"。
 - 历史持久化：`history_path()`（`%USERPROFILE%/.hipercalc_history`），启动 `load_history`、退出 `save_history`，每行 `add_history_entry`。
-- 新增 `src/*.rs` 模块要在 `main.rs` 顶部加 `mod` 声明。
+- 新增模块要在对应 crate 的根声明：core 的写在 `crates/hipercalc-core/src/lib.rs`，上层的写在 `crates/hipercalc/src/lib.rs`。
 - 改动任何功能/输出后同步更新 `README.md`（第一部分功能手册 + 第二部分代码架构）。
 
 ### 高等数学（src/calculus/）

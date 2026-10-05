@@ -65,10 +65,10 @@ fn render_exponent(e: &Expr, mode: DisplayMode) -> String {
     }
 }
 
-fn render_number(n: &crate::number::Number, mode: DisplayMode) -> String {
+fn render_number(n: &hipercalc_core::number::Number, mode: DisplayMode) -> String {
     match mode {
-        DisplayMode::MathIO => crate::display::format_mathio(n),
-        DisplayMode::LineIO => crate::display::format_lineio(n),
+        DisplayMode::MathIO => hipercalc_core::display::format_mathio(n),
+        DisplayMode::LineIO => hipercalc_core::display::format_lineio(n),
     }
 }
 
@@ -212,7 +212,7 @@ mod tests {
     }
 
     fn num(n: i64) -> Expr {
-        Expr::Number(crate::number::Number::from_int(n))
+        Expr::Number(hipercalc_core::number::Number::from_int(n))
     }
 
     fn mul(a: Expr, b: Expr) -> Expr {
@@ -274,14 +274,14 @@ mod tests {
     #[test]
     fn root_rewrites() {
         let m = DisplayMode::LineIO;
-        let half = Expr::Number(crate::number::Number::from_rational(
+        let half = Expr::Number(hipercalc_core::number::Number::from_rational(
             num_rational::BigRational::new(
                 num_bigint::BigInt::from(1),
                 num_bigint::BigInt::from(2),
             ),
         ));
         assert_eq!(render_expr(&pow(var("x"), half.clone()), m), "sqrt(x)");
-        let third = Expr::Number(crate::number::Number::from_rational(
+        let third = Expr::Number(hipercalc_core::number::Number::from_rational(
             num_rational::BigRational::new(
                 num_bigint::BigInt::from(1),
                 num_bigint::BigInt::from(3),

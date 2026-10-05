@@ -19,7 +19,7 @@
 use num_bigint::BigInt;
 use num_traits::One;
 
-use crate::number::Number;
+use hipercalc_core::number::Number;
 use crate::parser::{BinOp, Expr};
 
 use super::{
@@ -57,7 +57,7 @@ pub fn sum(
         let mut acc = Number::from_int(0);
         for k in a..=b {
             let v = eval_at(ev, f, var, k)?;
-            acc = crate::number::Number::add(&acc, &v);
+            acc = hipercalc_core::number::Number::add(&acc, &v);
         }
         return Ok(Expr::Number(acc));
     }
@@ -71,7 +71,7 @@ pub fn sum(
 
 /// 超限时的文案：已经在 Deep 下就**不能**再提示"可放宽"
 fn too_large_error() -> String {
-    if crate::calc_mode::is_deep() {
+    if hipercalc_core::calc_mode::is_deep() {
         ERROR_SUM_TOO_LARGE_DEEP.to_string()
     } else {
         ERROR_SUM_NO_CLOSED_FORM.to_string()
@@ -86,13 +86,13 @@ fn numeric_sum(
     a: i64,
     b: i64,
 ) -> Result<Number, String> {
-    let prec = crate::bigfloat::precision();
-    let mut acc = crate::bigfloat::BigFloat::from_u64(0);
+    let prec = hipercalc_core::bigfloat::precision();
+    let mut acc = hipercalc_core::bigfloat::BigFloat::from_u64(0);
     for k in a..=b {
         // 先用**近似**整数 k 求值：这样整条链走 BigFloat（每项 ~2µs），
         // 而用精确 k 会全程走有理数运算（含 gcd 化简，实测每项 ~23µs，慢十倍多）。
         // 近似 k 是 `from_u64(k)` —— 表示成 Approx 但数值精确，`floor`/`frac` 之类结果不变。
-        let approx_k = Number::Approx(crate::bigfloat::BigFloat::from_u64(k.max(0) as u64));
+        let approx_k = Number::Approx(hipercalc_core::bigfloat::BigFloat::from_u64(k.max(0) as u64));
         let approx_k = if k < 0 { approx_k.neg() } else { approx_k };
         let v = match ev.evaluate_with_var(f, var, &approx_k) {
             Ok(v) => v,
@@ -102,7 +102,7 @@ fn numeric_sum(
         if v.is_complex() {
             return Err(ERROR_SUM_COMPLEX.to_string());
         }
-        acc = crate::bigfloat::BigFloat::add(&acc, &v.to_approx(), prec);
+        acc = hipercalc_core::bigfloat::BigFloat::add(&acc, &v.to_approx(), prec);
     }
     Ok(Number::Approx(acc))
 }
@@ -127,7 +127,7 @@ pub fn prod(
         let mut acc = Number::from_int(1);
         for k in a..=b {
             let v = eval_at(ev, f, var, k)?;
-            acc = crate::number::Number::mul(&acc, &v);
+            acc = hipercalc_core::number::Number::mul(&acc, &v);
         }
         return Ok(Expr::Number(acc));
     }
@@ -146,7 +146,7 @@ fn closed_form_sum(
     // 常数项：f·count
     if !super::has_free_var_named(f, var) {
         let c = eval_const(ev, f)?;
-        return Ok(Some(crate::number::Number::mul(
+        return Ok(Some(hipercalc_core::number::Number::mul(
             &c,
             &Number::from_bigint(BigInt::from(b - a + 1)),
         )));
@@ -162,9 +162,9 @@ fn closed_form_sum(
             let formula = sum_power_formula(p);
             let hi_v = poly_eval(&formula, &Number::from_int(b));
             let lo_v = poly_eval(&formula, &Number::from_int(lo));
-            total = crate::number::Number::add(
+            total = hipercalc_core::number::Number::add(
                 &total,
-                &crate::number::Number::mul(c, &crate::number::Number::sub(&hi_v, &lo_v)),
+                &hipercalc_core::number::Number::mul(c, &hipercalc_core::number::Number::sub(&hi_v, &lo_v)),
             );
         }
         return Ok(Some(total));
@@ -187,7 +187,7 @@ fn closed_form_prod(
     // 常数：c^count
     if !super::has_free_var_named(f, var) {
         let c = eval_const(ev, f)?;
-        let p = crate::number::Number::pow(&c, &Number::from_bigint(BigInt::from(count)))?;
+        let p = hipercalc_core::number::Number::pow(&c, &Number::from_bigint(BigInt::from(count)))?;
         return Ok(Some(p));
     }
     // 区间含 0 ⇒ 乘积为 0
@@ -210,15 +210,15 @@ fn closed_form_prod(
             let lo = a - 1;
             if lo == 0 {
                 let fact = factorial(b.abs())?;
-                let cp = crate::number::Number::pow(&c, &Number::from_bigint(BigInt::from(count)))?;
-                return Ok(Some(crate::number::Number::mul(&cp, &fact)));
+                let cp = hipercalc_core::number::Number::pow(&c, &Number::from_bigint(BigInt::from(count)))?;
+                return Ok(Some(hipercalc_core::number::Number::mul(&cp, &fact)));
             }
             if a > 0 {
                 let hi_f = factorial(b)?;
                 let lo_f = factorial(lo)?;
-                let ratio = crate::number::Number::div(&hi_f, &lo_f);
-                let cp = crate::number::Number::pow(&c, &Number::from_bigint(BigInt::from(count)))?;
-                return Ok(Some(crate::number::Number::mul(&cp, &ratio)));
+                let ratio = hipercalc_core::number::Number::div(&hi_f, &lo_f);
+                let cp = hipercalc_core::number::Number::pow(&c, &Number::from_bigint(BigInt::from(count)))?;
+                return Ok(Some(hipercalc_core::number::Number::mul(&cp, &ratio)));
             }
         }
     }
@@ -244,27 +244,27 @@ fn geometric_sum(
     if f0.is_zero() || f0.is_complex() || f1.is_complex() || f2.is_complex() {
         return Ok(None);
     }
-    let r = crate::number::Number::div(&f1, &f0);
+    let r = hipercalc_core::number::Number::div(&f1, &f0);
     if r.is_zero() {
         return Ok(None);
     }
-    let expect = crate::number::Number::mul(&f0, &crate::number::Number::mul(&r, &r));
+    let expect = hipercalc_core::number::Number::mul(&f0, &hipercalc_core::number::Number::mul(&r, &r));
     if !num_close(&expect, &f2) {
         return Ok(None);
     }
     let count = Number::from_bigint(BigInt::from(b - a + 1));
     let one = Number::from_int(1);
     if num_close(&r, &one) {
-        return Ok(Some(crate::number::Number::mul(&f0, &count)));
+        return Ok(Some(hipercalc_core::number::Number::mul(&f0, &count)));
     }
     // c·r^a·(r^count − 1)/(r − 1)
-    let r_pow_a = crate::number::Number::pow(&r, &Number::from_bigint(BigInt::from(a)))?;
-    let r_pow_count = crate::number::Number::pow(&r, &count)?;
-    let numer = crate::number::Number::sub(&r_pow_count, &one);
-    let denom = crate::number::Number::sub(&r, &one);
-    Ok(Some(crate::number::Number::mul(
-        &crate::number::Number::mul(&f0, &r_pow_a),
-        &crate::number::Number::div(&numer, &denom),
+    let r_pow_a = hipercalc_core::number::Number::pow(&r, &Number::from_bigint(BigInt::from(a)))?;
+    let r_pow_count = hipercalc_core::number::Number::pow(&r, &count)?;
+    let numer = hipercalc_core::number::Number::sub(&r_pow_count, &one);
+    let denom = hipercalc_core::number::Number::sub(&r, &one);
+    Ok(Some(hipercalc_core::number::Number::mul(
+        &hipercalc_core::number::Number::mul(&f0, &r_pow_a),
+        &hipercalc_core::number::Number::div(&numer, &denom),
     )))
 }
 
@@ -283,7 +283,7 @@ fn sum_power_formula(p: usize) -> Poly {
             acc = poly_sub(&acc, &poly_scale(&s[j], &c));
         }
         let d = Number::from_bigint(BigInt::from(m + 1));
-        s.push(poly_scale(&acc, &crate::number::Number::div(&Number::from_int(1), &d)));
+        s.push(poly_scale(&acc, &hipercalc_core::number::Number::div(&Number::from_int(1), &d)));
     }
     s.pop().unwrap()
 }
@@ -311,13 +311,13 @@ fn poly_sub(a: &[Number], b: &[Number]) -> Poly {
     for i in 0..n {
         let x = a.get(i).cloned().unwrap_or_else(|| Number::from_int(0));
         let y = b.get(i).cloned().unwrap_or_else(|| Number::from_int(0));
-        out.push(crate::number::Number::sub(&x, &y));
+        out.push(hipercalc_core::number::Number::sub(&x, &y));
     }
     out
 }
 
 fn poly_scale(a: &[Number], s: &Number) -> Poly {
-    a.iter().map(|c| crate::number::Number::mul(c, s)).collect()
+    a.iter().map(|c| hipercalc_core::number::Number::mul(c, s)).collect()
 }
 
 fn poly_mul(a: &[Number], b: &[Number]) -> Poly {
@@ -327,9 +327,9 @@ fn poly_mul(a: &[Number], b: &[Number]) -> Poly {
     let mut out = vec![Number::from_int(0); a.len() + b.len() - 1];
     for (i, x) in a.iter().enumerate() {
         for (j, y) in b.iter().enumerate() {
-            out[i + j] = crate::number::Number::add(
+            out[i + j] = hipercalc_core::number::Number::add(
                 &out[i + j],
-                &crate::number::Number::mul(x, y),
+                &hipercalc_core::number::Number::mul(x, y),
             );
         }
     }
@@ -339,7 +339,7 @@ fn poly_mul(a: &[Number], b: &[Number]) -> Poly {
 fn poly_eval(a: &[Number], x: &Number) -> Number {
     let mut acc = Number::from_int(0);
     for c in a.iter().rev() {
-        acc = crate::number::Number::add(&crate::number::Number::mul(&acc, x), c);
+        acc = hipercalc_core::number::Number::add(&hipercalc_core::number::Number::mul(&acc, x), c);
     }
     acc
 }
@@ -423,16 +423,16 @@ fn factorial(n: i64) -> Result<Number, String> {
 }
 
 fn num_close(a: &Number, b: &Number) -> bool {
-    let d = crate::bigfloat::BigFloat::sub(
+    let d = hipercalc_core::bigfloat::BigFloat::sub(
         &a.to_approx(),
         &b.to_approx(),
-        crate::bigfloat::precision() + 10,
+        hipercalc_core::bigfloat::precision() + 10,
     );
     if d.is_zero() {
         return true;
     }
     let scale = b.to_approx().magnitude_log10().max(0.0);
-    d.magnitude_log10() <= -(crate::bigfloat::display_digits() as f64 + 6.0) + scale
+    d.magnitude_log10() <= -(hipercalc_core::bigfloat::display_digits() as f64 + 6.0) + scale
 }
 
 /// 供测试断言注册表的元数
@@ -464,7 +464,7 @@ mod tests {
         }
         .unwrap();
         match &r {
-            Expr::Number(n) => crate::display::format_mathio(n),
+            Expr::Number(n) => hipercalc_core::display::format_mathio(n),
             other => super::super::render::render_expr(other, DisplayMode::MathIO),
         }
     }
@@ -528,13 +528,13 @@ mod tests {
         // Σ_{k=1}^{n} k^2 = n(n+1)(2n+1)/6 → n=5 时 55
         let f2 = sum_power_formula(2);
         assert_eq!(
-            crate::display::format_mathio(&poly_eval(&f2, &Number::from_int(5))),
+            hipercalc_core::display::format_mathio(&poly_eval(&f2, &Number::from_int(5))),
             "55"
         );
         // Σ_{k=1}^{n} k^3 = (n(n+1)/2)^2 → n=4 时 100
         let f3 = sum_power_formula(3);
         assert_eq!(
-            crate::display::format_mathio(&poly_eval(&f3, &Number::from_int(4))),
+            hipercalc_core::display::format_mathio(&poly_eval(&f3, &Number::from_int(4))),
             "100"
         );
     }

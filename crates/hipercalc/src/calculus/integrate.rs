@@ -22,8 +22,8 @@
 //!
 //! 不定积分**不写 `+C`**（文档说明"省略积分常数"）。
 
-use crate::bigfloat::BigFloat;
-use crate::number::Number;
+use hipercalc_core::bigfloat::BigFloat;
+use hipercalc_core::number::Number;
 use crate::parser::{BinOp, Expr};
 
 use super::{
@@ -310,13 +310,13 @@ fn linear_parts(
         return Ok(None);
     };
     let b = f0.clone();
-    let a = crate::number::Number::sub(&f1, &f0);
+    let a = hipercalc_core::number::Number::sub(&f1, &f0);
     if a.is_zero() {
         return Ok(None);
     }
     // 验证：f(2) = 2a + b，f(3) = 3a + b
-    let e2 = crate::number::Number::add(&crate::number::Number::mul(&a, &Number::from_int(2)), &b);
-    let e3 = crate::number::Number::add(&crate::number::Number::mul(&a, &Number::from_int(3)), &b);
+    let e2 = hipercalc_core::number::Number::add(&hipercalc_core::number::Number::mul(&a, &Number::from_int(2)), &b);
+    let e3 = hipercalc_core::number::Number::add(&hipercalc_core::number::Number::mul(&a, &Number::from_int(3)), &b);
     if !num_eq(&e2, &f2) || !num_eq(&e3, &f3) {
         return Ok(None);
     }
@@ -326,8 +326,8 @@ fn linear_parts(
 fn num_eq(a: &Number, b: &Number) -> bool {
     // 用高精度近似比较（精确式也走这条，误差远小于 1e-40）
     let (x, y) = (a.to_approx(), b.to_approx());
-    let d = crate::bigfloat::BigFloat::sub(&x, &y, crate::bigfloat::precision());
-    d.is_zero() || crate::bigfloat::BigFloat::sub(&x, &y, 30).is_zero()
+    let d = hipercalc_core::bigfloat::BigFloat::sub(&x, &y, hipercalc_core::bigfloat::precision());
+    d.is_zero() || hipercalc_core::bigfloat::BigFloat::sub(&x, &y, 30).is_zero()
 }
 
 /// 求得原函数后求导回验：在被积函数有定义的采样点上比对数值。
@@ -350,13 +350,13 @@ fn verify(ev: &crate::parser::Evaluator, big_f: &Expr, f: &Expr, var: &str) -> b
         if lhs.is_complex() || rhs.is_complex() {
             continue;
         }
-        let d = crate::bigfloat::BigFloat::sub(
+        let d = hipercalc_core::bigfloat::BigFloat::sub(
             &lhs.to_approx(),
             &rhs.to_approx(),
-            crate::bigfloat::precision() + 10,
+            hipercalc_core::bigfloat::precision() + 10,
         );
         // 相对判据：|差| ≤ 10^-(digits+5) · max(1, |f|)
-        let tol = (crate::bigfloat::display_digits() + 5) as f64;
+        let tol = (hipercalc_core::bigfloat::display_digits() + 5) as f64;
         let scale = rhs.to_approx().magnitude_log10().max(0.0);
         if d.magnitude_log10() > -tol + scale {
             return false;
@@ -430,7 +430,7 @@ fn newton_leibniz(
     if fa.is_complex() || fb.is_complex() {
         return Err(ERROR_INT_SINGULAR.to_string());
     }
-    Ok(crate::number::Number::sub(&fb, &fa))
+    Ok(hipercalc_core::number::Number::sub(&fb, &fa))
 }
 
 /// 无穷限：先试"牛顿-莱布尼茨 + 端点极限"，失败再走变量替换的数值积分
@@ -446,7 +446,7 @@ fn definite_infinite(
         let lo = bound_value_at_inf(ev, &big_f, var, lower, true);
         let hi = bound_value_at_inf(ev, &big_f, var, upper, false);
         if let (Some(l), Some(h)) = (lo, hi) {
-            return Ok(crate::number::Number::sub(&h, &l));
+            return Ok(hipercalc_core::number::Number::sub(&h, &l));
         }
     }
     Err(ERROR_INT_INF_CONVERGE.to_string())
@@ -467,12 +467,12 @@ fn bound_value_at_inf(
     }
     let sign = if is_lower { -1i64 } else { 1 };
     // 指数探测：10^2 .. 10^k 逐步收敛
-    let mut prev: Option<crate::bigfloat::BigFloat> = None;
+    let mut prev: Option<hipercalc_core::bigfloat::BigFloat> = None;
     for k in 2..=INF_PROBE_MAX_K {
-        let mut mag = crate::bigfloat::BigFloat::from_u64(1);
-        let ten = crate::bigfloat::BigFloat::from_u64(10);
+        let mut mag = hipercalc_core::bigfloat::BigFloat::from_u64(1);
+        let ten = hipercalc_core::bigfloat::BigFloat::from_u64(10);
         for _ in 0..k {
-            mag = crate::bigfloat::BigFloat::mul(&mag, &ten, crate::bigfloat::precision());
+            mag = hipercalc_core::bigfloat::BigFloat::mul(&mag, &ten, hipercalc_core::bigfloat::precision());
         }
         let x = if sign > 0 {
             Number::Approx(mag)
@@ -485,15 +485,15 @@ fn bound_value_at_inf(
         }
         let cur = v.to_approx();
         if let Some(p) = &prev {
-            let d = crate::bigfloat::BigFloat::sub(&cur, p, crate::bigfloat::precision() + 10);
-            let tol = (crate::bigfloat::display_digits() + 5) as f64;
+            let d = hipercalc_core::bigfloat::BigFloat::sub(&cur, p, hipercalc_core::bigfloat::precision() + 10);
+            let tol = (hipercalc_core::bigfloat::display_digits() + 5) as f64;
             let scale = cur.magnitude_log10().max(0.0);
             if d.magnitude_log10() <= -tol + scale {
                 // 端点极限已收敛；若它低于显示精度，就当**精确 0**。
                 // 这样 `∫₀^∞ e^{-x}dx` 得到的是 `1 − 0`（而不是 `1 − 4e-44` 那种把
                 // 垃圾数字带进结果的值）。注意前缀仍可能是 `≈`：原函数在另一端点常含
                 // 近似值（如 `exp(0)` 在求值器里就是近似的），这是诚实反映计算路径。
-                if cur.is_zero() || cur.magnitude_log10() < -(crate::bigfloat::display_digits() as f64 + 5.0) {
+                if cur.is_zero() || cur.magnitude_log10() < -(hipercalc_core::bigfloat::display_digits() as f64 + 5.0) {
                     return Some(Number::from_int(0));
                 }
                 return Some(v);
@@ -536,9 +536,9 @@ fn singular_inside(
                 continue;
             }
             // 排除落在端点附近的伪根
-            let fa = crate::bigfloat::BigFloat::sub(&r_bf, &a.to_approx(), crate::bigfloat::precision());
-            let fb = crate::bigfloat::BigFloat::sub(&b.to_approx(), &r_bf, crate::bigfloat::precision());
-            let tol = -(crate::bigfloat::display_digits() as f64) * 10.0;
+            let fa = hipercalc_core::bigfloat::BigFloat::sub(&r_bf, &a.to_approx(), hipercalc_core::bigfloat::precision());
+            let fb = hipercalc_core::bigfloat::BigFloat::sub(&b.to_approx(), &r_bf, hipercalc_core::bigfloat::precision());
+            let tol = -(hipercalc_core::bigfloat::display_digits() as f64) * 10.0;
             if fa.magnitude_log10() > tol && fb.magnitude_log10() > tol {
                 return Ok(true);
             }
@@ -719,22 +719,22 @@ impl<'a> Integrator<'a> {
     /// 一个区间上的 n 点 Gauss–Legendre 求积
     fn rule(&mut self, a: &Number, b: &Number) -> Result<Number, String> {
         let mid = mid(a, b);
-        let width = crate::number::Number::sub(b, a);
-        let half = crate::number::Number::div(&width, &Number::from_int(2));
+        let width = hipercalc_core::number::Number::sub(b, a);
+        let half = hipercalc_core::number::Number::div(&width, &Number::from_int(2));
         let nodes = self.nodes.clone();
         let mut sum = Number::from_int(0);
         for (t, w) in nodes {
-            let x = crate::number::Number::add(
+            let x = hipercalc_core::number::Number::add(
                 &mid,
-                &crate::number::Number::mul(&half, &Number::Approx(t)),
+                &hipercalc_core::number::Number::mul(&half, &Number::Approx(t)),
             );
             let fx = self.eval_at(&x)?;
-            sum = crate::number::Number::add(
+            sum = hipercalc_core::number::Number::add(
                 &sum,
-                &crate::number::Number::mul(&Number::Approx(w), &fx),
+                &hipercalc_core::number::Number::mul(&Number::Approx(w), &fx),
             );
         }
-        Ok(crate::number::Number::mul(&half, &sum))
+        Ok(hipercalc_core::number::Number::mul(&half, &sum))
     }
 
     /// 自适应二分：比较整段与两半的求积结果，误差估计 `|S2 − S1|`
@@ -748,8 +748,8 @@ impl<'a> Integrator<'a> {
         let m = mid(a, b);
         let l = self.rule(a, &m)?;
         let r = self.rule(&m, b)?;
-        let s2 = crate::number::Number::add(&l, &r);
-        let err = crate::number::Number::sub(&s2, &s1);
+        let s2 = hipercalc_core::number::Number::add(&l, &r);
+        let err = hipercalc_core::number::Number::sub(&s2, &s1);
         let scale = s2.to_approx().magnitude_log10().max(0.0);
         let converged = err.to_approx().magnitude_log10() <= -self.tol + scale;
         if converged || depth >= max_int_depth() {
@@ -757,13 +757,13 @@ impl<'a> Integrator<'a> {
         }
         let left = self.adaptive(a, &m, depth + 1)?;
         let right = self.adaptive(&m, b, depth + 1)?;
-        Ok(crate::number::Number::add(&left, &right))
+        Ok(hipercalc_core::number::Number::add(&left, &right))
     }
 }
 
 fn mid(a: &Number, b: &Number) -> Number {
-    let sum = crate::number::Number::add(a, b);
-    crate::number::Number::div(&sum, &Number::from_int(2))
+    let sum = hipercalc_core::number::Number::add(a, b);
+    hipercalc_core::number::Number::div(&sum, &Number::from_int(2))
 }
 
 fn numeric(
@@ -773,14 +773,14 @@ fn numeric(
     a: &Number,
     b: &Number,
 ) -> Result<Number, String> {
-    let prec = crate::bigfloat::precision();
+    let prec = hipercalc_core::bigfloat::precision();
     let mut it = Integrator {
         ev,
         f,
         var,
         evals: 0,
         budget: max_int_evals(),
-        tol: (crate::bigfloat::display_digits() + 6) as f64,
+        tol: (hipercalc_core::bigfloat::display_digits() + 6) as f64,
         nodes: gauss_legendre(GAUSS_NODES, prec),
     };
     it.adaptive(a, b, 0)
@@ -845,7 +845,7 @@ fn is_two_expr(ev: &crate::parser::Evaluator, e: &Expr) -> bool {
 /// 数值小于（用高精度近似比较）
 fn lt(a: &Number, b: &Number) -> bool {
     use num_traits::Signed;
-    let d = crate::bigfloat::BigFloat::sub(&a.to_approx(), &b.to_approx(), 40);
+    let d = hipercalc_core::bigfloat::BigFloat::sub(&a.to_approx(), &b.to_approx(), 40);
     !d.is_zero() && d.value.is_negative()
 }
 
@@ -880,7 +880,7 @@ mod tests {
             &Expr::Number(Number::from_int(b)),
         )
         .unwrap();
-        crate::display::format_mathio(&r)
+        hipercalc_core::display::format_mathio(&r)
     }
 
     #[test]
@@ -933,7 +933,7 @@ mod tests {
             &Expr::Variable("inf".to_string()),
         )
         .unwrap();
-        assert_eq!(crate::display::format_mathio(&r), "1");
+        assert_eq!(hipercalc_core::display::format_mathio(&r), "1");
     }
 
     #[test]
@@ -967,7 +967,7 @@ mod tests {
     fn gauss_legendre_is_exact_for_polynomials() {
         // n 点 Gauss–Legendre 对 2n-1 次多项式精确：∫_{-1}^{1} x^k dx = 0（奇）/ 2/(k+1)（偶）
         // 这条测试同时验证"节点与权重都算对了"（比硬编码常数可靠）
-        let prec = crate::bigfloat::precision();
+        let prec = hipercalc_core::bigfloat::precision();
         let nodes = gauss_legendre(GAUSS_NODES, prec);
         assert_eq!(nodes.len(), GAUSS_NODES);
         for k in 0..(2 * GAUSS_NODES) {

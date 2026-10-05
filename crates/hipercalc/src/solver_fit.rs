@@ -17,9 +17,9 @@ use std::collections::BTreeMap;
 
 use num_traits::Signed;
 
-use crate::calc_mode;
-use crate::display;
-use crate::number::Number;
+use hipercalc_core::calc_mode;
+use hipercalc_core::display;
+use hipercalc_core::number::Number;
 use crate::parser::{DisplayMode, Evaluator, Expr};
 use crate::solve_aux;
 use crate::solver_poly;
@@ -627,10 +627,10 @@ fn verify_solution(
             }
             if *is_vertex {
                 // 顶点：导数必须为 0（数值差分，容差放宽）
-                let h = Number::Approx(crate::bigfloat::BigFloat::div(
-                    &crate::bigfloat::BigFloat::from_u64(1),
+                let h = Number::Approx(hipercalc_core::bigfloat::BigFloat::div(
+                    &hipercalc_core::bigfloat::BigFloat::from_u64(1),
                     &num_bigint::BigInt::from(10).pow(20).into(),
-                    crate::bigfloat::precision(),
+                    hipercalc_core::bigfloat::precision(),
                 ));
                 let fp = ev.evaluate_with_var(rhs, &var.to_string(), &x.add(&h))?;
                 let fm = ev.evaluate_with_var(rhs, &var.to_string(), &x.sub(&h))?;
@@ -647,7 +647,7 @@ fn verify_solution(
 /// 数值容差（以内部尾数刻度表示）：允许误差约 10^(−3·precision/4)（默认 80 位 → 1e-60），
 /// 远小于显示精度 1e-20，因此既能容忍近似坐标带来的微小误差，又能拦住真正的"不一致"。
 fn number_tol() -> num_bigint::BigInt {
-    num_bigint::BigInt::from(10).pow((crate::bigfloat::precision() * 3 / 4) as u32)
+    num_bigint::BigInt::from(10).pow((hipercalc_core::bigfloat::precision() * 3 / 4) as u32)
 }
 
 /// 对增广矩阵做完全行化简（RREF），返回"主元列 → 所在行"的列表；

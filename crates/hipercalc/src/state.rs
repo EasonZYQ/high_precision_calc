@@ -27,13 +27,13 @@ use num_traits::Signed;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::bigfloat::BigFloat;
-use crate::calc_mode::{self, CalcMode};
-use crate::display;
+use hipercalc_core::bigfloat::BigFloat;
+use hipercalc_core::calc_mode::{self, CalcMode};
+use hipercalc_core::display;
 use crate::i18n::Lang;
-use crate::number::Number;
+use hipercalc_core::number::Number;
 use crate::parser::{self, DisplayMode, EvalResult, Evaluator};
-use crate::trig::AngleMode;
+use hipercalc_core::trig::AngleMode;
 
 /// 状态文件路径（与 `.hipercalc_history` 同目录）
 pub fn state_path() -> Option<PathBuf> {
@@ -129,8 +129,8 @@ pub fn load()
     let mut angle = AngleMode::Radian;
     let mut calc = CalcMode::Fast;
     let mut timing = true;
-    let mut prec = crate::bigfloat::DEFAULT_PRECISION;
-    let mut digits = crate::bigfloat::DEFAULT_DISPLAY_DIGITS;
+    let mut prec = hipercalc_core::bigfloat::DEFAULT_PRECISION;
+    let mut digits = hipercalc_core::bigfloat::DEFAULT_DISPLAY_DIGITS;
     let mut sci = true;
     let mut group = false;
     let mut vars: Vec<(String, Number)> = Vec::new();

@@ -2,11 +2,11 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::Signed;
 
-use crate::bigfloat::{self, BigFloat};
-use crate::number::Number;
+use hipercalc_core::bigfloat::{self, BigFloat};
+use hipercalc_core::number::Number;
 use crate::parser::{DisplayMode, Evaluator, Expr};
 use crate::solver_poly;
-use crate::trig::AngleMode;
+use hipercalc_core::trig::AngleMode;
 
 /// 判定结果前缀：有限小数/精确符号表达 → "="；无限小数（近似/循环小数/无理）→ "≈"
 pub fn result_prefix(n: &Number, mode: DisplayMode) -> &'static str {
@@ -58,7 +58,7 @@ fn finite_decimal_fits(r: &BigRational) -> bool {
         return false;
     }
     // 死算模式（/mode deep）输出完整小数，不做 20 位有效数字截断 ⇒ 有限小数一律完整
-    if crate::calc_mode::is_deep() {
+    if hipercalc_core::calc_mode::is_deep() {
         return true;
     }
     // 小数位数过大时必超上限，无需精确计算（避免 10^places 过大）
@@ -68,7 +68,7 @@ fn finite_decimal_fits(r: &BigRational) -> bool {
     // 完整展开的整数形式：|p|·10^places/q 去尾零后的位数即有效数字位数
     let n_abs = (r.numer().abs() * BigInt::from(10).pow(places as u32)) / r.denom();
     let s = n_abs.to_string();
-    s.trim_end_matches('0').len() <= crate::bigfloat::display_digits()
+    s.trim_end_matches('0').len() <= hipercalc_core::bigfloat::display_digits()
 }
 
 /// 若近似值与某个简单分数（p/q，|p|≤200，q≤20）或整数足够接近，返回其精确有理数 (p, q)。

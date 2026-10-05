@@ -21,7 +21,7 @@
 //! 三角函数的求导本身受角度模式影响，所以 Deg 模式下 `lim(sin(x)/x, x, 0) = π/180` ——
 //! 这与本机"Deg 模式下 `sin` 的导数带 π/180"的既有语义一致，不是 bug（文档已说明）。
 
-use crate::number::Number;
+use hipercalc_core::number::Number;
 use crate::parser::{BinOp, Expr, UnaryOp};
 
 use super::{
@@ -148,7 +148,7 @@ fn lhopital(
                     return Ok(None);
                 }
                 // 分子为 0 而分母不为 0 ⇒ 0
-                return Ok(Some(LimitValue::Finite(crate::number::Number::div(&nv, &dv))));
+                return Ok(Some(LimitValue::Finite(hipercalc_core::number::Number::div(&nv, &dv))));
             }
             // ∞/const 或 const/0 之类：交给数值路径判定符号
             _ => return Ok(None),
@@ -188,8 +188,8 @@ fn numeric_allows(
     for k in [3i32, 5] {
         let h = pow10_neg(k);
         for delta in [
-            crate::number::Number::sub(a, &h),
-            crate::number::Number::add(a, &h),
+            hipercalc_core::number::Number::sub(a, &h),
+            hipercalc_core::number::Number::add(a, &h),
         ] {
             let Ok(v) = ev.evaluate_with_var(f, var, &delta) else {
                 continue;
@@ -197,10 +197,10 @@ fn numeric_allows(
             if v.is_complex() {
                 continue;
             }
-            let d = crate::bigfloat::BigFloat::sub(
+            let d = hipercalc_core::bigfloat::BigFloat::sub(
                 &v.to_approx(),
                 &c.to_approx(),
-                crate::bigfloat::precision() + 10,
+                hipercalc_core::bigfloat::precision() + 10,
             );
             let scale = c.to_approx().magnitude_log10().max(0.0);
             // 判据放宽到 1e-1：连续函数在 h=1e-5/1e-3 处与极限值的偏差量级是 h·f'，
@@ -235,13 +235,13 @@ fn rational_at_infinity(
     Some(match dn.cmp(&dd) {
         std::cmp::Ordering::Less => LimitValue::Finite(Number::from_int(0)),
         std::cmp::Ordering::Equal => {
-            let q = crate::number::Number::div(&ln_, &ld);
+            let q = hipercalc_core::number::Number::div(&ln_, &ld);
             // x → -∞ 且次数差为奇数时符号翻转（这里次数相同，不翻）
             LimitValue::Finite(q)
         }
         std::cmp::Ordering::Greater => {
             let dir = if sign < 0 && (dn - dd) % 2 == 1 { -1 } else { 1 };
-            let sign_of_q = if crate::number::Number::div(&ln_, &ld).is_negative() {
+            let sign_of_q = if hipercalc_core::number::Number::div(&ln_, &ld).is_negative() {
                 -1
             } else {
                 1
@@ -264,11 +264,11 @@ fn numeric_limit(
     target: Target,
     point: &Expr,
 ) -> Result<Expr, String> {
-    let tol = (crate::bigfloat::display_digits() + 6) as f64;
+    let tol = (hipercalc_core::bigfloat::display_digits() + 6) as f64;
     match target {
         Target::Finite => {
             let a = constant_value(ev, point).ok_or_else(|| ERROR_LIMIT_POINT.to_string())?;
-            let iters = max_limit_iters().min(crate::bigfloat::display_digits());
+            let iters = max_limit_iters().min(hipercalc_core::bigfloat::display_digits());
             let mut prev_l: Option<Number> = None;
             let mut prev_r: Option<Number> = None;
             let mut last_l: Option<Number> = None;
@@ -280,12 +280,12 @@ fn numeric_limit(
                 let l = ev.evaluate_with_var(
                     f,
                     var,
-                    &crate::number::Number::sub(&a, &h),
+                    &hipercalc_core::number::Number::sub(&a, &h),
                 ).ok();
                 let r = ev.evaluate_with_var(
                     f,
                     var,
-                    &crate::number::Number::add(&a, &h),
+                    &hipercalc_core::number::Number::add(&a, &h),
                 ).ok();
                 let l = l.filter(|v| !v.is_complex());
                 let r = r.filter(|v| !v.is_complex());
@@ -302,8 +302,8 @@ fn numeric_limit(
                     if close(l, r, tol) {
                     if let (Some(pl), Some(pr)) = (&prev_l, &prev_r) {
                         if close(pl, l, tol) && close(pr, r, tol) {
-                            let avg = crate::number::Number::div(
-                                &crate::number::Number::add(l, r),
+                            let avg = hipercalc_core::number::Number::div(
+                                &hipercalc_core::number::Number::add(l, r),
                                 &Number::from_int(2),
                             );
                             // 收敛值低于显示精度 ⇒ 按精确 0（`lim(sin(x)/x,x,inf)` 应是 0，
@@ -341,7 +341,7 @@ fn numeric_limit(
             for k in 2..=LIMIT_INF_K_MAX {
                 let x = pow10(k);
                 let x = if sign < 0 {
-                    crate::number::Number::sub(&Number::from_int(0), &x)
+                    hipercalc_core::number::Number::sub(&Number::from_int(0), &x)
                 } else {
                     x
                 };
@@ -366,7 +366,7 @@ fn numeric_limit(
 /// 低于显示精度的值按精确 0 处理（与积分的无穷端点同一处理）
 fn snap_tiny(v: Number) -> Number {
     let mag = v.to_approx().magnitude_log10();
-    if v.is_zero() || mag < -(crate::bigfloat::display_digits() as f64 + 5.0) {
+    if v.is_zero() || mag < -(hipercalc_core::bigfloat::display_digits() as f64 + 5.0) {
         return Number::from_int(0);
     }
     v
@@ -388,10 +388,10 @@ fn pow10(k: i32) -> Number {
 
 /// 相对判据：|a − b| ≤ 10^-tol · max(1, |b|)
 fn close(a: &Number, b: &Number, tol: f64) -> bool {
-    let d = crate::bigfloat::BigFloat::sub(
+    let d = hipercalc_core::bigfloat::BigFloat::sub(
         &a.to_approx(),
         &b.to_approx(),
-        crate::bigfloat::precision() + 10,
+        hipercalc_core::bigfloat::precision() + 10,
     );
     if d.is_zero() {
         return true;
@@ -422,7 +422,7 @@ mod tests {
     fn lim(input: &str, point: &str, deg: bool) -> String {
         let mut ev = Evaluator::new();
         if deg {
-            ev.angle_mode = crate::trig::AngleMode::Degree;
+            ev.angle_mode = hipercalc_core::trig::AngleMode::Degree;
         }
         let r = limit(&ev, &parse(input), "x", &parse(point)).unwrap();
         super::super::render::render_expr(&r, DisplayMode::MathIO)

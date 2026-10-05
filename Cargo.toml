@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/hipercalc"]
+members = ["crates/hipercalc-core", "crates/hipercalc"]
 # 虚拟清单没有 edition；不显式写会回退 resolver=1 并告警
 # （edition 2024 隐含 resolver 3）
 resolver = "3"

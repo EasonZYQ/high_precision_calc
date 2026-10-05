@@ -20,12 +20,12 @@ use num_integer::Integer;
 use num_rational::BigRational;
 use num_traits::{One, Zero};
 
-use crate::bigfloat::{self, BigFloat};
-use crate::display;
-use crate::number::Number;
+use hipercalc_core::bigfloat::{self, BigFloat};
+use hipercalc_core::display;
+use hipercalc_core::number::Number;
 use crate::parser::{self, DisplayMode, Evaluator, Expr};
 use crate::solve_aux;
-use crate::trig::{self, AngleMode};
+use hipercalc_core::trig::{self, AngleMode};
 
 /* ---------------- 记号 ---------------- */
 

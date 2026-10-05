@@ -83,11 +83,22 @@ name = "hipercalc"
 version = "1.1.0"
 dependencies = [
  "colored",
+ "hipercalc-core",
  "num-bigint",
  "num-integer",
  "num-rational",
  "num-traits",
  "rustyline",
+]
+
+[[package]]
+name = "hipercalc-core"
+version = "0.1.0"
+dependencies = [
+ "num-bigint",
+ "num-integer",
+ "num-rational",
+ "num-traits",
 ]
 
 [[package]]

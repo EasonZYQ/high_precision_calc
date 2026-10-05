@@ -1,0 +1,18 @@
+[package]
+name = "hipercalc-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "hipercalc numeric core: arbitrary-precision floats, exact symbolic numbers, complex numbers and exact trig values"
+license = "MIT"
+repository = "https://github.com/EasonZYQ/high_precision_calc"
+readme = "README.md"
+keywords = ["calculator", "arbitrary-precision", "bignum", "math"]
+categories = ["mathematics", "science"]
+
+[dependencies]
+num-bigint.workspace = true
+num-rational.workspace = true
+num-traits.workspace = true
+num-integer.workspace = true
+# 刻意不依赖 colored / rustyline：终端着色与行编辑属于 UI 层，不属于数值层

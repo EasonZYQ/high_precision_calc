@@ -20,7 +20,8 @@
 cargo build            # 调试构建
 cargo build --release  # 发布构建
 cargo run              # 启动交互式 REPL
-cargo test             # 跑全部单元测试
+cargo test --workspace # 跑全部单元测试（144 项：core 11 + hipercalc 133）
+cargo test -p hipercalc-core   # 只跑数值底座（迭代大数/精度相关改动时快得多）
 ```
 
 > Windows 上如果提示 `failed to remove ... hipercalc.exe (os error 5)`，说明程序还在运行——
@@ -28,7 +29,7 @@ cargo test             # 跑全部单元测试
 
 ## 提交前请自查
 
-1. **`cargo build` 与 `cargo test` 都通过，且不引入新的编译警告**；
+1. **`cargo build` 与 `cargo test --workspace` 都通过，且不引入新的编译警告**；
    **顺手记下耗时**（`cargo test` 结尾的 `finished in …`，要连编译一起看就用 `time cargo test`）——
    不看时间就发现不了改动是否把求解拖慢了；
 2. **新增行为要有单元测试**（本项目测试都写成 `#[cfg(test)] mod tests`，直接在源文件末尾追加即可）；

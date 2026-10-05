@@ -1,15 +1,14 @@
-mod bigfloat;
-mod bigint_ext;
-mod calc_mode;
-mod complex;
-mod display;
+// 数值底座已拆成独立 crate `hipercalc-core`（可发布）。
+// 这里用 `use` 把模块名带进本文件作用域：lib.rs 里有大量裸路径（`bigfloat::`、`trig::`、
+// `calc_mode::`…）原来是靠 crate 根的 `mod` 声明解析的，拆走后必须显式引入。
+// **不要**加 complex / bigint_ext：本文件从不使用它们，加了会触发 unused_imports。
+use hipercalc_core::{bigfloat, calc_mode, cancel, display, trig};
+
 mod equation;
 mod i18n;
-mod number;
 mod parser;
 mod primefac;
 mod calculus;
-mod cancel;
 mod language;
 mod solver_factor;
 mod solver_linear;
@@ -19,13 +18,12 @@ mod solver_poly;
 mod solver_triangle;
 mod solve_aux;
 mod state;
-mod trig;
 
 use colored::*;
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::Signed;
-use number::Number;
+use hipercalc_core::number::Number;
 use parser::{parse_and_eval, DisplayMode, EvalResult, Evaluator};
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
@@ -342,12 +340,12 @@ fn color_name(color: Color) -> &'static str {
 /// **不要在 main.rs 里直接用 `println!`**，否则新文案不会随语言切换。
 macro_rules! lprint {
     () => {{
-        if !crate::calc_mode::quiet() {
+        if !hipercalc_core::calc_mode::quiet() {
             println!()
         }
     }};
     ($($arg:tt)*) => {{
-        if !crate::calc_mode::quiet() {
+        if !hipercalc_core::calc_mode::quiet() {
             println!("{}", crate::i18n::t(&format!($($arg)*)))
         }
     }};
@@ -356,7 +354,7 @@ macro_rules! lprint {
 /// 同上，输出到 stderr
 macro_rules! leprint {
     ($($arg:tt)*) => {{
-        if !crate::calc_mode::quiet() {
+        if !hipercalc_core::calc_mode::quiet() {
             eprintln!("{}", crate::i18n::t(&format!($($arg)*)))
         }
     }};
@@ -365,7 +363,7 @@ macro_rules! leprint {
 /// 不换行输出（供动态计时刷新用）
 macro_rules! lprint_inline {
     ($($arg:tt)*) => {{
-        if !crate::calc_mode::quiet() {
+        if !hipercalc_core::calc_mode::quiet() {
             print!("{}", crate::i18n::t(&format!($($arg)*)))
         }
     }};
@@ -2181,12 +2179,12 @@ fn newton_with_guesses(
     evaluator: &parser::Evaluator,
     expr: &parser::Expr,
     var: char,
-) -> Option<crate::bigfloat::BigFloat> {
-    let pi = crate::bigfloat::BigFloat::pi(crate::bigfloat::precision());
-    let half_pi = crate::bigfloat::BigFloat::div(
+) -> Option<hipercalc_core::bigfloat::BigFloat> {
+    let pi = hipercalc_core::bigfloat::BigFloat::pi(hipercalc_core::bigfloat::precision());
+    let half_pi = hipercalc_core::bigfloat::BigFloat::div(
         &pi,
-        &crate::bigfloat::BigFloat::from_u64(2),
-        crate::bigfloat::precision(),
+        &hipercalc_core::bigfloat::BigFloat::from_u64(2),
+        hipercalc_core::bigfloat::precision(),
     );
 
     // 0 与由近及远的整数点
@@ -2194,30 +2192,30 @@ fn newton_with_guesses(
         evaluator,
         expr,
         var,
-        crate::bigfloat::BigFloat::from_u64(0),
+        hipercalc_core::bigfloat::BigFloat::from_u64(0),
         200,
     ) {
         return Some(root);
     }
     for i in 1i64..=10 {
         for sig in [1i64, -1i64] {
-            let guess = crate::bigfloat::BigFloat::from_i64(sig * i);
+            let guess = hipercalc_core::bigfloat::BigFloat::from_i64(sig * i);
             if let Some(root) = solver_poly::newton_solve(evaluator, expr, var, guess, 200) {
                 return Some(root);
             }
         }
     }
     // 分数初值（±1/2、±3/2，覆盖如 1/x=2 的小根）
-    let half = crate::bigfloat::BigFloat::div(
-        &crate::bigfloat::BigFloat::from_u64(1),
-        &crate::bigfloat::BigFloat::from_u64(2),
-        crate::bigfloat::precision(),
+    let half = hipercalc_core::bigfloat::BigFloat::div(
+        &hipercalc_core::bigfloat::BigFloat::from_u64(1),
+        &hipercalc_core::bigfloat::BigFloat::from_u64(2),
+        hipercalc_core::bigfloat::precision(),
     );
     for s in [1i64, -1, 3, -3] {
-        let guess = crate::bigfloat::BigFloat::mul(
-            &crate::bigfloat::BigFloat::from_i64(s),
+        let guess = hipercalc_core::bigfloat::BigFloat::mul(
+            &hipercalc_core::bigfloat::BigFloat::from_i64(s),
             &half,
-            crate::bigfloat::precision(),
+            hipercalc_core::bigfloat::precision(),
         );
         if let Some(root) = solver_poly::newton_solve(evaluator, expr, var, guess, 200) {
             return Some(root);
@@ -2226,10 +2224,10 @@ fn newton_with_guesses(
     // pi/2 的整数倍
     for k in 1i64..=6 {
         for sig in [1i64, -1i64] {
-            let guess = crate::bigfloat::BigFloat::mul(
-                &crate::bigfloat::BigFloat::from_i64(sig * k),
+            let guess = hipercalc_core::bigfloat::BigFloat::mul(
+                &hipercalc_core::bigfloat::BigFloat::from_i64(sig * k),
                 &half_pi,
-                crate::bigfloat::precision(),
+                hipercalc_core::bigfloat::precision(),
             );
             if let Some(root) = solver_poly::newton_solve(evaluator, expr, var, guess, 200) {
                 return Some(root);
@@ -2496,10 +2494,10 @@ fn handle_system(equations: &[(Box<parser::Expr>, Box<parser::Expr>)], state: &m
     if sols.is_empty() {
         return format!("{}", "未找到实数解".color(state.colors.error).bold());
     }
-    let eps = crate::bigfloat::BigFloat::div(
-        &crate::bigfloat::BigFloat::from_u64(1),
+    let eps = hipercalc_core::bigfloat::BigFloat::div(
+        &hipercalc_core::bigfloat::BigFloat::from_u64(1),
         &BigInt::from(10).pow(14).into(),
-        crate::bigfloat::precision(),
+        hipercalc_core::bigfloat::precision(),
     );
     let mut lines: Vec<String> = Vec::new();
     for sol in sols {
@@ -2509,14 +2507,14 @@ fn handle_system(equations: &[(Box<parser::Expr>, Box<parser::Expr>)], state: &m
             .map(|(v, b)| {
                 // 近零分量显示为 0
                 let shown = if b.value.abs() <= eps.value.abs() {
-                    crate::bigfloat::BigFloat::from_u64(0)
+                    hipercalc_core::bigfloat::BigFloat::from_u64(0)
                 } else {
                     b.clone()
                 };
                 format!(
                     "{} ≈ {}",
                     v,
-                    shown.to_significant_string(crate::bigfloat::display_digits())
+                    shown.to_significant_string(hipercalc_core::bigfloat::display_digits())
                 )
             })
             .collect();

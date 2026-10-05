@@ -949,7 +949,11 @@ x = 1
 ## 14. 模块总览
 
 ```
-src/
+> **仓库已是两 crate workspace**：数值底座在 `crates/hipercalc-core/`（bigfloat / bigint_ext / number /
+> complex / trig / display / calc_mode / cancel），其余（解析器、求解器、高等数学、三语界面、REPL）
+> 在 `crates/hipercalc/`。下面这棵树按**模块**列出，路径前缀随之变化；二进制仍是 `target/debug/hipercalc`。
+
+crates/hipercalc/
 ├── bigfloat.rs       任意精度浮点（底层数值核心：四则/开方/幂/exp/ln/三角级数 + 规模保护）
 ├── bigint_ext.rs     大整数补充运算（自带长除法 + 整数平方根，绕开 num-bigint 的 BZ 缺陷）
 ├── calc_mode.rs      计算模式开关（Fast 有规模保护 / Deep 死算）

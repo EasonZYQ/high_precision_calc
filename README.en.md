@@ -11,7 +11,7 @@
 
 [简体中文](README.md) · **English**
 
-An **ultra-precision command-line calculator** (a single Rust crate): 80 decimal digits of internal precision,
+An **ultra-precision command-line calculator** (a two-crate Rust workspace: `hipercalc` plus the reusable numeric library `hipercalc-core`): 80 decimal digits of internal precision,
 arbitrary-precision decimals plus exact symbolic arithmetic, equation / system solving, polynomial factorization,
 function fitting, triangle solving, prime factorization — and **higher mathematics** (derivative `diff`,
 limit `lim`, integral `int`, Taylor series `taylor`, sums and products `sum`/`prod`, all composable) —
@@ -50,6 +50,14 @@ Time: <1s
 
 > The demo above is the output under **MathIO display + 80 significant digits + degree mode**;
 > the defaults are LineIO / 20 digits / radians.
+
+## Layout
+
+```text
+crates/
+├── hipercalc-core/   numeric core (arbitrary-precision floats / exact numbers / complex / exact trig) — publishable on its own
+└── hipercalc/        parser, solvers, higher mathematics, trilingual UI and the REPL (produces the hipercalc binary)
+```
 
 ## Quick start
 

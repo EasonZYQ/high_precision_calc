@@ -2,9 +2,9 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
-use crate::bigfloat::self;
-use crate::number::{ExactExpr, Number};
-use crate::trig::{self, AngleMode};
+use hipercalc_core::bigfloat::self;
+use hipercalc_core::number::{ExactExpr, Number};
+use hipercalc_core::trig::{self, AngleMode};
 
 /// 有效的单字母变量名
 /// 有效的单字母变量名。
@@ -474,7 +474,7 @@ impl Parser {
                 let exp_str: String = self.input[exp_start..self.pos].iter().collect();
                 if let Ok(exp) = exp_str.parse::<i64>() {
                     // 死算模式 (/mode deep) 取消指数上限（会真的去算 10^exp，慎用）
-                    if exp.abs() > 100000 && !crate::calc_mode::is_deep() {
+                    if exp.abs() > 100000 && !hipercalc_core::calc_mode::is_deep() {
                         return Err("科学计数法指数超出支持范围（/mode deep 可取消限制）".to_string());
                     }
                     let mantissa = Self::parse_decimal_rational(&num_str, has_dot)?;
@@ -612,7 +612,7 @@ impl Parser {
             "phi" | "φ" => Ok(Expr::Number(Number::phi())),
             // 虚数单位 i（与 pi/e 同级；小写 i 已从 VALID_VARIABLES 移除，不再作为未知数）
             "i" => Ok(Expr::Number(Number::Complex(Box::new(
-                crate::complex::ComplexNum::i_unit(),
+                hipercalc_core::complex::ComplexNum::i_unit(),
             )))),
             "ans" => Ok(Expr::Variable("ans".to_string())),
             // 无穷（极限点 / 积分限用）。它是**伪变量**：由 calculus 模块在自己的参数位置上识别，
@@ -822,7 +822,7 @@ impl Evaluator {
     }
 
     pub fn evaluate(&mut self, expr: &Expr) -> Result<Number, String> {
-        crate::cancel::check()?;
+        hipercalc_core::cancel::check()?;
         match expr {
             Expr::Sd(inner) => {
                 let result = self.evaluate(inner)?;
@@ -841,7 +841,7 @@ impl Evaluator {
     /// 带单变量替换的求值（兼容接口）
     pub fn evaluate_with_var(&self, expr: &Expr, var: &str, value: &Number) -> Result<Number, String> {
         // 中断检查点：长循环（数值求和/积分、DK 求根…）每次迭代至少走一次求值入口
-        crate::cancel::check()?;
+        hipercalc_core::cancel::check()?;
         self.eval_node(expr, &[(var.to_string(), value)])
     }
 
@@ -928,7 +928,7 @@ impl Evaluator {
     /// - 加/减/乘/除与整数幂已由 `Number` 层直接处理（不经过这里）；
     /// - 其余函数（`floor`/`mod`/`gcd`/`nCr`/反三角…）在实数域才有定义，直接报错。
     fn eval_complex_function(&self, name: &str, args: &[Number]) -> Result<Number, String> {
-        use crate::complex::ComplexNum;
+        use hipercalc_core::complex::ComplexNum;
         let z = args[0].to_complex();
         match name {
             // |z| 是实数
@@ -1012,7 +1012,7 @@ impl Evaluator {
                 };
                 let n = as_nonneg_int(&args[0], err)?;
                 let r = as_nonneg_int(&args[1], err)?;
-                if !crate::calc_mode::is_deep() && n > BigInt::from(10_000u32) {
+                if !hipercalc_core::calc_mode::is_deep() && n > BigInt::from(10_000u32) {
                     return Err(if is_c {
                         "组合数参数过大（上限 10000，/mode deep 可取消限制）".to_string()
                     } else {
@@ -1063,12 +1063,12 @@ impl Evaluator {
             }
             "isprime" => {
                 let n = as_int(arg, "isprime 需要整数参数")?;
-                if !crate::calc_mode::is_deep() && n > BigInt::from(10u32).pow(24) {
+                if !hipercalc_core::calc_mode::is_deep() && n > BigInt::from(10u32).pow(24) {
                     return Err(
                         "素性判定参数过大（上限 10^24，/mode deep 可取消限制）".to_string()
                     );
                 }
-                Ok(Number::from_int(if crate::bigint_ext::is_prime(&n) {
+                Ok(Number::from_int(if hipercalc_core::bigint_ext::is_prime(&n) {
                     1
                 } else {
                     0
@@ -1076,18 +1076,18 @@ impl Evaluator {
             }
             "nextprime" => {
                 let n = as_int(arg, "nextprime 需要整数参数")?;
-                if !crate::calc_mode::is_deep() && n > BigInt::from(10u32).pow(24) {
+                if !hipercalc_core::calc_mode::is_deep() && n > BigInt::from(10u32).pow(24) {
                     return Err(
                         "素性判定参数过大（上限 10^24，/mode deep 可取消限制）".to_string()
                     );
                 }
-                Ok(Number::from_bigint(crate::bigint_ext::next_prime(&n)))
+                Ok(Number::from_bigint(hipercalc_core::bigint_ext::next_prime(&n)))
             }
             "sqr" | "sqrt" => {
                 if arg.is_negative() {
                     // 负实数：实数域无定义，但复数域是纯虚数（sqrt(-4) = 2i、sqrt(-2) = sqrt(2)i）
                     let pos = arg.neg().sqrt();
-                    return Ok(Number::from_complex(crate::complex::ComplexNum::new(
+                    return Ok(Number::from_complex(hipercalc_core::complex::ComplexNum::new(
                         Number::from_int(0),
                         pos,
                     )));
@@ -1153,7 +1153,7 @@ impl Evaluator {
                 }
                 if arg.is_negative() {
                     // 负实数：实数域无定义，复数域给 ln(-1) = iπ（ln(-x) = ln x + iπ）
-                    let z = crate::complex::ComplexNum::new(arg.clone(), Number::from_int(0));
+                    let z = hipercalc_core::complex::ComplexNum::new(arg.clone(), Number::from_int(0));
                     return Ok(Number::from_complex(z.ln()?));
                 }
                 Ok(Number::Approx(arg.to_approx().ln(bigfloat::precision())))
@@ -1223,7 +1223,7 @@ impl Evaluator {
                 if n.is_negative() {
                     return Err("阶乘需要非负整数".to_string());
                 }
-                if !crate::calc_mode::is_deep() && n > BigInt::from(10000) {
+                if !hipercalc_core::calc_mode::is_deep() && n > BigInt::from(10000) {
                     return Err("阶乘参数过大（上限 10000，/mode deep 可取消限制）".to_string());
                 }
                 let mut acc = num_bigint::BigInt::one();
@@ -1501,7 +1501,7 @@ impl Evaluator {
 /// 超限时 exp 的结果位数会失控（|x|·log10(e) 位十进制），也会拖慢整机。
 /// 死算模式 (/mode deep) 下不拦截。
 fn check_exp_range(arg: &Number) -> Result<(), String> {
-    if crate::calc_mode::is_deep() {
+    if hipercalc_core::calc_mode::is_deep() {
         return Ok(());
     }
     let log10 = arg.to_approx().magnitude_log10();
@@ -1520,7 +1520,7 @@ fn check_exp_range(arg: &Number) -> Result<(), String> {
 /// （实测 sin(1e80) 侥幸正确、sin(1e100) 起与真值完全无关），故直接拒绝。
 /// 死算模式 (/mode deep) 下不拦截（结果不可靠，由用户自行判断）。
 fn check_trig_range(arg: &Number, mode: AngleMode) -> Result<(), String> {
-    if crate::calc_mode::is_deep() {
+    if hipercalc_core::calc_mode::is_deep() {
         return Ok(());
     }
     let mut log10 = arg.to_approx().magnitude_log10();
@@ -1608,16 +1608,16 @@ pub(crate) fn radians_to_degrees(result: Number) -> Number {
         // 复数的两个分量各自换算（角度模式只影响用户可见的三角函数结果）
         let re = radians_to_degrees(z.re.clone());
         let im = radians_to_degrees(z.im.clone());
-        return Number::from_complex(crate::complex::ComplexNum::new(re, im));
+        return Number::from_complex(hipercalc_core::complex::ComplexNum::new(re, im));
     }
     match result {
         // 上面已提前返回复数
         Number::Complex(_) => unreachable!("radians_to_degrees 已在入口处理复数"),
         Number::Exact(expr) => {
             // 精确值转换：Pi(coeff) → Rational(coeff * 180)
-            let mut new_terms: Vec<crate::number::ExactTerm> = Vec::new();
+            let mut new_terms: Vec<hipercalc_core::number::ExactTerm> = Vec::new();
             for term in &expr.terms {
-                use crate::number::ExactTerm;
+                use hipercalc_core::number::ExactTerm;
                 match term {
                     ExactTerm::Pi(coeff) => {
                         // coeff * pi 弧度 = coeff * 180 度
@@ -1627,16 +1627,16 @@ pub(crate) fn radians_to_degrees(result: Number) -> Number {
                     _other => {
                         // 非 pi 项无法精确转换，回退到数值
                         let approx = expr.to_bigfloat();
-                        let pi = crate::bigfloat::BigFloat::pi(crate::bigfloat::precision());
-                        let deg_factor = crate::bigfloat::BigFloat::div(
-                            &crate::bigfloat::BigFloat::from_u64(180),
+                        let pi = hipercalc_core::bigfloat::BigFloat::pi(hipercalc_core::bigfloat::precision());
+                        let deg_factor = hipercalc_core::bigfloat::BigFloat::div(
+                            &hipercalc_core::bigfloat::BigFloat::from_u64(180),
                             &pi,
-                            crate::bigfloat::precision(),
+                            hipercalc_core::bigfloat::precision(),
                         );
-                        let converted = crate::bigfloat::BigFloat::mul(
+                        let converted = hipercalc_core::bigfloat::BigFloat::mul(
                             &approx,
                             &deg_factor,
-                            crate::bigfloat::precision(),
+                            hipercalc_core::bigfloat::precision(),
                         );
                         return Number::Approx(converted);
                     }
@@ -1648,16 +1648,16 @@ pub(crate) fn radians_to_degrees(result: Number) -> Number {
             })
         }
         Number::Approx(approx) => {
-            let pi = crate::bigfloat::BigFloat::pi(crate::bigfloat::precision());
-            let deg_factor = crate::bigfloat::BigFloat::div(
-                &crate::bigfloat::BigFloat::from_u64(180),
+            let pi = hipercalc_core::bigfloat::BigFloat::pi(hipercalc_core::bigfloat::precision());
+            let deg_factor = hipercalc_core::bigfloat::BigFloat::div(
+                &hipercalc_core::bigfloat::BigFloat::from_u64(180),
                 &pi,
-                crate::bigfloat::precision(),
+                hipercalc_core::bigfloat::precision(),
             );
-            Number::Approx(crate::bigfloat::BigFloat::mul(
+            Number::Approx(hipercalc_core::bigfloat::BigFloat::mul(
                 &approx,
                 &deg_factor,
-                crate::bigfloat::precision(),
+                hipercalc_core::bigfloat::precision(),
             ))
         }
     }
@@ -2092,7 +2092,7 @@ pub fn parse_and_eval(
 #[cfg(test)]
 mod func_tests {
     use super::*;
-    use crate::display;
+    use hipercalc_core::display;
 
     /// 求值并返回 LineIO 显示串（与命令行输出同一套格式化）
     fn eval_lineio(expr: &str) -> Result<String, String> {
