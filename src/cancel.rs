@@ -31,44 +31,44 @@ static CANCEL: AtomicBool = AtomicBool::new(false);
 /// 中断时返回的错误文案（走正常错误通道，用户能看到一行"错误: …"）
 pub const ERROR_CANCELLED: &str = "计算已中断";
 
-/// 计算开始前调用：标记"正在计算"并清掉上次遗留的中断标志
-pub fn begin() {
-    CANCEL.store(false, Ordering::Relaxed);
-    COMPUTING.store(true, Ordering::Relaxed);
-}
-
-/// 计算结束后调用（**必须**与 `begin` 配对；用 `Scope` 保证异常路径也能复位）
-pub fn end() {
-    COMPUTING.store(false, Ordering::Relaxed);
-}
-
 /// 是否正在计算
 pub fn is_computing() -> bool {
     COMPUTING.load(Ordering::Relaxed)
 }
 
-/// 计算过程中的检查点：被中断时返回 `Err(ERROR_CANCELLED)`
-pub fn check() -> Result<(), String> {
-    if CANCEL.load(Ordering::Relaxed) {
+/// 中断判定的**纯逻辑**（两个输入都显式传入，便于单测且不碰全局）。
+///
+/// 单测**只测这个函数**：早期版本的测试直接改全局 `CANCEL`，并行跑时会污染
+/// 其它测试（CI 上 `definite_numeric_fallback` 就是这样挂的）——
+/// 全局可变状态的测试必须绕开，而不是靠"记得还原"。
+fn check_with(computing: bool, cancel: bool) -> Result<(), String> {
+    if computing && cancel {
         Err(ERROR_CANCELLED.to_string())
     } else {
         Ok(())
     }
 }
 
-/// `begin` / `end` 的 RAII 包装：无论正常返回还是提前 `?` 返回错误，都会复位状态
+/// 计算过程中的检查点：被中断时返回 `Err(ERROR_CANCELLED)`
+pub fn check() -> Result<(), String> {
+    check_with(is_computing(), CANCEL.load(Ordering::Relaxed))
+}
+
+/// 标记"正在计算"的 RAII 包装：进入时清掉上次遗留的中断标志，
+/// 无论正常返回还是提前 `?` 返回错误，离开时都会复位 `COMPUTING`。
 pub struct Scope;
 
 impl Scope {
     pub fn new() -> Self {
-        begin();
+        CANCEL.store(false, Ordering::Relaxed);
+        COMPUTING.store(true, Ordering::Relaxed);
         Self
     }
 }
 
 impl Drop for Scope {
     fn drop(&mut self) {
-        end();
+        COMPUTING.store(false, Ordering::Relaxed);
     }
 }
 
@@ -114,29 +114,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scope_resets_computing_flag() {
+    fn check_is_pure_and_only_fires_while_computing() {
+        // 空闲时即使标志被置上也必须放行：否则空闲的 Ctrl+C 会把程序变成中途退出
+        assert!(check_with(false, false).is_ok());
+        assert!(check_with(false, true).is_ok(), "空闲态不该被中断");
+        assert!(check_with(true, false).is_ok());
+        assert_eq!(check_with(true, true).unwrap_err(), ERROR_CANCELLED);
+    }
+
+    #[test]
+    fn scope_marks_computing_and_resets() {
         assert!(!is_computing());
         {
             let _s = Scope::new();
             assert!(is_computing());
-            assert!(check().is_ok(), "刚进入计算时不该处于中断态");
         }
         assert!(!is_computing(), "离开作用域必须复位，否则空闲时 Ctrl+C 会不退出");
-    }
-
-    #[test]
-    fn stale_cancel_flag_is_cleared_on_begin() {
-        CANCEL.store(true, Ordering::Relaxed);
-        begin();
-        assert!(check().is_ok(), "begin 必须清掉上次遗留的中断标志");
-        end();
-    }
-
-    #[test]
-    fn cancel_flag_makes_check_fail() {
-        begin();
-        CANCEL.store(true, Ordering::Relaxed);
-        assert_eq!(check().unwrap_err(), ERROR_CANCELLED);
-        end();
     }
 }
