@@ -3695,6 +3695,50 @@ mod cli_tests {
         println!("--- 合计 {} us / {} 条 ---", total, rows.len());
     }
 
+    /// **从 `perf_scan` 扶正的回归用例**：这些输入原先只在被 `#[ignore]` 的性能扫描里跑，
+    /// CI 根本不覆盖 —— 等于线性/非线性求解与因式分解这几条重计算路径无人看守。
+    /// 期望值全部来自代数推导（不是抄程序输出）；顺序不保证的（根、因子）只做逐项 `contains`。
+    #[test]
+    fn solvers_end_to_end_regressions() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+
+        // 线性方程组：x+y=5, 2x-y=1 ⇒ 两式相加 3x=6 ⇒ x=2, y=3
+        let (out, err) = run_line("x+y=5, 2*x-y=1", &mut st);
+        assert!(!err, "{out}");
+        assert!(out.contains("x = 2") && out.contains("y = 3"), "{out}");
+
+        // 三次方程（走 DK 数值求根）：根为 1,2,3
+        let (out, err) = run_line("x^3-6*x^2+11*x-6=0", &mut st);
+        assert!(!err, "{out}");
+        for r in ["1", "2", "3"] {
+            assert!(out.contains(&format!("x = {r}")), "缺根 {r}: {out}");
+        }
+
+        // 四次方程：x⁴-5x²+4=(x²-1)(x²-4) ⇒ ±1, ±2
+        let (out, err) = run_line("x^4-5*x^2+4=0", &mut st);
+        assert!(!err, "{out}");
+        for r in ["-2", "-1", "1", "2"] {
+            assert!(out.contains(&format!("x = {r}")), "缺根 {r}: {out}");
+        }
+
+        // 因式分解：因子**顺序不保证** ⇒ 逐因子断言
+        let (out, err) = run_line("fac(x^4-1)", &mut st);
+        assert!(!err, "{out}");
+        for f in ["(x - 1)", "(x + 1)", "(x^2 + 1)"] {
+            assert!(out.contains(f), "缺因子 {f}: {out}");
+        }
+        let (out, err) = run_line("fac(x^6-1)", &mut st);
+        assert!(!err, "{out}");
+        for f in ["(x - 1)", "(x + 1)", "(x^2 + x + 1)", "(x^2 - x + 1)"] {
+            assert!(out.contains(f), "缺因子 {f}: {out}");
+        }
+
+        // 四点拟合：(1,1)(2,4)(3,9)(4,16) 全在 y = x² 上 ⇒ 解唯一
+        let (out, err) = run_line("(1,1) (2,4) (3,9) (4,16)", &mut st);
+        assert!(!err, "{out}");
+        assert!(out.contains("y = x^2"), "{out}");
+    }
+
     /// 回归：初值表要覆盖**非三角方程**的近零根与远根
     /// （性能扫描时发现 `ln(x)=-10` 的真根 4.5e-5 在 0 与 0.5 之间没有任何初值 ⇒ 丢根）
     #[test]

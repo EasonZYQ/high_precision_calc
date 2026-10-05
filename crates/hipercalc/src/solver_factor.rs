@@ -1647,3 +1647,78 @@ pub fn factor_expr(
     }
     Ok(out)
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::Parser;
+    use num_rational::BigRational;
+    use std::collections::BTreeSet;
+
+    fn r(v: i64) -> BigRational {
+        BigRational::from_integer(BigInt::from(v))
+    }
+
+    /// 把因子（升幂系数 + 重数）规范化成字符串集合：**与输出顺序无关**
+    fn canon(factors: &[(Vec<BigRational>, u32)]) -> BTreeSet<String> {
+        factors
+            .iter()
+            .map(|(c, e)| {
+                let body = c
+                    .iter()
+                    .map(|x| format!("{}/{}", x.numer(), x.denom()))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("{body}^{e}")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn difference_of_squares() {
+        // x² - 4 = (x-2)(x+2)；升幂系数 x-2 = [-2, 1]、x+2 = [2, 1]
+        let (f, _) = factor_univariate_coeffs(&[r(-4), r(0), r(1)]);
+        let c = canon(&f);
+        assert!(c.contains("-2/1,1/1^1"), "缺 (x-2): {f:?}");
+        assert!(c.contains("2/1,1/1^1"), "缺 (x+2): {f:?}");
+    }
+
+    #[test]
+    fn repeated_root_keeps_multiplicity() {
+        // x² - 2x + 1 = (x-1)²：重数必须是 2（合并错的话只会得到一个一次因子）
+        let (f, _) = factor_univariate_coeffs(&[r(1), r(-2), r(1)]);
+        assert!(
+            f.iter().any(|(c, e)| *e == 2 && c == &vec![r(-1), r(1)]),
+            "应含 (x-1)^2: {f:?}"
+        );
+    }
+
+    #[test]
+    fn x4_minus_1_leaves_irreducible_quadratic() {
+        // x⁴ - 1 = (x²-1)(x²+1) = (x-1)(x+1)(x²+1)；x²+1 在有理数上不可约 ⇒ 应标记
+        let (f, irreducible) = factor_univariate_coeffs(&[r(-1), r(0), r(0), r(0), r(1)]);
+        assert!(irreducible, "二次残余应标记为不可约: {f:?}");
+        assert!(f.iter().any(|(c, _)| c == &vec![r(1), r(0), r(1)]), "缺 x²+1: {f:?}");
+    }
+
+    #[test]
+    fn x6_minus_1_splits_into_two_quadratics() {
+        // x⁶ - 1 = (x³-1)(x³+1) = (x-1)(x²+x+1)·(x+1)(x²-x+1)
+        let (f, _) = factor_univariate_coeffs(&[r(-1), r(0), r(0), r(0), r(0), r(0), r(1)]);
+        let c = canon(&f);
+        assert!(c.contains("1/1,1/1,1/1^1"), "缺 x²+x+1: {f:?}");
+        assert!(c.contains("1/1,-1/1,1/1^1"), "缺 x²-x+1: {f:?}");
+    }
+
+    #[test]
+    fn real_domain_splits_but_rational_domain_does_not() {
+        // x² - 2：MathIO（实数域）拆成 (x - sqrt(2)) * (x + sqrt(2))；
+        // LineIO（有理数域）保留整式并提示不可再分解。显示模式由参数传入，不依赖全局态。
+        let ev = Evaluator::new();
+        let expr = Parser::new("x^2-2").parse_expression().unwrap();
+        let mathio = factor_expr(&ev, &expr, crate::parser::DisplayMode::MathIO).unwrap();
+        let lineio = factor_expr(&ev, &expr, crate::parser::DisplayMode::LineIO).unwrap();
+        assert!(mathio.contains("sqrt(2)"), "实数域应拆出根式: {mathio}");
+        assert!(!lineio.contains("sqrt"), "有理数域不该出现根式: {lineio}");
+        assert!(lineio.contains("不可再分解"), "有理数域应给不可约提示: {lineio}");
+    }
+}

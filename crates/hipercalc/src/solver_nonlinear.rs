@@ -236,3 +236,101 @@ pub fn solve_system(
     }
     results
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::Parser;
+    use hipercalc_core::number::Number;
+
+    fn eq(s: &str) -> Expr {
+        Parser::new(s).parse_expression().expect("解析方程失败")
+    }
+
+    /// `BigFloat` 是 `value / 10^precision` 的**定点**表示 ⇒ 判"|x| 很小"必须同时看两个字段，
+    /// 直接拿 `value` 比大小会把 `2.0`（即 2×10^80）当成天文数字（这个坑我自己先踩了一次）。
+    fn is_tiny(b: &BigFloat, digits: usize) -> bool {
+        b.value.abs() < BigInt::from(10).pow((b.precision - digits) as u32).into()
+    }
+
+    /// 判 |x| 是否小于 10^exp
+    fn below(b: &BigFloat, exp: i64) -> bool {
+        let limit = if exp >= 0 {
+            BigInt::from(10).pow(exp as u32)
+        } else {
+            BigInt::from(1)
+        } * BigInt::from(10).pow(b.precision as u32);
+        b.value.abs() < limit.into()
+    }
+
+    /// 把解代回各方程算残差 —— **测试自己验证**，不信任求解器内部的"找到了根"判定
+    fn residuals_ok(ev: &Evaluator, eqs: &[Expr], vars: &[char], x: &[BigFloat]) -> bool {
+        let nums: Vec<Number> = x.iter().map(|b| Number::Approx(b.clone())).collect();
+        let substs: Vec<(String, &Number)> = vars
+            .iter()
+            .zip(nums.iter())
+            .map(|(v, n)| (v.to_string(), n))
+            .collect();
+        eqs.iter().all(|e| {
+            ev.evaluate_with_vars(e, &substs)
+                .map(|n| !n.is_complex() && is_tiny(&n.to_approx(), 6))
+                .unwrap_or(false)
+        })
+    }
+
+    #[test]
+    fn circle_meets_line_in_two_points() {
+        // x² + y² = 25, y = x + 1 ⇒ x² + (x+1)² = 25 ⇒ x² + x - 12 = 0 ⇒ x = 3 或 -4
+        // 对应 (3,4) 与 (-4,-3)；两解都满足 x²+y²=25
+        let ev = Evaluator::new();
+        let eqs = [eq("x^2+y^2-25"), eq("y-x-1")];
+        let sols = solve_system(&ev, &eqs, &['x', 'y']);
+        assert_eq!(sols.len(), 2, "应恰有两个交点: {sols:?}");
+        for s in &sols {
+            assert!(residuals_ok(&ev, &eqs, &['x', 'y'], s), "解不满足方程: {s:?}");
+        }
+    }
+
+    #[test]
+    fn unique_solution_is_one_one() {
+        // x + y = 2, x - y = 0 ⇒ x = y = 1
+        let ev = Evaluator::new();
+        let eqs = [eq("x+y-2"), eq("x-y")];
+        let sols = solve_system(&ev, &eqs, &['x', 'y']);
+        assert_eq!(sols.len(), 1, "应唯一解: {sols:?}");
+        assert!(residuals_ok(&ev, &eqs, &['x', 'y'], &sols[0]));
+    }
+
+    #[test]
+    fn no_real_solution_returns_empty() {
+        // x² + y² = -1 在实数上无解（配合 y = x 亦无解）
+        let ev = Evaluator::new();
+        let eqs = [eq("x^2+y^2+1"), eq("y-x")];
+        assert!(solve_system(&ev, &eqs, &['x', 'y']).is_empty());
+    }
+
+    #[test]
+    fn three_variables_are_solved() {
+        // x+y+z=6, x-y=1, y-z=0 ⇒ 由后两式 y=z、x=y+1；代入第一式 3y+1=6 ⇒ y=z=5/3, x=8/3
+        let ev = Evaluator::new();
+        let eqs = [eq("x+y+z-6"), eq("x-y-1"), eq("y-z")];
+        let sols = solve_system(&ev, &eqs, &['x', 'y', 'z']);
+        assert!(!sols.is_empty(), "应有解");
+        assert!(residuals_ok(&ev, &eqs, &['x', 'y', 'z'], &sols[0]));
+    }
+
+    #[test]
+    fn transcendental_pair_stays_finite() {
+        // exp(x) = y, y = 2 ⇒ x = ln2；发散保护下必须收敛到有限值而不是跑飞
+        let ev = Evaluator::new();
+        let eqs = [eq("exp(x)-y"), eq("y-2")];
+        let sols = solve_system(&ev, &eqs, &['x', 'y']);
+        assert!(!sols.is_empty(), "应有解");
+        for s in &sols {
+            assert!(
+                s.iter().all(|b| below(b, 3)),
+                "解的分量应有限（|x| < 1000）: {s:?}"
+            );
+            assert!(residuals_ok(&ev, &eqs, &['x', 'y'], s));
+        }
+    }
+}

@@ -731,3 +731,113 @@ fn complex_to_solution(z: Cx) -> PolySolution {
         PolySolution::Complex(Number::Approx(z.re), Number::Approx(z.im))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::Parser;
+
+    /// 根的**顺序不保证**（实测 `x^2-3x+2=0` 返回 `2, 1`）⇒ 一律用集合比较
+    fn root_set(sols: &[PolySolution], mode: DisplayMode) -> std::collections::BTreeSet<String> {
+        sols.iter().map(|s| format_solution(s, mode)).collect()
+    }
+
+    fn set(items: &[&str]) -> std::collections::BTreeSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn quadratic_two_distinct_roots() {
+        // x² - 3x + 2 = (x-1)(x-2)
+        let sols = solve_quadratic(&Number::from_int(1), &Number::from_int(-3), &Number::from_int(2));
+        assert_eq!(root_set(&sols, DisplayMode::MathIO), set(&["1", "2"]));
+    }
+
+    #[test]
+    fn quadratic_double_root() {
+        // x² - 2x + 1 = (x-1)² ⇒ 两个相等的根
+        let sols = solve_quadratic(&Number::from_int(1), &Number::from_int(-2), &Number::from_int(1));
+        assert_eq!(root_set(&sols, DisplayMode::MathIO), set(&["1", "1"]));
+    }
+
+    #[test]
+    fn quadratic_complex_pair() {
+        // x² + 1 = 0 ⇒ ±i（判别式为负的分支）
+        let sols = solve_quadratic(&Number::from_int(1), &Number::from_int(0), &Number::from_int(1));
+        assert_eq!(root_set(&sols, DisplayMode::MathIO), set(&["0 + 1i", "0 - 1i"]));
+    }
+
+    #[test]
+    fn cubic_with_three_integer_roots() {
+        // x³ - 6x² + 11x - 6 = (x-1)(x-2)(x-3)，升幂系数 [-6, 11, -6, 1]
+        let coeffs = [
+            Number::from_int(-6),
+            Number::from_int(11),
+            Number::from_int(-6),
+            Number::from_int(1),
+        ];
+        let sols = solve_poly_full(&coeffs).expect("应能求解");
+        assert_eq!(root_set(&sols, DisplayMode::MathIO), set(&["1", "2", "3"]));
+    }
+
+    #[test]
+    fn quartic_with_four_integer_roots() {
+        // x⁴ - 5x² + 4 = (x²-1)(x²-4) ⇒ {-2,-1,1,2}
+        let coeffs = [
+            Number::from_int(4),
+            Number::from_int(0),
+            Number::from_int(-5),
+            Number::from_int(0),
+            Number::from_int(1),
+        ];
+        let sols = solve_poly_full(&coeffs).expect("应能求解");
+        assert_eq!(root_set(&sols, DisplayMode::MathIO), set(&["-2", "-1", "1", "2"]));
+    }
+
+    #[test]
+    fn irrational_cubic_goes_through_durand_kerner() {
+        // x³ - 2 在有理数上不可约 ⇒ 走 DK：一个实根 ∛2 ≈ 1.2599210498948731648
+        // （∛2 = 1.2599210498948731647672… 可用 2^(1/3) 独立核对）
+        let coeffs = [
+            Number::from_int(-2),
+            Number::from_int(0),
+            Number::from_int(0),
+            Number::from_int(1),
+        ];
+        let sols = solve_poly_full(&coeffs).expect("应能求解");
+        assert_eq!(sols.len(), 3, "三次恰三个根（一实两复）");
+        let approx: Vec<String> = sols
+            .iter()
+            .map(|s| format_solution(s, DisplayMode::LineIO))
+            .collect();
+        assert!(
+            approx.iter().any(|s| s.starts_with("1.2599210498948731")),
+            "应含实根 ∛2: {approx:?}"
+        );
+    }
+
+    #[test]
+    fn degree_guard_rejects_high_degree_in_fast_mode() {
+        // 次数 211 > Fast 模式上限（200）⇒ 必须报"带护栏前缀"的错，而不是跑到天荒地老。
+        // 用 x^211 - 2：211 是素数且 2 满足艾森斯坦判别法 ⇒ 在有理数上不可约，
+        // **不会被因式分解绕开**（我最初用 x^201-1 就踩了这个坑：201=3×67 可分解，根本走不到 DK）。
+        let mut coeffs = vec![Number::from_int(0); 212];
+        coeffs[0] = Number::from_int(-2); // -2
+        coeffs[211] = Number::from_int(1); // + x^211
+        let err = solve_poly_full(&coeffs).unwrap_err();
+        assert!(err.starts_with(DEGREE_GUARD_PREFIX), "错误应带护栏前缀: {err}");
+    }
+
+    #[test]
+    fn polynomial_coefficients_are_ascending() {
+        // x² - 4 ⇒ 升幂 [-4, 0, 1]
+        let ev = Evaluator::new();
+        let expr = Parser::new("x^2-4").parse_expression().unwrap();
+        let coeffs = extract_polynomial(&ev, &expr, 'x').expect("应识别为多项式");
+        let want = [Number::from_int(-4), Number::from_int(0), Number::from_int(1)];
+        assert_eq!(coeffs.len(), want.len(), "系数个数不符: {coeffs:?}");
+        for (got, w) in coeffs.iter().zip(want.iter()) {
+            assert_eq!(hipercalc_core::display::format_mathio(got), hipercalc_core::display::format_mathio(w), "升幂系数不符: {coeffs:?}");
+        }
+    }
+}

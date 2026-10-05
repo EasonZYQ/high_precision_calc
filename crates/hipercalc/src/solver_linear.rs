@@ -142,3 +142,66 @@ pub fn format_linear_solution(sol: &LinearSolution, mode: DisplayMode) -> String
         .collect();
     parts.join(", ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hipercalc_core::number::Number;
+
+    /// 用整数构造增广矩阵（每行是"移项后 = 0"的系数，最后一项为常数项）
+    fn mat(rows: &[&[i64]]) -> Vec<Vec<Number>> {
+        rows.iter()
+            .map(|r| r.iter().map(|&v| Number::from_int(v)).collect())
+            .collect()
+    }
+
+    #[test]
+    fn unique_2x2_solution_is_exact() {
+        // x + y = 5, 2x - y = 1：两式相加 3x = 6 ⇒ x = 2，回代 y = 3；代入第二式 2*2-3 = 1 ✓
+        let mut m = mat(&[&[1, 1, 5], &[2, -1, 1]]);
+        let sol = gaussian_elimination(&mut m, &['x', 'y']).expect("应有唯一解");
+        assert!(sol.unique && !sol.infinite);
+        assert_eq!(
+            format_linear_solution(&sol, crate::parser::DisplayMode::MathIO),
+            "x = 2, y = 3"
+        );
+    }
+
+    #[test]
+    fn inconsistent_system_has_no_solution() {
+        // x + y = 1 与 x + y = 2 互相矛盾 ⇒ 无解
+        let mut m = mat(&[&[1, 1, 1], &[1, 1, 2]]);
+        assert!(gaussian_elimination(&mut m, &['x', 'y']).is_none());
+    }
+
+    #[test]
+    fn dependent_rows_are_infinite() {
+        // 2x + 2y = 2 是 x + y = 1 的 2 倍 ⇒ 秩 1 < 未知数 2，无穷多解
+        let mut m = mat(&[&[1, 1, 1], &[2, 2, 2]]);
+        let sol = gaussian_elimination(&mut m, &['x', 'y']).expect("有解（无穷多）");
+        assert!(sol.infinite, "应标记无穷多解");
+    }
+
+    #[test]
+    fn fewer_equations_than_unknowns_is_infinite() {
+        // 只有 1 个方程、2 个未知数 ⇒ 必然欠定
+        let mut m = mat(&[&[1, 1, 1]]);
+        let sol = gaussian_elimination(&mut m, &['x', 'y']).expect("有解（欠定）");
+        assert!(sol.infinite);
+    }
+
+    #[test]
+    fn fraction_solution_follows_display_mode() {
+        // 2x = 1 ⇒ x = 1/2：MathIO 给精确分式，LineIO 给小数
+        let mut m = mat(&[&[2, 1]]);
+        let sol = gaussian_elimination(&mut m, &['x']).unwrap();
+        assert_eq!(
+            format_linear_solution(&sol, crate::parser::DisplayMode::MathIO),
+            "x = 1 / 2"
+        );
+        assert_eq!(
+            format_linear_solution(&sol, crate::parser::DisplayMode::LineIO),
+            "x = 0.5"
+        );
+    }
+}
