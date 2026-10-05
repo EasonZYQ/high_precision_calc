@@ -74,10 +74,18 @@ pub const FUNCTIONS: &[&str] = &[
     "im",
     "conj",
     "arg",
+    "and",
+    "or",
+    "xor",
+    "not",
+    "shl",
+    "shr",
 ];
 
 /// 需要两个参数的函数（其余函数都是单参；`log` 有专门的报错文案，单独处理）
-pub const TWO_ARG_FUNCTIONS: &[&str] = &["nroot", "mod", "idiv", "nCr", "nPr", "gcd", "lcm"];
+pub const TWO_ARG_FUNCTIONS: &[&str] = &[
+    "nroot", "mod", "idiv", "nCr", "nPr", "gcd", "lcm", "and", "or", "xor", "shl", "shr",
+];
 
 /// 分量操作：实部 / 虚部 / 共轭 / 辐角。它们对**实数**同样有定义（实数 = 虚部为 0 的复数），
 /// 因此不受"实参含复数才走复数路径"的限制 —— 否则 `re(2)`、`arg(-1)` 会误报"未知函数"。
@@ -1045,6 +1053,36 @@ impl Evaluator {
                 let a = if neg { x.neg() } else { x.clone() };
                 let out = a.nth_root(kv)?;
                 Ok(if neg { out.neg() } else { out })
+            }
+            // 位运算：只对**非负整数**定义。负数的"位表示"依赖位宽（补码位数一说就变），
+            // 是另一套语义，这里明确拒绝而不是猜一个。
+            "and" | "or" | "xor" => {
+                let err = "位运算只支持非负整数";
+                let a = as_nonneg_int(&args[0], err)?;
+                let b = as_nonneg_int(&args[1], err)?;
+                let out = match name {
+                    "and" => a & b,
+                    "or" => a | b,
+                    _ => a ^ b,
+                };
+                Ok(Number::from_bigint(out))
+            }
+            // 与 Python 一致：无限宽补码下 ~a = -a - 1（所以结果是负数，输入仍须非负）
+            "not" => {
+                let a = as_nonneg_int(&args[0], "位运算只支持非负整数")?;
+                Ok(Number::from_bigint(-(a + BigInt::from(1))))
+            }
+            "shl" | "shr" => {
+                let err = "移位只能作用于非负整数";
+                let a = as_nonneg_int(&args[0], err)?;
+                let n = as_nonneg_int(&args[1], err)?;
+                const MAX_SHIFT: u32 = 1_000_000;
+                let nv = match n.to_u32() {
+                    Some(v) if v <= MAX_SHIFT => v,
+                    _ => return Err(format!("移位位数必须在 0 到 {MAX_SHIFT} 之间")),
+                };
+                let out = if name == "shl" { a << nv } else { a >> nv };
+                Ok(Number::from_bigint(out))
             }
             "mod" => args[0].modulo(&args[1]),
             "idiv" => args[0].idiv(&args[1]),

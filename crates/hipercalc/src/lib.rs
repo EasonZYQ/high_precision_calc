@@ -94,6 +94,44 @@ struct FnMeta {
 }
 
 const FUNCTIONS_META: &[FnMeta] = &[
+    // 位运算（只支持非负整数）
+    FnMeta {
+        name: "and",
+        min: 2,
+        max: 2,
+        sig: "(a, b)",
+    },
+    FnMeta {
+        name: "or",
+        min: 2,
+        max: 2,
+        sig: "(a, b)",
+    },
+    FnMeta {
+        name: "xor",
+        min: 2,
+        max: 2,
+        sig: "(a, b)",
+    },
+    FnMeta {
+        name: "not",
+        min: 1,
+        max: 1,
+        sig: "(a)",
+    },
+    FnMeta {
+        name: "shl",
+        min: 2,
+        max: 2,
+        sig: "(a, n)",
+    },
+    FnMeta {
+        name: "shr",
+        min: 2,
+        max: 2,
+        sig: "(a, n)",
+    },
+    // 位运算结束
     // 单参
     FnMeta {
         name: "sqr",
@@ -3581,6 +3619,7 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   taylor(f, x, a, n) 泰勒展開（a=0 即麥克勞林）：taylor(sin(x), x, 0, 5) → x - 1 / 6 * x^3 + 1 / 120 * x^5（n 為最高次數，不含餘項）
   sum(f, k, a, b)    求和：sum(k, k, 1, 100) → 5050、sum(k, k, 1, 1000000) → 500000500000（先閉式後逐項）
   prod(f, k, a, b)   求積：prod(k, k, 1, 10) → 3628800
+  位運算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（僅限非負整數）
   ── 鍵盤與輸入 ──
   Tab                補全函數/指令/常數/變數；函數補成 name() 並把游標放進括號
   Ctrl+C             計算中：中斷當前運算；空閒：離開程式
@@ -3649,6 +3688,7 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   taylor(f, x, a, n) Taylor series (a=0 gives Maclaurin): taylor(sin(x), x, 0, 5) -> x - 1/6*x^3 + 1/120*x^5 (n = highest degree, no remainder)
   sum(f, k, a, b)    summation: sum(k, k, 1, 100) -> 5050, sum(k, k, 1, 1000000) -> 500000500000 (closed form first)
   prod(f, k, a, b)   product: prod(k, k, 1, 10) -> 3628800
+  Bitwise   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n) (non-negative integers only)
   -- Keyboard & input --
   Tab                complete functions/commands/constants/variables; a function becomes name() with the cursor inside
   Ctrl+C             during a computation: interrupt it; when idle: quit
@@ -3725,6 +3765,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   taylor(f, x, a, n) 泰勒展开（a=0 即麦克劳林）：taylor(sin(x), x, 0, 5) → x - 1 / 6 * x^3 + 1 / 120 * x^5（n 是最高次数，不含余项）
   sum(f, k, a, b)    求和：sum(k, k, 1, 100) → 5050、sum(k, k, 1, 1000000) → 500000500000（先闭式后逐项）
   prod(f, k, a, b)   求积：prod(k, k, 1, 10) → 3628800
+  位运算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（仅限非负整数）
   ── 键盘与输入 ──
   Tab                补全函数/指令/常数/变量；函数补成 name() 并把光标放进括号
   Ctrl+C             计算中：中断当前运算；空闲：退出程序
@@ -4183,6 +4224,36 @@ mod cli_tests {
         }
         let total: u128 = rows.iter().map(|r| r.0).sum();
         println!("--- 合计 {} us / {} 条 ---", total, rows.len());
+    }
+
+    /// 位运算：期望值全部**按二进制位手算**；只支持非负整数，负数与非整数必须明确拒绝
+    /// （而不是替用户猜一套"补码位数"的语义）。
+    #[test]
+    fn bitwise_functions() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        for (input, want) in [
+            ("and(12, 10)", "8"),   // 1100 & 1010 = 1000
+            ("or(12, 10)", "14"),   // 1100 | 1010 = 1110
+            ("xor(12, 10)", "6"),   // 1100 ^ 1010 = 0110
+            ("not(5)", "-6"),       // ~5 = -6（无限宽补码，与 Python 一致）
+            ("shl(1, 10)", "1024"), // 左移即乘 2^10
+            ("shr(1024, 10)", "1"), // 右移即整除 2^10
+            ("shl(3, 0)", "3"),     // 移 0 位不变
+            ("and(0, 255)", "0"),
+            ("or(1, 2)", "3"),
+        ] {
+            let (out, err) = run_line(input, &mut st);
+            assert!(!err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 {want}");
+        }
+        // 负数 / 非整数：拒绝
+        for bad in ["and(-1, 5)", "shl(1, -1)", "or(1.5, 2)"] {
+            let (out, err) = run_line(bad, &mut st);
+            assert!(err, "{bad} 应被拒绝，却得到 {out}");
+        }
+        // 移位位数过大：拒绝（否则会算出几万位的数）
+        let (out, err) = run_line("shl(1, 2000000)", &mut st);
+        assert!(err, "shl(1, 2000000) 应被拒绝: {out}");
     }
 
     /// **从 `perf_scan` 扶正的回归用例**：这些输入原先只在被 `#[ignore]` 的性能扫描里跑，

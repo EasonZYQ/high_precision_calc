@@ -25,9 +25,12 @@
 - **成本**：中（parser 校验策略 + 求值器 + 持久化 + i18n + 测试）。
 - **风险**：中——动的是解析期的名字判定，必须有"`xy` 仍是 x·y"这类既有测试兜底（现已存在）。
 
-## 2. 数制与位运算
+## 2. 数制与位运算　🟡 已完成一半
 
-**纯新增、风险最低**，适合当"热身项"。
+**位运算已实现**（6 个函数：`and` / `or` / `xor` / `not` / `shl` / `shr`，只接受非负整数，负数的补码语义明确拒绝；
+`not(a)` 与 Python 一致取无限宽补码 `~a = -a - 1`；移位位数上限 1e6）。测试见 `cli_tests::bitwise_functions`。
+
+**待做：数制输出与字面量**（`hex` / `bin` / `oct`）——
 
 - **位运算函数**：`and` / `or` / `xor` / `not` / `shl` / `shr`，照 `mod` / `gcd` 的形状加即可
   （`TWO_ARG_FUNCTIONS`、`FUNCTIONS`、`FUNCTIONS_META`、`eval_function` 四处同步；整数参数用现成的 `as_int` / `as_nonneg_int`）。

@@ -132,7 +132,7 @@ cargo test --workspace   # 144 项单元测试（core 11 + hipercalc 133，其�
 - 顶层入口 `parse_system()`（逗号分隔方程组）→ `parse_equation()`（单个 `=`）→ 表达式。不要另起入口绕过它。
 - `Expr::Function(name, Vec<Expr>)` 已是**参数列表**：绝大多数单参，仅 `log(b, x)` 两参。内部 `"fact"`（`!` 生成）与 `"abs"`（`|x|` 生成）不在白名单内。
 - 变量：单字母 `x y z a b...`（`VALID_VARIABLES`，大写段只到 W）+ 全大写存储变量（`/let`，可含 `_`：`X`、`AB`、`PI_VAR`）+ `ans`；`pi`/`e` 是常数。
-- **函数白名单唯一来源是 `parser::FUNCTIONS`**（解析校验、多字母拆分判断、`lib.rs` 高亮共用），  
+- **函数白名单唯一来源是 `parser::FUNCTIONS`**（现 65 个：含 6 个位运算 `and`/`or`/`xor`/`not`/`shl`/`shr`，只限非负整数）（解析校验、多字母拆分判断、`lib.rs` 高亮共用），  
   新增函数只需改它 + `Evaluator::eval_function`（旧实现有三份重复数组，容易漏改）。`fact`/`abs` 作为内部名不要加进白名单。
 - `eval_function` 签名是 `(name, args: &[Number])`：单参函数开头统一校验 `args.len()==1`，`log` 校验 `len()==2` 并检查底数 >0 且 ≠1。
 - `log` 的底数判定必须精确（`as_rational().is_one()` 或与 1 的偏差 > 1e-40），**不要用 `rounded(0) == 1`**  

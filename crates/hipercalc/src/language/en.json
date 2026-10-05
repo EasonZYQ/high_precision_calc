@@ -292,5 +292,7 @@
   "(f, x) 或 (f, x, a, b)": "(f, x) or (f, x, a, b)",
   "计算已中断": "computation cancelled",
   "输入 {0} 查看帮助，输入表达式进行计算，{1} 退出": "Type {0} for help, enter an expression to compute, {1} to quit",
-  "超高精度命令行计算器 (HiPerCalc)": "HiPerCalc — Ultra-Precision CLI Calculator"
+  "超高精度命令行计算器 (HiPerCalc)": "HiPerCalc — Ultra-Precision CLI Calculator",
+  "位运算只支持非负整数": "bitwise operations only accept non-negative integers",
+  "移位只能作用于非负整数": "bitwise operations only accept non-negative integers"
 }
