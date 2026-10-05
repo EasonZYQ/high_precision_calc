@@ -500,6 +500,35 @@ impl Parser {
     }
 
     fn parse_number(&mut self) -> Result<Expr, String> {
+        // 进制字面量：0x/0X 十六进制、0o/0O 八进制、0b/0B 二进制。
+        // `0` 后面不跟进制字母时按普通十进制走（所以 `0`、`0.5`、`0e3` 都不受影响）。
+        if self.peek() == Some('0') {
+            let radix = match self.input.get(self.pos + 1) {
+                Some('x') | Some('X') => Some(16u32),
+                Some('o') | Some('O') => Some(8),
+                Some('b') | Some('B') => Some(2),
+                _ => None,
+            };
+            if let Some(radix) = radix {
+                self.next(); // 跳过 '0'
+                self.next(); // 跳过进制字母
+                let digits_start = self.pos;
+                while self.peek().is_some_and(|c| c.is_digit(radix)) {
+                    self.next();
+                }
+                if self.pos == digits_start {
+                    return Err(
+                        "进制字面量缺少数字（0x / 0o / 0b 后要跟对应进制的数字）".to_string()
+                    );
+                }
+                let text: String = self.input[digits_start..self.pos].iter().collect();
+                return match BigInt::parse_bytes(text.as_bytes(), radix) {
+                    Some(v) => Ok(Expr::Number(Number::from_bigint(v))),
+                    None => Err(format!("不是合法的 {radix} 进制数: {text}")),
+                };
+            }
+        }
+
         let start = self.pos;
         let mut has_dot = false;
 

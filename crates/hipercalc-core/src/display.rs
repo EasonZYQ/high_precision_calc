@@ -3,9 +3,13 @@ use crate::number::{ExactExpr, ExactTerm, Number};
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// 数学显示模式（mathio）：尽可能使用符号表示
 pub fn format_mathio(num: &Number) -> String {
+    if let Some(s) = format_radix(num) {
+        return s;
+    }
     match num {
         // 千分位只对"纯十进制"结果生效（分数/根式/含 π 的符号串原样返回）
         Number::Exact(expr) => bigfloat::group_integer_part(&format_exact_expr(expr)),
@@ -55,9 +59,61 @@ fn format_complex(z: &crate::complex::ComplexNum, part: &dyn Fn(&Number) -> Stri
 }
 
 /// 线性显示模式（lineio）：一律使用小数
+/// 结果数制（10 = 十进制；16/8/2 = 十六/八/二进制）。
+///
+/// 与 `bigfloat::display_digits()` 同层：**显示层**的全局开关，不动数值本身。
+/// 只对**整数**生效 —— "0.5 的十六进制"没有标准答案，所以小数与根式一律仍按十进制输出。
+static RESULT_BASE: AtomicU32 = AtomicU32::new(10);
+
+/// 设置结果数制（只接受 2 / 8 / 10 / 16，其余忽略）
+pub fn set_base(base: u32) {
+    if matches!(base, 2 | 8 | 10 | 16) {
+        RESULT_BASE.store(base, Ordering::Relaxed);
+    }
+}
+
+/// 当前结果数制
+pub fn base() -> u32 {
+    RESULT_BASE.load(Ordering::Relaxed)
+}
+
+/// 非十进制时把**整数**渲染成带前缀的形式（`0xFF` / `0o17` / `0b1010`）。
+/// 带前缀是为了能直接粘回计算器（输入侧 `0x`/`0o`/`0b` 已支持）。
+/// 返回 `None` 表示"这一项不归数制管"（十进制模式，或不是整数）。
+fn format_radix(num: &Number) -> Option<String> {
+    let b = base();
+    if b == 10 {
+        return None;
+    }
+    // 只处理整数：as_rational 是 Number 上的现成接口（与 parser::as_int 同一套）
+    let n = match num.as_rational() {
+        Some(r) if r.is_integer() => r.to_integer(),
+        _ => return None,
+    };
+    Some(radix_string(&n, b))
+}
+
+/// 把整数渲染成**带前缀**的目标进制串（纯函数，便于单测且不依赖全局开关）。
+/// 带前缀是为了能直接粘回计算器（输入侧 `0x`/`0o`/`0b` 已支持）。
+fn radix_string(n: &BigInt, base: u32) -> String {
+    let digits = n.to_str_radix(base);
+    let prefix = match base {
+        16 => "0x",
+        8 => "0o",
+        _ => "0b",
+    };
+    match digits.strip_prefix('-') {
+        Some(rest) => format!("-{prefix}{rest}"),
+        None => format!("{prefix}{digits}"),
+    }
+}
+
 pub fn format_lineio(num: &Number) -> String {
     if let Number::Complex(z) = num {
         return format_complex(z, &format_lineio);
+    }
+    if let Some(s) = format_radix(num) {
+        return s;
     }
     let bf = num.to_approx();
     let s = bf.to_significant_string(bigfloat::display_digits());
@@ -226,5 +282,25 @@ fn is_term_zero(term: &ExactTerm) -> bool {
         ExactTerm::Sqrt(c, _) => c.is_zero(),
         ExactTerm::Pi(c) => c.is_zero(),
         ExactTerm::E(c) => c.is_zero(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 只测**纯函数**：数制开关是全局状态，测试若去改它会污染并行跑的其它测试
+    /// （这个坑在本项目已经踩过一次，见 change_logs/change_log40.md 附近的记录）。
+    /// 开关本身的端到端行为靠命令行冒烟核对。
+    #[test]
+    fn radix_string_is_prefixed_and_keeps_sign() {
+        let n = |v: i64| BigInt::from(v);
+        assert_eq!(radix_string(&n(255), 16), "0xff");
+        assert_eq!(radix_string(&n(4095), 16), "0xfff");
+        assert_eq!(radix_string(&n(-255), 16), "-0xff");
+        assert_eq!(radix_string(&n(511), 8), "0o777");
+        assert_eq!(radix_string(&n(10), 2), "0b1010");
+        assert_eq!(radix_string(&n(0), 2), "0b0");
+        assert_eq!(radix_string(&n(0), 16), "0x0");
     }
 }

@@ -294,5 +294,9 @@
   "输入 {0} 查看帮助，输入表达式进行计算，{1} 退出": "Type {0} for help, enter an expression to compute, {1} to quit",
   "超高精度命令行计算器 (HiPerCalc)": "HiPerCalc — Ultra-Precision CLI Calculator",
   "位运算只支持非负整数": "bitwise operations only accept non-negative integers",
-  "移位只能作用于非负整数": "bitwise operations only accept non-negative integers"
+  "移位只能作用于非负整数": "bitwise operations only accept non-negative integers",
+  "进制字面量缺少数字（0x / 0o / 0b 后要跟对应进制的数字）": "base literal needs digits (0x / 0o / 0b must be followed by digits of that base)",
+  "不是合法的 {0} 进制数: {1}": "not a valid base-{0} number: {1}",
+  "用法: /base dec|hex|oct|bin": "usage: /base dec|hex|oct|bin",
+  "结果数制已设为 {0}（只影响整数）": "result base set to {0} (integers only)"
 }

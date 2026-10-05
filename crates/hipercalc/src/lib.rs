@@ -54,6 +54,7 @@ const COMMANDS: &[&str] = &[
     "/let",
     "/var",
     "/del",
+    "/base",
     "/reset",
     "/save",
     "/load",
@@ -73,6 +74,7 @@ const COMMAND_HINTS: &[(&str, &str)] = &[
     ("/set", "<类别> <颜色>"),
     ("/let", "NAME = <表达式>（变量名须全大写）"),
     ("/del", "NAME 或 all"),
+    ("/base", "dec|hex|oct|bin（结果按该进制显示；仅整数）"),
     ("/reset", "[all]（all = 连模式与颜色一起恢复默认）"),
     ("/save", "<文件路径>"),
     ("/load", "<文件路径>"),
@@ -1819,6 +1821,27 @@ fn handle_command(input: &str, state: &mut AppState) -> bool {
         }
         "/save" => handle_save(&parts, state),
         "/load" => handle_load(&parts, state),
+        // 结果数制：只影响**显示**（数值本身不变），且只对整数生效
+        "/base" => match parts.get(1).map(|a| a.to_lowercase()) {
+            Some(a) => {
+                let base = match a.as_str() {
+                    "dec" | "10" => 10,
+                    "hex" | "16" => 16,
+                    "oct" | "8" => 8,
+                    "bin" | "2" => 2,
+                    _ => {
+                        leprint!("{}", i18n::t("用法: /base dec|hex|oct|bin"));
+                        return false;
+                    }
+                };
+                hipercalc_core::display::set_base(base);
+                lprint!("{}", i18n::fmt("结果数制已设为 {0}（只影响整数）", &[&a]));
+            }
+            None => {
+                lprint!("{}", i18n::t("用法: /base dec|hex|oct|bin"));
+            }
+        },
+
         "/timing" => {
             match parts.get(1).map(|s| s.to_lowercase()).as_deref() {
                 Some("on") => {
@@ -3620,6 +3643,7 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   sum(f, k, a, b)    求和：sum(k, k, 1, 100) → 5050、sum(k, k, 1, 1000000) → 500000500000（先閉式後逐項）
   prod(f, k, a, b)   求積：prod(k, k, 1, 10) → 3628800
   位運算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（僅限非負整數）
+  進位     /base dec|hex|oct|bin 切換結果進位（僅整數）；輸入可寫 0xFF / 0o17 / 0b1010
   ── 鍵盤與輸入 ──
   Tab                補全函數/指令/常數/變數；函數補成 name() 並把游標放進括號
   Ctrl+C             計算中：中斷當前運算；空閒：離開程式
@@ -3689,6 +3713,7 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   sum(f, k, a, b)    summation: sum(k, k, 1, 100) -> 5050, sum(k, k, 1, 1000000) -> 500000500000 (closed form first)
   prod(f, k, a, b)   product: prod(k, k, 1, 10) -> 3628800
   Bitwise   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n) (non-negative integers only)
+  Bases     /base dec|hex|oct|bin switches the result base (integers only); input accepts 0xFF / 0o17 / 0b1010
   -- Keyboard & input --
   Tab                complete functions/commands/constants/variables; a function becomes name() with the cursor inside
   Ctrl+C             during a computation: interrupt it; when idle: quit
@@ -3766,6 +3791,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   sum(f, k, a, b)    求和：sum(k, k, 1, 100) → 5050、sum(k, k, 1, 1000000) → 500000500000（先闭式后逐项）
   prod(f, k, a, b)   求积：prod(k, k, 1, 10) → 3628800
   位运算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（仅限非负整数）
+  进制     /base dec|hex|oct|bin 切换结果数制（仅整数）；输入可写 0xFF / 0o17 / 0b1010
   ── 键盘与输入 ──
   Tab                补全函数/指令/常数/变量；函数补成 name() 并把光标放进括号
   Ctrl+C             计算中：中断当前运算；空闲：退出程序
@@ -4224,6 +4250,41 @@ mod cli_tests {
         }
         let total: u128 = rows.iter().map(|r| r.0).sum();
         println!("--- 合计 {} us / {} 条 ---", total, rows.len());
+    }
+
+    /// 进制字面量：`0x` / `0o` / `0b`（进制字母大小写均可），值仍按十进制显示
+    #[test]
+    fn base_literals() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        for (input, want) in [
+            ("0xFF", "= 255"),
+            ("0xff", "= 255"),
+            ("0x10", "= 16"),
+            ("0o17", "= 15"),
+            ("0O17", "= 15"),
+            ("0o777", "= 511"),
+            ("0b1010", "= 10"),
+            ("0B11111111", "= 255"),
+            ("0b0", "= 0"),
+            ("0x1F + 1", "= 32"),
+            ("0b1 + 0o1", "= 2"),
+            ("0x10 * 0b10", "= 32"),
+        ] {
+            let (out, err) = run_line(input, &mut st);
+            assert!(!err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 {want}");
+        }
+        // 只有前缀、没有数字：必须报错（而不是当成 0）
+        for bad in ["0x", "0b", "0o"] {
+            let (out, err) = run_line(bad, &mut st);
+            assert!(err, "{bad} 应报错，却得到 {out}");
+        }
+        // 不能影响普通十进制与小数的既有行为
+        for (input, want) in [("0", "= 0"), ("0.5", "= 0.5"), ("0e3", "= 0")] {
+            let (out, err) = run_line(input, &mut st);
+            assert!(!err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 {want}");
+        }
     }
 
     /// 位运算：期望值全部**按二进制位手算**；只支持非负整数，负数与非整数必须明确拒绝
