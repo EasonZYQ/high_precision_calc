@@ -1912,6 +1912,7 @@ fn mode_usage() -> String {
     let mut s = String::from("/mode ");
     let items = [
         ("mathio", "数学显示"),
+        ("latex", "LaTeX 输出（结果可直接粘进论文）"),
         ("lineio", "线性显示"),
         ("deg", "角度制"),
         ("rad", "弧度制"),
@@ -1974,6 +1975,8 @@ fn handle_save(parts: &[&str], state: &AppState) {
     out.push_str(&format!(
         "/mode {}\n",
         match state.evaluator.display_mode {
+            // LaTeX 是"MathIO + 显示层开关"，回显时要如实反映，否则用户看不出自己在哪个模式
+            DisplayMode::MathIO if hipercalc_core::display::latex() => "latex",
             DisplayMode::MathIO => "mathio",
             DisplayMode::LineIO => "lineio",
         }
@@ -2184,12 +2187,20 @@ fn handle_mode(parts: &[&str], state: &mut AppState) {
     let sub = parts[1].to_lowercase();
     let val = parts.get(2).map(|s| s.to_lowercase());
     match sub.as_str() {
+        // LaTeX 输出：底层仍是 MathIO（符号优先），只是结果的排布换成 LaTeX 记号
+        "latex" | "tex" => {
+            state.evaluator.display_mode = DisplayMode::MathIO;
+            hipercalc_core::display::set_latex(true);
+        }
+
         "mathio" => {
             state.evaluator.display_mode = DisplayMode::MathIO;
+            hipercalc_core::display::set_latex(false);
             lprint!("{}", "已切换到数学显示模式 (MathIO)".green());
         }
         "lineio" => {
             state.evaluator.display_mode = DisplayMode::LineIO;
+            hipercalc_core::display::set_latex(false);
             lprint!("{}", "已切换到线性显示模式 (LineIO)".green());
         }
         "deg" => {
@@ -3644,6 +3655,7 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   prod(f, k, a, b)   求積：prod(k, k, 1, 10) → 3628800
   位運算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（僅限非負整數）
   進位     /base dec|hex|oct|bin 切換結果進位（僅整數）；輸入可寫 0xFF / 0o17 / 0b1010
+  LaTeX    /mode latex 讓結果用 LaTeX 記號（\\frac{}{}、\\sqrt{}、\\pi），可直接貼進論文；切回 /mode mathio
   ── 鍵盤與輸入 ──
   Tab                補全函數/指令/常數/變數；函數補成 name() 並把游標放進括號
   Ctrl+C             計算中：中斷當前運算；空閒：離開程式
@@ -3714,6 +3726,7 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   prod(f, k, a, b)   product: prod(k, k, 1, 10) -> 3628800
   Bitwise   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n) (non-negative integers only)
   Bases     /base dec|hex|oct|bin switches the result base (integers only); input accepts 0xFF / 0o17 / 0b1010
+  LaTeX     /mode latex renders results in LaTeX (\\frac{}{}, \\sqrt{}, \\pi) ready to paste into a paper; /mode mathio switches back
   -- Keyboard & input --
   Tab                complete functions/commands/constants/variables; a function becomes name() with the cursor inside
   Ctrl+C             during a computation: interrupt it; when idle: quit
@@ -3792,6 +3805,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   prod(f, k, a, b)   求积：prod(k, k, 1, 10) → 3628800
   位运算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（仅限非负整数）
   进制     /base dec|hex|oct|bin 切换结果数制（仅整数）；输入可写 0xFF / 0o17 / 0b1010
+  LaTeX    /mode latex 让结果用 LaTeX 记号（\\frac{}{}、\\sqrt{}、\\pi），可直接粘进论文；切回 /mode mathio
   ── 键盘与输入 ──
   Tab                补全函数/指令/常数/变量；函数补成 name() 并把光标放进括号
   Ctrl+C             计算中：中断当前运算；空闲：退出程序

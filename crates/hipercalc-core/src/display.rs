@@ -3,12 +3,18 @@ use crate::number::{ExactExpr, ExactTerm, Number};
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// 数学显示模式（mathio）：尽可能使用符号表示
 pub fn format_mathio(num: &Number) -> String {
     if let Some(s) = format_radix(num) {
         return s;
+    }
+    // LaTeX 模式下精确式走平行渲染器（不套千分位：LaTeX 里不需要分隔符）
+    if latex()
+        && let Number::Exact(expr) = num
+    {
+        return format_exact_expr_latex(expr);
     }
     match num {
         // 千分位只对"纯十进制"结果生效（分数/根式/含 π 的符号串原样返回）
@@ -59,6 +65,22 @@ fn format_complex(z: &crate::complex::ComplexNum, part: &dyn Fn(&Number) -> Stri
 }
 
 /// 线性显示模式（lineio）：一律使用小数
+/// LaTeX 输出开关（`/mode latex`）。
+///
+/// 用**显示层开关**而不是给 `DisplayMode` 加枚举分支：`DisplayMode::` 在全仓有 87 处引用，
+/// 加一个变体会牵动一大片 match；而 LaTeX 只影响"结果怎么排"，本质是显示层的事。
+static LATEX: AtomicBool = AtomicBool::new(false);
+
+/// 开关 LaTeX 输出（仅影响结果的符号渲染，数值不变）
+pub fn set_latex(on: bool) {
+    LATEX.store(on, Ordering::Relaxed);
+}
+
+/// 当前是否 LaTeX 输出
+pub fn latex() -> bool {
+    LATEX.load(Ordering::Relaxed)
+}
+
 /// 结果数制（10 = 十进制；16/8/2 = 十六/八/二进制）。
 ///
 /// 与 `bigfloat::display_digits()` 同层：**显示层**的全局开关，不动数值本身。
@@ -183,6 +205,86 @@ fn format_exact_expr(expr: &ExactExpr) -> String {
     }
 }
 
+/// LaTeX 版精确式渲染。
+///
+/// 与 `format_exact_expr` **平行实现**而不是加参数：`ExactTerm` 只有 4 个变体，
+/// 重复这几行比为 `DisplayMode` 加分支（87 处引用）划算得多，也不会让原路径承担新分支的风险。
+fn format_exact_expr_latex(expr: &ExactExpr) -> String {
+    if expr.terms.is_empty() {
+        return "0".to_string();
+    }
+    let mut written = 0usize;
+    let mut out = String::new();
+    for term in &expr.terms {
+        if is_term_zero(term) {
+            continue;
+        }
+        let t = format_term_latex(term);
+        if t.is_empty() {
+            continue;
+        }
+        if written == 0 {
+            out = t;
+        } else if let Some(rest) = t.strip_prefix('-') {
+            out.push_str(&format!(" - {rest}"));
+        } else {
+            out.push_str(&format!(" + {t}"));
+        }
+        written += 1;
+    }
+    if written == 0 {
+        return "0".to_string();
+    }
+    if expr.denominator == BigInt::one() {
+        out
+    } else {
+        format!("\\frac{{{out}}}{{{}}}", expr.denominator)
+    }
+}
+
+/// 有理数的 LaTeX：整数原样，分数用 `\frac`，负号提到分式外面（`-\frac{1}{2}` 比 `\frac{-1}{2}` 好看）
+fn latex_rational(r: &BigRational) -> String {
+    if r.denom() == &BigInt::one() {
+        return r.numer().to_string();
+    }
+    if r.numer().is_negative() {
+        format!("-\\frac{{{}}}{{{}}}", -r.numer(), r.denom())
+    } else {
+        format!("\\frac{{{}}}{{{}}}", r.numer(), r.denom())
+    }
+}
+
+/// 系数（有理数）接在符号量前：系数为 1 省略、为 -1 只留负号、分数系数走 `\frac`
+fn latex_coeff(r: &BigRational) -> String {
+    if r.is_one() {
+        String::new()
+    } else if r == &BigRational::from_integer(BigInt::from(-1)) {
+        "-".to_string()
+    } else {
+        latex_rational(r)
+    }
+}
+
+fn format_term_latex(term: &ExactTerm) -> String {
+    match term {
+        ExactTerm::Rational(r) => latex_rational(r),
+        ExactTerm::Sqrt(c, radicand) => {
+            let rad = format!("\\sqrt{{{radicand}}}");
+            let c = latex_coeff(c);
+            // 负系数要把负号留在最前面（调用方靠 "-" 前缀决定用 + 还是 - 连接）
+            if c.is_empty() {
+                rad
+            } else if c == "-" {
+                format!("-{rad}")
+            } else {
+                format!("{c}{rad}")
+            }
+        }
+        ExactTerm::Pi(c) => format!("{} \\pi", latex_coeff(c)).trim_start().to_string(),
+        ExactTerm::E(c) => format!("{}e", latex_coeff(c)),
+    }
+}
+
 fn format_term(term: &ExactTerm) -> String {
     match term {
         ExactTerm::Rational(r) => format_rational(r),
@@ -292,6 +394,64 @@ mod tests {
     /// 只测**纯函数**：数制开关是全局状态，测试若去改它会污染并行跑的其它测试
     /// （这个坑在本项目已经踩过一次，见 change_logs/change_log40.md 附近的记录）。
     /// 开关本身的端到端行为靠命令行冒烟核对。
+    /// LaTeX 渲染：只测私有纯函数（开关是全局态，改它会污染并行测试，见上面注释）
+    #[test]
+    fn latex_renders_fractions_roots_and_constants() {
+        let r = |n: i64, d: i64| BigRational::new(BigInt::from(n), BigInt::from(d));
+        let one = || BigInt::one();
+        let term = |t: ExactTerm| ExactExpr {
+            terms: vec![t],
+            denominator: one(),
+        };
+        // 1/3 → \frac{1}{3}
+        assert_eq!(
+            format_exact_expr_latex(&term(ExactTerm::Rational(r(1, 3)))),
+            "\\frac{1}{3}"
+        );
+        // 整数不带分式
+        assert_eq!(
+            format_exact_expr_latex(&term(ExactTerm::Rational(r(7, 1)))),
+            "7"
+        );
+        // 负分数：负号提到分式外
+        assert_eq!(
+            format_exact_expr_latex(&term(ExactTerm::Rational(r(-1, 2)))),
+            "-\\frac{1}{2}"
+        );
+        // 3√2 / √2（系数 1 省略）/ -√2
+        assert_eq!(
+            format_exact_expr_latex(&term(ExactTerm::Sqrt(r(3, 1), BigInt::from(2)))),
+            "3\\sqrt{2}"
+        );
+        assert_eq!(
+            format_exact_expr_latex(&term(ExactTerm::Sqrt(r(1, 1), BigInt::from(2)))),
+            "\\sqrt{2}"
+        );
+        assert_eq!(
+            format_exact_expr_latex(&term(ExactTerm::Sqrt(r(-1, 1), BigInt::from(2)))),
+            "-\\sqrt{2}"
+        );
+        // π 与 e
+        assert_eq!(
+            format_exact_expr_latex(&term(ExactTerm::Pi(r(1, 1)))),
+            "\\pi"
+        );
+        assert_eq!(
+            format_exact_expr_latex(&term(ExactTerm::Pi(r(2, 1)))),
+            "2 \\pi"
+        );
+        assert_eq!(format_exact_expr_latex(&term(ExactTerm::E(r(1, 1)))), "e");
+        // 多项相加 + 整体分母：2 + 3√2 再除以 3
+        let multi = ExactExpr {
+            terms: vec![
+                ExactTerm::Rational(r(2, 1)),
+                ExactTerm::Sqrt(r(3, 1), BigInt::from(2)),
+            ],
+            denominator: BigInt::from(3),
+        };
+        assert_eq!(format_exact_expr_latex(&multi), "\\frac{2 + 3\\sqrt{2}}{3}");
+    }
+
     #[test]
     fn radix_string_is_prefixed_and_keeps_sign() {
         let n = |v: i64| BigInt::from(v);
