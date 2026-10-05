@@ -1886,6 +1886,9 @@ fn run_line(input: &str, state: &mut AppState) -> (String, bool) {
 }
 
 fn handle_input_result(input: &str, state: &mut AppState) {
+    // 标记"正在计算"：期间 Ctrl+C 会置中断标志（控制台处理器），求值器的检查点随即退出；
+    // 离开作用域（含提前 return/错误路径）自动复位，空闲时才走"Ctrl+C 退出程序"。
+    let _cancel_scope = cancel::Scope::new();
     // 计时：动态刷新覆盖"解析 + 结果生成"整段——耗时大多发生在结果
     // 格式化阶段（方程通式识别、根收集、因式分解等），而非 parse_and_eval 本身。
     let mut timing = Timing::begin();
