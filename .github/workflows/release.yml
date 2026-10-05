@@ -17,22 +17,28 @@ jobs:
         include:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            archive: zip
+            bin: hipercalc.exe
+            asset: hipercalc-x86_64-pc-windows-msvc.exe
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            archive: tar.gz
+            bin: hipercalc
+            asset: hipercalc-x86_64-unknown-linux-gnu
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            archive: tar.gz
+            bin: hipercalc
+            asset: hipercalc-x86_64-unknown-linux-musl
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            archive: tar.gz
+            bin: hipercalc
+            asset: hipercalc-aarch64-unknown-linux-gnu
           - target: x86_64-apple-darwin
             os: macos-latest
-            archive: tar.gz
+            bin: hipercalc
+            asset: hipercalc-x86_64-apple-darwin
           - target: aarch64-apple-darwin
             os: macos-latest
-            archive: tar.gz
+            bin: hipercalc
+            asset: hipercalc-aarch64-apple-darwin
 
     runs-on: ${{ matrix.os }}
 
@@ -60,26 +66,23 @@ jobs:
         run: sudo apt-get install -y musl-tools
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} -p hipercalc
 
-      - name: Package (Unix)
-        if: matrix.archive == 'tar.gz'
-        run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../hipercalc-${{ matrix.target }}.tar.gz hipercalc
+      # 直接发布**二进制本体**（不再打包 zip / tar.gz）：文件名即平台标识。
+      - name: Stage binary (Unix)
+        if: runner.os != 'Windows'
+        run: cp target/${{ matrix.target }}/release/${{ matrix.bin }} ${{ matrix.asset }}
 
-      - name: Package (Windows)
-        if: matrix.archive == 'zip'
+      - name: Stage binary (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          cd target/${{ matrix.target }}/release
-          Compress-Archive -Path hipercalc.exe -DestinationPath ../../../hipercalc-${{ matrix.target }}.zip
+        run: Copy-Item target/${{ matrix.target }}/release/${{ matrix.bin }} ${{ matrix.asset }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hipercalc-${{ matrix.target }}
-          path: hipercalc-${{ matrix.target }}.*
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
 
   release:
     needs: build
@@ -99,38 +102,50 @@ jobs:
           body: |
             ## 中文
 
-            各平台二进制见下方 Assets：
+            各平台**可执行文件本体**见下方 Assets（未压缩，下载后即可运行）：
 
             | 平台 | 文件 |
             |---|---|
-            | Windows x86_64 | `hipercalc-x86_64-pc-windows-msvc.zip` |
-            | Linux x86_64 (glibc) | `hipercalc-x86_64-unknown-linux-gnu.tar.gz` |
-            | Linux x86_64 (musl，静态) | `hipercalc-x86_64-unknown-linux-musl.tar.gz` |
-            | Linux aarch64 | `hipercalc-aarch64-unknown-linux-gnu.tar.gz` |
-            | macOS Intel | `hipercalc-x86_64-apple-darwin.tar.gz` |
-            | macOS Apple Silicon | `hipercalc-aarch64-apple-darwin.tar.gz` |
+            | Windows x86_64 | `hipercalc-x86_64-pc-windows-msvc.exe` |
+            | Linux x86_64 (glibc) | `hipercalc-x86_64-unknown-linux-gnu` |
+            | Linux x86_64 (musl，静态) | `hipercalc-x86_64-unknown-linux-musl` |
+            | Linux aarch64 | `hipercalc-aarch64-unknown-linux-gnu` |
+            | macOS Intel | `hipercalc-x86_64-apple-darwin` |
+            | macOS Apple Silicon | `hipercalc-aarch64-apple-darwin` |
 
-            解压后直接运行 `hipercalc`（Windows 为 `hipercalc.exe`）；Linux / macOS 可能需要先
-            `chmod +x hipercalc`。模块化的 musl 版本不依赖系统 glibc。
+            **Linux / macOS 需要先加可执行位**（GitHub 不保留它）：
+
+            ```bash
+            chmod +x hipercalc-x86_64-unknown-linux-gnu
+            ./hipercalc-x86_64-unknown-linux-gnu
+            ```
+
+            建议重命名为 `hipercalc` 后再用。musl 版本静态链接，不依赖系统 glibc。
 
             - 完整文档：[docs/DOC.zh-CN.md](https://github.com/${{ github.repository }}/blob/main/docs/DOC.zh-CN.md)
             - 更新内容见下方自动生成的提交列表。
 
             ## English
 
-            Per-platform binaries are attached below:
+            Per-platform **raw executables** are attached below (no archives — download and run):
 
             | Platform | File |
             |---|---|
-            | Windows x86_64 | `hipercalc-x86_64-pc-windows-msvc.zip` |
-            | Linux x86_64 (glibc) | `hipercalc-x86_64-unknown-linux-gnu.tar.gz` |
-            | Linux x86_64 (musl, static) | `hipercalc-x86_64-unknown-linux-musl.tar.gz` |
-            | Linux aarch64 | `hipercalc-aarch64-unknown-linux-gnu.tar.gz` |
-            | macOS Intel | `hipercalc-x86_64-apple-darwin.tar.gz` |
-            | macOS Apple Silicon | `hipercalc-aarch64-apple-darwin.tar.gz` |
+            | Windows x86_64 | `hipercalc-x86_64-pc-windows-msvc.exe` |
+            | Linux x86_64 (glibc) | `hipercalc-x86_64-unknown-linux-gnu` |
+            | Linux x86_64 (musl, static) | `hipercalc-x86_64-unknown-linux-musl` |
+            | Linux aarch64 | `hipercalc-aarch64-unknown-linux-gnu` |
+            | macOS Intel | `hipercalc-x86_64-apple-darwin` |
+            | macOS Apple Silicon | `hipercalc-aarch64-apple-darwin` |
 
-            Unpack and run `hipercalc` (`hipercalc.exe` on Windows); on Linux / macOS you may need
-            `chmod +x hipercalc` first. The musl build is statically linked and needs no system glibc.
+            **On Linux / macOS you must restore the executable bit first** (GitHub does not keep it):
+
+            ```bash
+            chmod +x hipercalc-x86_64-unknown-linux-gnu
+            ./hipercalc-x86_64-unknown-linux-gnu
+            ```
+
+            Renaming it to `hipercalc` is recommended. The musl build is statically linked and needs no system glibc.
 
             - Full documentation: [docs/DOC.en.md](https://github.com/${{ github.repository }}/blob/main/docs/DOC.en.md)
             - See the auto-generated commit list below for what changed.

@@ -24,32 +24,34 @@ in-bracket argument hints, Ctrl+C interrupts or quits, full-width punctuation au
 
 ```
 > 1/3+1/6
-= 1 / 2
-Time: <1s
+= 0.5
+> sin(pi/6)             <- type sin then Tab: it becomes sin() with the cursor inside,
+= 0.5                      and the parameters still to write appear in dim text; each one
+                           disappears once you have typed it
 > (x-2)(x+3)+2x=12
 x = 3, x = -6
-Time: <1s
-> cos(x)=0
-x = 90 + k·180, k ∈ ℤ
-Time: <1s
+> diff(x^2*sin(x),x)
+= x^2*cos(x) + 2*x*sin(x)
 > fac(x^5+x^4+1)
 = (x^2 + x + 1) * (x^3 - x + 1)
-Time: <1s
-> (0,1) (1,3) (2,7)
-y = x^2 + x + 1
-y = (x + 1 / 2)^2 + 3 / 4
-Time: <1s
-> triangle(a=3,b=4,c=5)
-a = 3, b = 4, c = 5
-A ≈ 36.86989764584402129685561255909341065759157140070955794402796736942386835703051884, B ≈ 53.13010235415597870314438744090658934240842859929044205597203263057613164296948117, C = 90
-hA = 4, hB = 3, hC = 12 / 5
-area = 6, perimeter = 12
-circumradius = 5 / 2, inradius = 1
-Time: <1s
+> sum(k,k,1,1000000)    <- sums with a closed form are exact (no term-by-term loop)
+= 500000500000
 ```
 
-> The demo above is the output under **MathIO display + 80 significant digits + degree mode**;
-> the defaults are LineIO / 20 digits / radians.
+> Real output with the **default** settings (LineIO, 20 digits, radians); switch to MathIO for exact
+> fractions and radicals, or `/mode deg` for degrees. The Chinese demo is `docs/demo.gif`.
+
+## Input & shortcuts
+
+| Action | Effect |
+|---|---|
+| `Tab` | complete functions / commands / constants / variables; a function becomes `name()` with the **cursor placed inside the brackets**. Single-letter tokens get no candidates (so `xy` still means x·y) |
+| Cursor inside a function call | the parameters **still to write** are shown in dim text to the right; too many turn red. Hints are display-only and never inserted |
+| Cursor on a bracket | that bracket and its **partner are bolded**; a surplus `)` is always red, an unclosed `(` turns red when the cursor is not to its right (Enter is never blocked) |
+| `Ctrl+C` | **while computing**: interrupt the current computation (high-degree root finding, numeric integration…); **when idle**: quit |
+| `Ctrl+L` / `Ctrl+R` | clear screen / reverse-search history |
+| Full-width punctuation from an IME | `。` `（` `）` `，` `＝` `＋` `－` `×` `÷` and full-width digits are **converted automatically** |
+| Non-interactive use | `hipercalc -e "expr"`, `-f script`, `--stdin`, `--lang zh-CN|zh-TW|en`, `-q` (hide timings) |
 
 ## Layout
 

@@ -1,5 +1,4 @@
 {
-  "超高精度命令行计算器 (HiPerCalc) v1.1": "HiPerCalc — Ultra-Precision CLI Calculator v1.1",
   "当前模式: {0}": "Current modes: {0}",
   "已恢复上次会话设置，含 {0} 个存储变量（/var 查看，/del all 清空）": "Restored previous session: {0} stored variables (/var to list, /del all to clear)",
   "\r用时：{0}秒": "\rTime: {0}s",
@@ -292,5 +291,6 @@
   "参数过多：最多 {0} 个": "too many arguments: at most {0}",
   "(f, x) 或 (f, x, a, b)": "(f, x) or (f, x, a, b)",
   "计算已中断": "computation cancelled",
-  "输入 {0} 查看帮助，输入表达式进行计算，{1} 退出": "Type {0} for help, enter an expression to compute, {1} to quit"
+  "输入 {0} 查看帮助，输入表达式进行计算，{1} 退出": "Type {0} for help, enter an expression to compute, {1} to quit",
+  "超高精度命令行计算器 (HiPerCalc)": "HiPerCalc — Ultra-Precision CLI Calculator"
 }

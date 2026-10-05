@@ -1264,11 +1264,16 @@ pub fn run() -> i32 {
         let _ = rl.load_history(&path);
     }
 
+    // 版本号取自包元数据：写死过 v1.1，发 1.2.0 时就会与 Cargo.toml 对不上
     lprint!(
         "{}",
-        "超高精度命令行计算器 (HiPerCalc) v1.1"
-            .color(state.colors.prompt)
-            .bold()
+        format!(
+            "{} v{}",
+            i18n::t("超高精度命令行计算器 (HiPerCalc)"),
+            env!("CARGO_PKG_VERSION")
+        )
+        .color(state.colors.prompt)
+        .bold()
     );
     lprint!(
         "{}",
