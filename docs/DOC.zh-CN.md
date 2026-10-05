@@ -775,7 +775,7 @@ a = 4, b = 5, c ≈ 1.2076280197229941309
 - **按键**：`Ctrl+C` 在**计算过程中**中断当前运算、**空闲时**退出程序；`Ctrl+L` 清屏；`Ctrl+R` 反向搜索历史。
 - **全角自动转半角**：中文输入法下的 `。` `（` `）` `，` `＝` `＋` `－` `×` `÷` 与全角数字会
   自动替换成半角，不会因为打出全角标点而报错。
-- 补全与提示依赖 `FUNCTIONS_META`（函数元数 + 参数签名，在 `main.rs`），
+- 补全与提示依赖 `FUNCTIONS_META`（函数元数 + 参数签名，在 `lib.rs`），
   与函数白名单 `parser::FUNCTIONS` 由单测双向抽检保持一致。
 
 ## 12. 特殊角度精确值
@@ -948,34 +948,37 @@ x = 1
 
 ## 14. 模块总览
 
-```
-> **仓库已是两 crate workspace**：数值底座在 `crates/hipercalc-core/`（bigfloat / bigint_ext / number /
-> complex / trig / display / calc_mode / cancel），其余（解析器、求解器、高等数学、三语界面、REPL）
-> 在 `crates/hipercalc/`。下面这棵树按**模块**列出，路径前缀随之变化；二进制仍是 `target/debug/hipercalc`。
+> **仓库是两 crate workspace**：数值底座在 `crates/hipercalc-core/`，应用层与二进制在 `crates/hipercalc/`。
+> 依赖方向严格单向（core 不引用上层）；二进制仍是 `target/debug/hipercalc`。
 
-crates/hipercalc/
-├── bigfloat.rs       任意精度浮点（底层数值核心：四则/开方/幂/exp/ln/三角级数 + 规模保护）
+```text
+crates/hipercalc-core/src/          数值底座（不依赖 colored / rustyline，也不引用上层）
+├── bigfloat.rs       任意精度浮点（四则/开方/幂/exp/ln/三角级数 + 规模保护）
 ├── bigint_ext.rs     大整数补充运算（自带长除法 + 整数平方根，绕开 num-bigint 的 BZ 缺陷）
 ├── calc_mode.rs      计算模式开关（Fast 有规模保护 / Deep 死算）
-├── calculus/         高等数学（求导/极限/积分/泰勒/求和求积）：
-│                     mod.rs 重写通路 + 注册表、normalize.rs 化简、render.rs 渲染、
-│                     diff.rs 求导、integrate.rs 积分、limit.rs 极限、series.rs 泰勒、sumprod.rs 求和积
-├── i18n.rs           界面语言（简/繁/英词条表 + 运行期整行翻译 + 系统语言探测）
+├── cancel.rs         计算中断标志与检查点（Ctrl+C；计算中中断仅 Windows）
 ├── number.rs         符号精确 + 数值近似的双表示
-├── parser.rs         递归下降解析 + 求值器 + 顶层入口 + 函数白名单常量
+├── complex.rs        复数（精确高斯有理数 + 带根号/数值的统一表示）
 ├── trig.rs           特殊角精确值表（度/弧度/反三角）
-├── display.rs        MathIO 符号输出 / LineIO 小数（含大数科学计数法）
+└── display.rs        MathIO 符号输出 / LineIO 小数（含大数科学计数法）
+
+crates/hipercalc/src/               应用层（依赖 hipercalc-core，产出 hipercalc 二进制）
+├── lib.rs            应用主体：run/run_line、EvalResult 分派与各 handler、REPL、高亮、补全、HELP_TEXT、运算计时
+├── main.rs           程序入口（8 行，只调 hipercalc::run() 并用其返回值作为退出码）
+├── parser.rs         递归下降解析 + 求值器 + 顶层入口 + 函数白名单常量
 ├── equation.rs       方程信息提取、多项式/线性判定
+├── calculus/         高等数学：mod 重写通路与注册表、normalize、render、diff、integrate、limit、series、sumprod
 ├── solver_linear.rs  线性方程组（高斯消元）
 ├── solver_nonlinear.rs  非线性方程组（多维牛顿）
 ├── solver_poly.rs    多项式求根（精确/数值/复数）
 ├── solver_factor.rs  多项式因式分解（单/多元，含候选枚举预算）
 ├── solver_fit.rs     多项式函数拟合（坐标/顶点 → 一般式 + 顶点式，支持模板与欠定关系）
 ├── solver_triangle.rs  三角形求解（边/角/高 → 三边三角三高 + 面积周长两半径）
-├── primefac.rs      整数的素因数分解（试除 + 预算护栏）与 `x = 2^2 * 3` 格式化
+├── primefac.rs       整数素因数分解（试除 + 预算护栏）与 `x = 2^2 * 3` 格式化
 ├── solve_aux.rs      结果前缀、周期通式、根收集等辅助
 ├── state.rs          会话状态持久化（模式 + /let 变量 + /set 颜色，~/.hipercalc_state）
-└── main.rs           REPL、指令、/help、颜色配置（/set 持久化）、历史、高亮、运算计时
+├── i18n.rs           界面语言（简/繁/英词条表 + 运行期整行翻译 + 系统语言探测）
+└── language/         词条表（zh-CN.json 空表 / zh-TW.json / en.json + mod.rs 极简 JSON 解析器）
 ```
 
 ## 15. 核心数据结构
@@ -1117,7 +1120,7 @@ parse_expression → parse_term → parse_unary → parse_power → parse_atom
 - **绝对值 `| |`**：在 `parse_atom` 层解析（与括号同级），用 `abs_depth` 区分开/闭括号，避免闭合 `|` 被隐式乘法误吞；
 - **后缀阶乘 `!`**：在 `parse_power` 中紧贴操作数处理，`2^3! = 2^(3!)`；生成内部函数名 `"fact"`（白名单不含 `fact`，用户无法直接输入 `fact(...)`）；
 - **多参函数**：`(` 后支持逗号分隔参数列表，目前仅 `log(b, x)` 使用两参；
-- **函数白名单**：`parser::FUNCTIONS` 是唯一来源（解析校验、多字母拆分判断、`main.rs` 高亮共用），
+- **函数白名单**：`parser::FUNCTIONS` 是唯一来源（解析校验、多字母拆分判断、`lib.rs` 高亮共用），
   新增函数只需改它与 `Evaluator::eval_function`；
 - **标识符分类**：先查 `pi`/`e`/`ans`，再查单字母变量，再查全大写存储变量（`X`、`AB`、`PI_VAR`），
   其余按多字母变量序列拆分（`xy^2 = x*(y^2)`）；以 `e` 开头的变量串按"常数 e + 其余变量"处理
@@ -1171,7 +1174,7 @@ pub enum EvalResult {
 - `newton_solve`：单根牛顿迭代，支持指定 `max_iter`；每步都做**发散保护**（`NEWTON_ABS_LIMIT = 10^6`，
   修正量或 |x| 越界即放弃该初值），退出时再校验残差消除假根；
 - `format_solution(sol, mode)` 按 `DisplayMode` 输出根：MathIO 下精确根用符号（`1 / 2`、`sqrt(2)`），
-  LineIO 下一律小数；`=`/`≈` 前缀由 `main.rs::solution_prefix` 按模式判定（LineIO 下 `sqrt(2)` 的小数展开标 `≈`）。
+  LineIO 下一律小数；`=`/`≈` 前缀由 `lib.rs::solution_prefix` 按模式判定（LineIO 下 `sqrt(2)` 的小数展开标 `≈`）。
 
 ### solver_nonlinear.rs — 非线性方程组
 
@@ -1267,7 +1270,7 @@ pub struct TriangleSolution { /* 三边、三角（弧度）、三高、面积�
 每个值的 `=`/`≈` 由 `solve_aux::result_prefix` 决定；角度输出前用 `parser::radians_to_degrees`
 把精确 `Pi(coeff)` 精确转成度数。多解时由 `handle_triangle` 加 `解 N:` 分段。
 
-## 17. 方程处理主逻辑（main.rs）
+## 17. 方程处理主逻辑（lib.rs）
 
 `handle_input_result` 按 `EvalResult` 分派：
 
@@ -1307,7 +1310,7 @@ pub struct TriangleSolution { /* 三边、三角（弧度）、三高、面积�
 - 每次变更（`/let`、`/del`、`/mode`、`/set`）后立即调用 `persist_state()` 落盘，退出时再存一次；
 - 加载时对变量名与值都做校验，非法行跳过而不报错；文件缺失即用默认设置。
 
-### 颜色高亮（main.rs）
+### 颜色高亮（lib.rs）
 
 - `ColorConfig` 持有 9 个类别（functions/operators/commands/brackets/constants/numbers/prompt/result/error）的颜色，
   `set_category`/`get_category`/`to_pairs` 供 `/set` 与状态文件读写共用；类别与颜色名集中在
@@ -1332,10 +1335,10 @@ pub struct TriangleSolution { /* 三边、三角（弧度）、三高、面积�
 - "最优匹配"=字面部分总长最长者优先，**长度相同则靠左者优先**（否则 `未知类别` 会被 `类别: {0}` 抢先匹配）；
 - 单字词条（颜色名）只允许整段精确匹配，避免到处误替换；简体中文为默认，直接原样返回（零开销）；
 - 未命中的字符串原样保留，**不会报错**——新增文案时把简体原文加进 `TABLE` 即可；
-- `main.rs` 的所有控制台输出统一走 `lprint!` / `leprint!` / `lprint_inline!` 宏（内部调用 `i18n::t`），
+- `lib.rs` 的所有控制台输出统一走 `lprint!` / `leprint!` / `lprint_inline!` 宏（内部调用 `i18n::t`），
   `/help` 的正文则按语言整份切换（`help_text()`）。
 
-### 运算计时（main.rs）
+### 运算计时（lib.rs）
 
 `handle_input_result` 里用 `Timing` 包住**"解析 + 结果生成"整段**（结果格式化阶段——
 方程通式识别、根收集、因式分解等常常比 `parse_and_eval` 本身更耗时）：
@@ -1374,7 +1377,7 @@ pub struct TriangleSolution { /* 三边、三角（弧度）、三高、面积�
 用户输入
   │
   ▼
-main.rs：Timing::begin()（终端里启动 \r 动态计时线程）
+lib.rs：Timing::begin()（终端里启动 \r 动态计时线程）
   │
   ▼
 parse_and_eval（parser.rs）
@@ -1387,7 +1390,7 @@ parse_and_eval（parser.rs）
   │      无高数函数时原样返回 ⇒ 既有输入零行为变化）
   │
   ▼
-EvalResult 分派（main.rs）
+EvalResult 分派（lib.rs）
   ├── Value ──► 求值（Evaluator 精确优先）────► display + 前缀 输出
   ├── Factor ─► solver_factor::factor_expr
   ├── Equation ─► 过滤存储变量 → 多项式/牛顿求根 → 通式识别 → 输出

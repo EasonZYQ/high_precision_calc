@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`hipercalc`：中文超高精度命令行计算器。Rust 双 crate workspace（edition 2024），**含 62 项单元测试（分布于 9 个源文件）、暂无 CI、已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）**。
+`hipercalc`：中文超高精度命令行计算器。Rust 双 crate workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc`。**含 144 项单元测试**（core 11 + hipercalc 133，另 1 项 doctest），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
 
 ## 硬性要求（用户指定）
 
@@ -73,7 +73,8 @@ cargo test --workspace   # 144 项单元测试（core 11 + hipercalc 133，其�
 | `primefac.rs`         | 整数素因数分解：小素数表 + 6k±1 试除 + 确定性 Miller-Rabin + Brent 版 Pollard's rho（u64/BigInt 双路），格式化成 `12 = 2^2 * 3`（负数 `-12 = -2^2 * 3`）；带单元测试 |
 | `solve_aux.rs`        | `=`/`≈` 前缀、周期通式、根收集等辅助工具                                                               |
 | `state.rs`            | 会话状态持久化：显示/角度/计算模式 + `/let` 变量 + `/set` 颜色的读写（`~/.hipercalc_state`）                              |
-| `main.rs`             | REPL、`/` 指令、`/help` 正文与着色器、颜色配置（`/set` 持久化）、rustyline 实时高亮、变量存储、历史持久化、运算计时（`Timing`） ；**键位绑定**（Ctrl+C 清行/连按退出、全角转半角）、**括号配对高亮与标红**、**框内参数提示** |
+| `lib.rs`              | **应用主体**：`run`/`run_line`、`EvalResult` 分派与各 handler、REPL、`/` 指令、`/help` 正文与着色器、颜色配置（`/set` 持久化）、rustyline 实时高亮、变量存储、历史持久化、运算计时（`Timing`）；**键位绑定**（全角转半角）、**括号配对高亮与标红**、**框内参数提示** |
+| `main.rs`             | **程序入口（仅 8 行）**：`std::process::exit(hipercalc::run())` |
 | `README.md`           | 功能手册 + 代码架构文档；改动功能后须同步                                                                 |
 
 ## 容易改错的地方
@@ -126,7 +127,7 @@ cargo test --workspace   # 144 项单元测试（core 11 + hipercalc 133，其�
 - 顶层入口 `parse_system()`（逗号分隔方程组）→ `parse_equation()`（单个 `=`）→ 表达式。不要另起入口绕过它。
 - `Expr::Function(name, Vec<Expr>)` 已是**参数列表**：绝大多数单参，仅 `log(b, x)` 两参。内部 `"fact"`（`!` 生成）与 `"abs"`（`|x|` 生成）不在白名单内。
 - 变量：单字母 `x y z a b...`（`VALID_VARIABLES`，大写段只到 W）+ 全大写存储变量（`/let`，可含 `_`：`X`、`AB`、`PI_VAR`）+ `ans`；`pi`/`e` 是常数。
-- **函数白名单唯一来源是 `parser::FUNCTIONS`**（解析校验、多字母拆分判断、`main.rs` 高亮共用），  
+- **函数白名单唯一来源是 `parser::FUNCTIONS`**（解析校验、多字母拆分判断、`lib.rs` 高亮共用），  
   新增函数只需改它 + `Evaluator::eval_function`（旧实现有三份重复数组，容易漏改）。`fact`/`abs` 作为内部名不要加进白名单。
 - `eval_function` 签名是 `(name, args: &[Number])`：单参函数开头统一校验 `args.len()==1`，`log` 校验 `len()==2` 并检查底数 >0 且 ≠1。
 - `log` 的底数判定必须精确（`as_rational().is_one()` 或与 1 的偏差 > 1e-40），**不要用 `rounded(0) == 1`**  
@@ -225,7 +226,7 @@ cargo test --workspace   # 144 项单元测试（core 11 + hipercalc 133，其�
   `ln(-1)`、`sqrt(-4)` 会返回复数，而 `Number::to_approx` 对复数带 `debug_assert`
   （初值里就有 `-1`，所以 `ln(x)=1`、`sqrt(x)=2` 曾经直接 panic 退出）。
 - `durand_kerner` 的次数护栏返回的错误以 `solver_poly::DEGREE_GUARD_PREFIX` 开头；
-  `main.rs::handle_equation` 据此判断"明确拒绝"并**不再回退牛顿单根**（高次多项式每次求值都要算 x^k，
+  `lib.rs::handle_equation` 据此判断"明确拒绝"并**不再回退牛顿单根**（高次多项式每次求值都要算 x^k，
   回退会让界面长时间无响应且只给一个根）。新增类似护栏时要么复用该前缀，要么同步改 main 的分支。
 - 高次多项式（`is_polynomial` 为真但 `collect_terms` 只认字面量数字指数）依赖解析期的
   `fold_const_int`：`x^(2-1)` 会在解析阶段折叠成 `x^1`，否则会被判成"非多项式"交给牛顿法
@@ -245,7 +246,7 @@ cargo test --workspace   # 144 项单元测试（core 11 + hipercalc 133，其�
 - `solver_nonlinear.rs`：两阶段牛顿参数（粗扫 `16,12,true` 前向差分 / 精收敛 `80,45,false` 中心差分）影响速度与精度，改动需回归 `x+sin(y)=1, y+cos(x)=1` 类系统；"步长极小"的提前返回必须再过残差校验。
 - `solver_linear.rs::format_linear_solution(sol, mode)` 需要 `DisplayMode`：解要按模式输出并带 `=`/`≈`。
 - 单方程求根输出同样按显示模式：`solver_poly::format_solution(sol, mode)`（MathIO 符号、LineIO 小数），
-  前缀用 `main.rs::solution_prefix`（复数取两分量都"能精确呈现"才给 `=`）；
+  前缀用 `lib.rs::solution_prefix`（复数取两分量都"能精确呈现"才给 `=`）；
   非多项式根的回填 `solve_aux::float_to_exact_rational` 返回 `(p, q)` 而不是字符串——**不要退回固定 `x = 1/2` 式的输出**
   （旧实现既忽略显示模式，又给出与 MathIO 风格不一致的 `1/2`）。
 - `solve_aux::result_prefix` 对 `Number::Approx` **一律**给 `≈`，哪怕数值恰好是 0。
@@ -300,9 +301,9 @@ cargo test --workspace   # 144 项单元测试（core 11 + hipercalc 133，其�
 
 ### 界面语言（i18n.rs）
 
-- **main.rs 里所有控制台输出一律用 `lprint!` / `leprint!` / `lprint_inline!`**（内部走 `i18n::t`）；
+- **lib.rs 里所有控制台输出一律用 `lprint!` / `leprint!` / `lprint_inline!`**（内部走 `i18n::t`）；
   直接写 `println!` 的新文案不会随语言切换，是本功能最容易踩的坑。
-- **词条表在 `src/language/<语言代码>.json`**（编译期 `include_str!` 内嵌，`src/language/mod.rs` 里有个
+- **词条表在 `crates/hipercalc/src/language/<语言代码>.json`**（编译期 `include_str!` 内嵌，`crates/hipercalc/src/language/mod.rs` 里有个
   几十行的极简 JSON 解析器 —— 项目一直保持零额外依赖，**不要**为了这个引 serde）：
   - 键是**简体原文逐字**（简体本身就是键，所以 `zh-CN.json` 是空表）；
   - 值与键必须**占位符一一对应**（`{0}`/`{1}` 编号与数量都要对得上）；
@@ -416,7 +417,7 @@ cargo test --workspace   # 144 项单元测试（core 11 + hipercalc 133，其�
   `solve_aux::finite_decimal_fits`（Deep 下有限小数一律算"能完整显示" ⇒ 前缀 `=`）。
 - 模式只影响行为，不影响 `Evaluator` 里的显示/角度模式；`/mode` 无参数时由 `mode_info()` 拼成 `LineIO/Radian/Fast`。
 
-### REPL（main.rs）
+### REPL（lib.rs）
 
 - prompt 必须是纯文本 `"> "`；prompt 里放 ANSI 颜色会让光标位置偏移。
 - 运算计时（`Timing`）：**计时范围是"解析 + 结果生成"整段**（结果格式化阶段——通式识别、根收集、因式分解——常比 parse 本身更耗时，只包 parse_and_eval 会导致动态计时从未出现）；handler 只生成结果字符串，统一在单次打印前 `stop_dynamic()`。动态行用 `\r` 刷新、无换行，所以**清行必须在结果打印之前**，且要先 `join` 刷新线程（否则线程可能在结果之后又写一次，画面错位）；停止线程靠关闭 `mpsc` 通道（`recv_timeout` 立即返回），不要用 `sleep` 轮询等待。`is_terminal()` 为假的管道场景要跳过全部 `\r` 输出。
@@ -431,7 +432,7 @@ cargo test --workspace   # 144 项单元测试（core 11 + hipercalc 133，其�
   `Completer`/`Hinter` 只做转发；`CalcHelper` 除 `colors` 外还带 `vars`（存储变量名），
   **增删变量后要连颜色一起刷新**（主循环里两处同步点已改）。候选集只含**多字母**函数/常数/变量名与指令，
   单字母 token 一律不给候选——否则会把 `xy` 这类隐式乘法补成函数名。
-- 指令清单 `COMMANDS`（补全用）与 `COMMAND_HINTS`（内联提示用）、`SIGNATURES`（函数参数提示用）都在 main.rs 顶部；
+- 指令清单 `COMMANDS`（补全用）与 `COMMAND_HINTS`（内联提示用）、`FUNCTIONS_META`（函数元数 + 参数签名，供补全与框内提示用）都在 lib.rs 顶部；
   新增指令/两参函数时记得同步这几张表（有 `commands_table_is_consistent` 测试兜底）。
 - `calc_mode::quiet()`：输出宏 `lprint!`/`leprint!`/`lprint_inline!` 在静默状态下跳过打印（`/load` 回放脚本时开启）。
   开启后**必须**恢复，否则后续输出全被吞掉。
@@ -473,7 +474,7 @@ cargo test --workspace   # 144 项单元测试（core 11 + hipercalc 133，其�
   启动 `state::load()` 恢复、每次变更后 `persist_state()` 落盘、退出时再存一次。
   编码约定：精确值存 `E:<MathIO 表达式>`（重新解析还原，无损），近似值存 `A:<value>:<precision>`
   （BigFloat 内部十进制，无损），颜色存 `color:<类别>=<颜色名>`（`state::load` 只返回原始
-  `(类别, 颜色名)` 字符串，**合法性由 main.rs 用 `parse_color`/`set_category` 校验后应用**，非法项跳过）。
+  `(类别, 颜色名)` 字符串，**合法性由 lib.rs 用 `parse_color`/`set_category` 校验后应用**，非法项跳过）。
   **删除状态文件即恢复默认**——不要把默认值也写进文件逻辑里造成"删不掉"。
 - 历史持久化：`history_path()`（`%USERPROFILE%/.hipercalc_history`），启动 `load_history`、退出 `save_history`，每行 `add_history_entry`。
 - 新增模块要在对应 crate 的根声明：core 的写在 `crates/hipercalc-core/src/lib.rs`，上层的写在 `crates/hipercalc/src/lib.rs`。

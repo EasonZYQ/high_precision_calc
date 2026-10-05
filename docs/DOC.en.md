@@ -738,7 +738,7 @@ The REPL highlights keywords **live** (functions green, operators yellow, comman
   `Ctrl+R` reverse-searches history.
 - **Full-width to half-width**: `。` `（` `）` `，` `＝` `＋` `－` `×` `÷` and full-width digits are converted
   automatically, so an IME-produced full-width punctuation no longer causes an error.
-- Completion and hints rely on `FUNCTIONS_META` (arities + signatures, in `main.rs`), kept in sync with the
+- Completion and hints rely on `FUNCTIONS_META` (arities + signatures, in `lib.rs`), kept in sync with the
   `parser::FUNCTIONS` whitelist by a two-way unit test.
 
 ## 12. Special-Angle Exact Values
@@ -921,35 +921,38 @@ accumulation). `a > b` gives an empty sum (0) / empty product (1); a product who
 
 ## 14. Module Overview
 
-```
-> **The repo is now a two-crate workspace**: the numeric core lives in `crates/hipercalc-core/` (bigfloat /
-> bigint_ext / number / complex / trig / display / calc_mode / cancel), everything else (parser, solvers,
-> higher mathematics, trilingual UI, REPL) in `crates/hipercalc/`. The tree below lists *modules*; the binary
-> is still `target/debug/hipercalc`.
+> **The repo is a two-crate workspace**: the numeric core lives in `crates/hipercalc-core/`, the application
+> layer and binary in `crates/hipercalc/`. Dependencies are strictly one-way (core never uses the app layer);
+> the binary is still `target/debug/hipercalc`.
 
-crates/hipercalc/
-├── bigfloat.rs       arbitrary-precision float (the numeric core: +−×÷/root/power/exp/ln/trig series + scale guards)
+```text
+crates/hipercalc-core/src/          numeric core (no colored/rustyline, never depends on the app layer)
+├── bigfloat.rs       arbitrary-precision float (four ops / root / power / exp / ln / trig series + scale guards)
 ├── bigint_ext.rs     big-integer helpers (own long division + integer sqrt, bypassing num-bigint's BZ defect)
 ├── calc_mode.rs      calc mode switch (Fast has scale guards / Deep brute-forces)
-├── calculus/         higher mathematics (derivative/limit/integral/Taylor/sums and products):
-│                     mod.rs rewrite pass + registry, normalize.rs simplification, render.rs printing,
-│                     diff.rs, integrate.rs, limit.rs, series.rs, sumprod.rs
-├── i18n.rs           UI language (zh-Hans/zh-Hant/English table + runtime whole-line translation + system language detection)
+├── cancel.rs         cancellation flag + checkpoints (Ctrl+C; mid-computation cancel is Windows-only)
 ├── number.rs         dual representation: symbolic exact + numeric approximate
-├── parser.rs         recursive-descent parser + evaluator + top-level entry + function whitelist constants
+├── complex.rs        complex numbers (exact Gaussian rationals and radical/numeric forms)
 ├── trig.rs           special-angle exact value tables (degrees/radians/inverse trig)
-├── display.rs        MathIO symbolic output / LineIO decimal (with big-number scientific notation)
+└── display.rs        MathIO symbolic output / LineIO decimal (with big-number scientific notation)
+
+crates/hipercalc/src/               application layer (depends on hipercalc-core; produces the hipercalc binary)
+├── lib.rs            body: run/run_line, EvalResult dispatch and handlers, REPL, highlighting, completion, HELP_TEXT, timing
+├── main.rs           entry point (8 lines: calls hipercalc::run() and uses its return value as the exit code)
+├── parser.rs         recursive-descent parser + evaluator + top-level entry + function whitelist constants
 ├── equation.rs       equation info extraction, polynomial/linear detection
+├── calculus/         higher mathematics: mod rewrite pass + registry, normalize, render, diff, integrate, limit, series, sumprod
 ├── solver_linear.rs  linear systems (Gaussian elimination)
 ├── solver_nonlinear.rs  nonlinear systems (multi-dimensional Newton)
 ├── solver_poly.rs    polynomial root-finding (exact/numeric/complex)
 ├── solver_factor.rs  polynomial factorization (uni/multi-variate, with candidate budgets)
-├── solver_fit.rs     polynomial fit (points/vertex → general form + vertex form; templates & under-determined relationships)
-├── solver_triangle.rs  triangle solver (sides/angles/heights → sides, angles, heights, area, perimeter, two radii)
-├── primefac.rs      integer prime factorization (trial division + budget guard) and `x = 2^2 * 3` formatting
+├── solver_fit.rs     polynomial fit (points/vertex -> general + vertex form; templates & under-determined relationships)
+├── solver_triangle.rs  triangle solver (sides/angles/heights -> sides, angles, heights, area, perimeter, two radii)
+├── primefac.rs       integer prime factorization (trial division + budget guard) and `x = 2^2 * 3` formatting
 ├── solve_aux.rs      result prefix, periodic general form, root collection
 ├── state.rs          session persistence (modes + /let variables + /set colors, ~/.hipercalc_state)
-└── main.rs           REPL, commands, /help, color config (/set persistence), history, highlighting, timing
+├── i18n.rs           UI language (Simplified/Traditional Chinese/English table + runtime whole-line translation + detection)
+└── language/         entry tables (zh-CN.json empty / zh-TW.json / en.json + mod.rs minimal JSON parser)
 ```
 
 ## 15. Core Data Structures
@@ -1074,7 +1077,7 @@ parse_expression → parse_term → parse_unary → parse_power → parse_atom
 - **Absolute value `| |`**: parsed at the `parse_atom` level (same as parens), using `abs_depth` to tell open/close bars apart so a closing `|` isn't swallowed by implicit multiplication;
 - **Postfix factorial `!`**: handled in `parse_power`, binds to its operand, `2^3! = 2^(3!)`; generates the internal function name `"fact"` (not in the whitelist, so users can't type `fact(...)`);
 - **Multi-arg functions**: `(` supports a comma-separated argument list; currently only `log(b, x)` uses two;
-- **Function whitelist**: `parser::FUNCTIONS` is the single source (parsing validation, multi-letter splitting, `main.rs` highlighting); adding a function only needs it and `Evaluator::eval_function`;
+- **Function whitelist**: `parser::FUNCTIONS` is the single source (parsing validation, multi-letter splitting, `lib.rs` highlighting); adding a function only needs it and `Evaluator::eval_function`;
 - **Identifier classification**: checks `pi`/`e`/`ans` first, then single-letter variables, then uppercase stored variables (`X`, `AB`, `PI_VAR`), then splits the rest into a sequence of single-letter variables (`xy^2 = x*(y^2)`); a variable string starting with `e` is treated as "constant e + the remaining variables" (`2ex` → `2*e*x`, `ee` → `e^2`); multi-letter splitting consumes only the first character and backs the position up for implicit multiplication.
 
 ### Argument Validation in the Evaluator (parser.rs::eval_function)
@@ -1117,7 +1120,7 @@ In degree mode, the angle is first normalized to `[0, 360)` then mapped to a `[0
   - **Report non-convergence honestly**: after exhausting the step limit it returns an error, **never outputting intermediate values as roots** (the old code printed unconverged iterates; `x^100=1` once gave "roots" with modulus ≈1e21);
   - **Fast degree guard**: DK is O(n²) per round; measured n≈200 ≈ 25s, n≥300 > 1min, so Fast errors on factors > 200 with a `/mode deep` hint (Deep has no limit);
 - `newton_solve`: single-root Newton, `max_iter` configurable; every step has a **divergence guard** (`NEWTON_ABS_LIMIT = 10^6`, correction or |x| out of range → drop the guess), and a residual check on exit eliminates spurious roots;
-- `format_solution(sol, mode)` prints roots per `DisplayMode`: MathIO exact roots symbolically (`1 / 2`, `sqrt(2)`), LineIO decimals; the `=`/`≈` prefix is decided by `main.rs::solution_prefix` (LineIO's decimal expansion of `sqrt(2)` is `≈`).
+- `format_solution(sol, mode)` prints roots per `DisplayMode`: MathIO exact roots symbolically (`1 / 2`, `sqrt(2)`), LineIO decimals; the `=`/`≈` prefix is decided by `lib.rs::solution_prefix` (LineIO's decimal expansion of `sqrt(2)` is `≈`).
 
 ### solver_nonlinear.rs — Nonlinear Systems
 
@@ -1188,7 +1191,7 @@ pub struct TriangleSolution { /* three sides, three angles (radians), three heig
 
 `format_triangle_solution` renders a fixed 5 lines (sides / angles / heights / area+perimeter / two radii); each value's `=`/`≈` is decided by `solve_aux::result_prefix`; angles are converted with `parser::radians_to_degrees` (exact `Pi(coeff)` → exact degrees) before output. Multiple solutions are sectioned with `solution N:` by `handle_triangle`.
 
-## 17. Main Equation Handling (main.rs)
+## 17. Main Equation Handling (lib.rs)
 
 `handle_input_result` dispatches on `EvalResult`:
 
@@ -1215,7 +1218,7 @@ pub struct TriangleSolution { /* three sides, three angles (radians), three heig
 - `persist_state()` runs after every change (`/let`, `/del`, `/mode`, `/set`) and once more on exit;
 - On load, variable names and values are validated, invalid lines are skipped silently; a missing file means defaults.
 
-### Color Highlighting (main.rs)
+### Color Highlighting (lib.rs)
 
 - `ColorConfig` holds the colors of 9 categories (functions/operators/commands/brackets/constants/numbers/prompt/result/error), with `set_category`/`get_category`/`to_pairs` shared by `/set` and the state file; category and color names live in two constant tables `COLOR_CATEGORIES` / `COLOR_OPTIONS` (English name + Chinese annotation + color value), used for both parsing and reverse lookup;
 - `colorize_text(line, colors, command_anywhere)` and `colorize_result(line, colors)` are the only two coloring entry points; both share the underlying `colorize_impl(line, colors, command_anywhere, base)`. The REPL input line (`command_anywhere=false`, only a line-start `/xxx` is a command), the `/help` body and the usage hints (`true`) pass `base=None` (unrecognized text is emitted verbatim); a **result line** goes through `colorize_result` (`base=Some(colors.result)`, unrecognized text painted with the result color). So the same keyword has the same color on the input line and in results;
@@ -1231,9 +1234,9 @@ pub struct TriangleSolution { /* three sides, three angles (radians), three heig
 - Best match = longest literal wins; **on a tie, the leftmost wins** (otherwise `未知类别` loses to `类别: {0}` and yields `未知Categories`);
 - Single-character entries (color names) only match a whole segment exactly, to avoid replacing everywhere; Simplified Chinese is the default and returns verbatim (zero cost);
 - Unmatched strings are kept as-is, **never erroring** — to add new text, add the simplified source into `TABLE`;
-- All console output in `main.rs` goes through the `lprint!` / `leprint!` / `lprint_inline!` macros (which call `i18n::t` internally); the `/help` body switches wholesale per language (`help_text()`).
+- All console output in `lib.rs` goes through the `lprint!` / `leprint!` / `lprint_inline!` macros (which call `i18n::t` internally); the `/help` body switches wholesale per language (`help_text()`).
 
-### Timing (main.rs)
+### Timing (lib.rs)
 
 `handle_input_result` wraps the whole "parse + result generation" in `Timing` (the formatting stage — general-form recognition, root collection, factorization — is often costlier than `parse_and_eval` itself):
 
@@ -1257,7 +1260,7 @@ When piped/redirected, stdout is not a terminal (`std::io::IsTerminal`), so the 
 User input
   │
   ▼
-main.rs: Timing::begin()（start the \r dynamic timing thread on a terminal）
+lib.rs: Timing::begin()（start the \r dynamic timing thread on a terminal）
   │
   ▼
 parse_and_eval (parser.rs)
@@ -1270,7 +1273,7 @@ parse_and_eval (parser.rs)
   │      └── scale guards query calc_mode::is_deep(): Fast errors over limit / Deep allows
   │
   ▼
-EvalResult dispatch (main.rs)
+EvalResult dispatch (lib.rs)
   ├── Value ──► evaluate (Evaluator exact-first) ────► display + prefix output
   ├── Factor ─► solver_factor::factor_expr
   ├── Equation ─► filter stored vars → polynomial/Newton root-finding → general-form recognition → output

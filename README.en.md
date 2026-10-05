@@ -16,7 +16,7 @@ arbitrary-precision decimals plus exact symbolic arithmetic, equation / system s
 function fitting, triangle solving, prime factorization — and **higher mathematics** (derivative `diff`,
 limit `lim`, integral `int`, Taylor series `taylor`, sums and products `sum`/`prod`, all composable) —
 with a syntax-highlighted REPL (Tab completes a function with the cursor inside the parentheses, bracket pairing,
-in-bracket argument hints, Ctrl+C interrupts or quits, full-width punctuation auto-converted), and a Simplified Chinese / Traditional Chinese / English UI.
+in-bracket argument hints, Ctrl+C interrupts (Windows only) or quits, full-width punctuation auto-converted), and a Simplified Chinese / Traditional Chinese / English UI.
 
 ## Demo
 
@@ -48,7 +48,7 @@ x = 3, x = -6
 | `Tab` | complete functions / commands / constants / variables; a function becomes `name()` with the **cursor placed inside the brackets**. Single-letter tokens get no candidates (so `xy` still means x·y) |
 | Cursor inside a function call | the parameters **still to write** are shown in dim text to the right; too many turn red. Hints are display-only and never inserted |
 | Cursor on a bracket | that bracket and its **partner are bolded**; a surplus `)` is always red, an unclosed `(` turns red when the cursor is not to its right (Enter is never blocked) |
-| `Ctrl+C` | **while computing**: interrupt the current computation (high-degree root finding, numeric integration…); **when idle**: quit |
+| `Ctrl+C` | **when idle**: quit (all platforms); **while computing**: interrupt the current computation (high-degree root finding, numeric integration…) — mid-computation interrupt is currently **Windows-only** |
 | `Ctrl+L` / `Ctrl+R` | clear screen / reverse-search history |
 | Full-width punctuation from an IME | `。` `（` `）` `，` `＝` `＋` `－` `×` `÷` and full-width digits are **converted automatically** |
 | Non-interactive use | `hipercalc -e "expr"`, `-f script`, `--stdin`, `--lang zh-CN|zh-TW|en`, `-q` (hide timings) |
@@ -63,8 +63,9 @@ crates/
 
 ## Quick start
 
-Grab the archive for your platform from [Releases](https://github.com/EasonZYQ/high_precision_calc/releases)
-and unpack it — or build it yourself (needs a [Rust toolchain](https://rustup.rs)):
+Grab the raw executable for your platform from [Releases](https://github.com/EasonZYQ/high_precision_calc/releases)
+(no archives — download and run; **on Linux / macOS restore the executable bit with `chmod +x` first**,
+and renaming it to `hipercalc` is recommended) — or build it yourself (needs a [Rust toolchain](https://rustup.rs)):
 
 ```bash
 cargo build --release   # the binary lands at target/release/hipercalc

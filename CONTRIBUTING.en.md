@@ -15,7 +15,7 @@ Thanks for wanting to help with HiPerCalc! Bug reports, documentation improvemen
 
 ## Development setup
 
-All you need is a [Rust toolchain](https://rustup.rs) (stable) — the project is a single crate with no extra
+All you need is a [Rust toolchain](https://rustup.rs) (stable) — the project is a two-crate workspace (`hipercalc-core` + `hipercalc`) with no extra
 system dependencies:
 
 ```bash
@@ -35,7 +35,7 @@ cargo test -p hipercalc-core   # numeric core only (much faster when iterating o
    time** (the `finished in …` line at the end of `cargo test`, or `time cargo test` to include compilation);
    without it there is no way to tell whether a change made the solvers much slower;
 2. **New behaviour needs unit tests** (tests live in `#[cfg(test)] mod tests` at the bottom of the source file);
-3. **Keep the UI languages in sync**: the entry table now lives in `src/language/<code>.json`
+3. **Keep the UI languages in sync**: the entry table now lives in `crates/hipercalc/src/language/<code>.json`
    (embedded at compile time — **adding a language means adding one JSON file** and registering it in
    `language::FILES`; see the module docs in that directory). Every user-visible string must be added to
    both `zh-TW.json` and `en.json` — the **Simplified source text is the key**, and the two key sets must
@@ -44,7 +44,7 @@ cargo test -p hipercalc-core   # numeric core only (much faster when iterating o
    (e.g. the ` = ` in `{0} = {1}，k 为整数` sits between a variable and a number), otherwise the replacement
    drops the colour codes there. Rewrite such entries as a contiguous plain-text fragment
    (e.g. keep only the tail `，k 为整数`);
-4. **Keep `/help` in sync in all three languages** (`HELP_TEXT` / `HELP_TEXT_TW` / `HELP_TEXT_EN` in `src/main.rs`);
+4. **Keep `/help` in sync in all three languages** (`HELP_TEXT` / `HELP_TEXT_TW` / `HELP_TEXT_EN` in `crates/hipercalc/src/lib.rs`);
 5. **Keep the docs in sync**: update `docs/DOC.en.md` and `docs/DOC.zh-CN.md` when behaviour changes;
    add pitfalls and conventions to `AGENTS.md`;
 6. **Don't commit generated or local-only files**: `target/`, `.workbuddy/`, `.trae/`, `change_logs/`, `*.log`

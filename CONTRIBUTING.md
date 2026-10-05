@@ -14,7 +14,7 @@
 
 ## 开发环境
 
-只需要 [Rust 工具链](https://rustup.rs)（stable），项目是单 crate、无额外系统依赖：
+只需要 [Rust 工具链](https://rustup.rs)（stable），项目是双 crate workspace（`hipercalc-core` + `hipercalc`）、无额外系统依赖：
 
 ```bash
 cargo build            # 调试构建
@@ -33,14 +33,14 @@ cargo test -p hipercalc-core   # 只跑数值底座（迭代大数/精度相关�
    **顺手记下耗时**（`cargo test` 结尾的 `finished in …`，要连编译一起看就用 `time cargo test`）——
    不看时间就发现不了改动是否把求解拖慢了；
 2. **新增行为要有单元测试**（本项目测试都写成 `#[cfg(test)] mod tests`，直接在源文件末尾追加即可）；
-3. **多语言同步**：词条表已经独立成 `src/language/<语言代码>.json`（编译期内嵌；**新增一门语言只需
+3. **多语言同步**：词条表已经独立成 `crates/hipercalc/src/language/<语言代码>.json`（编译期内嵌；**新增一门语言只需
    加一个 JSON 文件**并在 `language::FILES` 里登记，详见该目录的模块注释）。
    新增用户可见文案时，在 `zh-TW.json` 与 `en.json` 里补上对应键——**简体原文就是键**，
    两边的键集必须完全一致（漏一条就是那个语言的界面里残留中文）；
    带占位符的长词条要小心：词条的**字面部分不能横跨两个着色 token**
    （例如 `{0} = {1}，k 为整数` 里的 ` = ` 夹在变量与数字之间），否则替换会把该处的颜色码一起丢掉；
    这类情况应改写成连续纯文本的短词条（如只保留尾段 `，k 为整数`）；
-4. **`/help` 三语正文同步**（`src/main.rs` 的 `HELP_TEXT` / `HELP_TEXT_TW` / `HELP_TEXT_EN` 三份）；
+4. **`/help` 三语正文同步**（`crates/hipercalc/src/lib.rs` 的 `HELP_TEXT` / `HELP_TEXT_TW` / `HELP_TEXT_EN` 三份）；
 5. **文档同步**：改了功能就顺手更新 `docs/DOC.zh-CN.md`、`docs/DOC.en.md`；
    踩过的坑、改错容易犯的约定，请补进 `AGENTS.md`；
 6. **别把不该提交的东西加进来**：`target/`、`.workbuddy/`、`.trae/`、`change_logs/`、`*.log`
