@@ -2828,8 +2828,14 @@ mod func_tests {
         assert_eq!(eval_mathio("conj(2-3i)").unwrap(), "2 + 3i");
         assert!(eval_lineio("arg(1+i)").unwrap().starts_with("0.7853981"));
         assert_eq!(eval_mathio("abs(3+4i)").unwrap(), "5");
-        // 不支持的情形给明确报错
-        assert!(eval_lineio("i^(1/2)").unwrap_err().contains("复数"));
+        // 复数非整数次幂（曾报错"暂不支持"，现已实现主值 √i = e^(iπ/4) = (1+i)/√2）
+        assert!(
+            eval_lineio("i^(1/2)")
+                .unwrap()
+                .starts_with("0.7071067811865475244")
+        );
+        // 仍不支持的情形给明确报错
+
         assert!(eval_lineio("floor(i)").unwrap_err().contains("复数"));
         assert!(eval_lineio("mod(1+i,2)").unwrap_err().contains("复数"));
         // i 不再是单字母变量

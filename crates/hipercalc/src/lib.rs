@@ -3765,6 +3765,7 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
             统计：mean([1,2,3,4]) 或 mean(k, k, 1, 4)；var 除 n、var_s 除 n−1；percentile(p, […])
   zeta(s)  黎曼 ζ：偶數點給精確閉式（zeta(2) = pi^2/6）；奇數點與非整數走 Euler-Maclaurin 數值（zeta(3) ≈ 1.2020569032）
   zeta(s)  黎曼 ζ：偶數點給精確閉式（zeta(2) = pi^2/6）；奇數點暫無閉式，報錯提示
+  z^w      複數冪（主值）：i^i ≈ 0.2078795764、2^i ≈ 0.7692389014 + 0.6389612763i；整數指數仍給精確值
   erf(x) / erfc(x)  誤差函數與補誤差函數（數值級數；|x| ≥ 8 飽和為 ±1）
   gamma(x)   伽馬函數：正整數給精確階乘、正半整數給精確的 √π 形式（如 gamma(1/2) = sqrt(pi)）；其餘值暫不支援
   整數序列 fib(n) catalan(n) doublefac(n)（斐波那契 / 卡塔蘭數 / 雙階乘；快速模式有上限，/mode deep 可取消）
@@ -3841,6 +3842,7 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   Bases     /base dec|hex|oct|bin switches the result base (integers only); input accepts 0xFF / 0o17 / 0b1010
   zeta(s)  Riemann zeta: exact closed form at even points (zeta(2) = pi^2/6); odd points and non-integers use Euler-Maclaurin (zeta(3) ~= 1.2020569032)
   zeta(s)  Riemann zeta: exact closed form at even points (zeta(2) = pi^2/6); odd points have no known closed form and report an error
+  z^w      complex powers (principal value): i^i ~= 0.2078795764, 2^i ~= 0.7692389014 + 0.6389612763i; integer exponents stay exact
   erf(x) / erfc(x)  error function and complementary error function (numeric series; |x| >= 8 saturates to ±1)
   gamma(x)  Gamma function: exact factorial for positive integers, exact sqrt(pi) form for positive half-integers (gamma(1/2) = sqrt(pi)); other values not supported yet
   Sequences fibonacci fib(n), Catalan catalan(n), double factorial doublefac(n) (fast mode caps them; /mode deep lifts the cap)
@@ -3925,6 +3927,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   进制     /base dec|hex|oct|bin 切换结果数制（仅整数）；输入可写 0xFF / 0o17 / 0b1010
   zeta(s)  黎曼 ζ：偶数点给精确闭式（zeta(2) = pi^2/6）；奇数点与非整数走 Euler-Maclaurin 数值（zeta(3) ≈ 1.2020569032）
   zeta(s)  黎曼 ζ：偶数点给精确闭式（zeta(2) = pi^2/6）；奇数点暂无闭式，报错提示
+  z^w      复数幂（主值）：i^i ≈ 0.2078795764、2^i ≈ 0.7692389014 + 0.6389612763i；整数指数仍给精确值
   erf(x) / erfc(x)  误差函数与补误差函数（数值级数；|x| ≥ 8 饱和为 ±1）
   gamma(x)   伽马函数：正整数给精确阶乘、正半整数给精确的 √π 形式（如 gamma(1/2) = sqrt(pi)）；其余值暂不支持
   整数序列 fib(n) catalan(n) doublefac(n)（斐波那契 / 卡塔兰数 / 双阶乘；快速模式有上限，/mode deep 可取消）
@@ -4424,6 +4427,31 @@ mod cli_tests {
             let (out, err) = run_line(bad, &mut st);
             assert!(err, "{bad} 应被拒绝，却得到 {out}");
         }
+    }
+
+    /// 复数非整数次幂（主值 z^w = exp(w·ln z)）：期望值是**已知数学结果**，不是抄程序输出。
+    #[test]
+    fn complex_non_integer_powers() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        for (input, want) in [
+            // i^i = e^(−π/2)
+            ("i^i", "0.20787957635076190855"),
+            // 2^i = cos(ln2) + i·sin(ln2)
+            ("2^i", "0.76923890136397212658 + 0.63896127631363480115i"),
+            // √(1+i) = 2^(1/4)·e^(iπ/8)
+            ("(1+i)^0.5", "1.098684113467809966"),
+            // 整数指数必须**保持精确**（不能因为新增通路由精确退化成近似）
+            ("(1+i)^2", "2i"),
+            ("i^4", "1"),
+            ("(-8)^(1/3)", "-2"),
+        ] {
+            let (out, err) = run_line(input, &mut st);
+            assert!(!err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 {want}");
+        }
+        // 0 的复数次幂未定义
+        let (out, err) = run_line("0^i", &mut st);
+        assert!(err, "0^i 应被拒绝，却得到 {out}");
     }
 
     /// 统计函数：**两种参数形态**都测（列表 / 表达式+范围），期望值全部可手算。

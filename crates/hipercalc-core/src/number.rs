@@ -370,12 +370,22 @@ impl Number {
     pub fn pow(&self, exponent: &Number) -> Result<Number, String> {
         // 复数底数或指数：只支持整数指数（快速幂，精确）；非整数指数暂不支持
         if self.is_complex() || exponent.is_complex() {
-            let Some(exp_r) = exponent.as_rational() else {
-                return Err("复数的非整数次幂暂不支持".to_string());
-            };
-            if !exp_r.is_integer() {
-                return Err("复数的非整数次幂暂不支持".to_string());
+            // 指数不是「有理整数」时走复数幂的**主值**：z^w = exp(w·ln z)
+            // （ln 取主支 ⇒ 结果是主值；整数指数继续走下面的精确快路，行为完全不变）
+            let int_exp = exponent.as_rational().filter(|r| r.is_integer());
+            if int_exp.is_none() {
+                // Number::Complex 装的是 Box<ComplexNum>，取出来要拆箱
+                let base = match self {
+                    Number::Complex(z) => z.as_ref().clone(),
+                    _ => crate::complex::ComplexNum::new(self.clone(), Number::from_int(0)),
+                };
+                let w = match exponent {
+                    Number::Complex(z) => z.as_ref().clone(),
+                    _ => crate::complex::ComplexNum::new(exponent.clone(), Number::from_int(0)),
+                };
+                return Ok(Number::Complex(Box::new(base.pow(&w)?)));
             }
+            let exp_r = int_exp.expect("上面已判非空");
             let n = exp_r.to_integer();
             let neg = n.is_negative();
             let k = n

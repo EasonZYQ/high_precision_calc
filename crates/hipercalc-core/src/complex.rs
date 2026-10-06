@@ -118,6 +118,19 @@ impl ComplexNum {
         Ok(ComplexNum::new(Number::Approx(re), Number::Approx(im)))
     }
 
+    /// 任意复数次幂（**主值**）：z^w = exp(w·ln z)。
+    ///
+    /// 用的是 `ln` 的主支（辐角 ∈ (−π, π]，由 `atan2` 给出）⇒ 结果是**主值**。
+    /// 注意 z^w 本身是**多值**的（相差 e^{2πikw}），这里只给主值 —— 与常见数学软件一致。
+    /// 整数指数仍走 `int_pow`（快速幂 + 精确），**不要**把它绕到这里来。
+    pub fn pow(&self, w: &ComplexNum) -> Result<Self, String> {
+        if self.is_zero() {
+            return Err("0 的复数次幂未定义（0 的负次幂发散）".to_string());
+        }
+        let l = self.ln()?;
+        w.mul(&l).exp()
+    }
+
     /// ln(z) = ln|z| + i·arg(z)
     pub fn ln(&self) -> Result<Self, String> {
         if self.is_zero() {
