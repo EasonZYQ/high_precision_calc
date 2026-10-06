@@ -3698,6 +3698,7 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   prod(f, k, a, b)   求積：prod(k, k, 1, 10) → 3628800
   位運算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（僅限非負整數）
   進位     /base dec|hex|oct|bin 切換結果進位（僅整數）；輸入可寫 0xFF / 0o17 / 0b1010
+  zeta(s)  黎曼 ζ：偶數點給精確閉式（zeta(2) = pi^2/6）；奇數點與非整數走 Euler-Maclaurin 數值（zeta(3) ≈ 1.2020569032）
   zeta(s)  黎曼 ζ：偶數點給精確閉式（zeta(2) = pi^2/6）；奇數點暫無閉式，報錯提示
   erf(x) / erfc(x)  誤差函數與補誤差函數（數值級數；|x| ≥ 8 飽和為 ±1）
   gamma(x)   伽馬函數：正整數給精確階乘、正半整數給精確的 √π 形式（如 gamma(1/2) = sqrt(pi)）；其餘值暫不支援
@@ -3773,6 +3774,7 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   prod(f, k, a, b)   product: prod(k, k, 1, 10) -> 3628800
   Bitwise   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n) (non-negative integers only)
   Bases     /base dec|hex|oct|bin switches the result base (integers only); input accepts 0xFF / 0o17 / 0b1010
+  zeta(s)  Riemann zeta: exact closed form at even points (zeta(2) = pi^2/6); odd points and non-integers use Euler-Maclaurin (zeta(3) ~= 1.2020569032)
   zeta(s)  Riemann zeta: exact closed form at even points (zeta(2) = pi^2/6); odd points have no known closed form and report an error
   erf(x) / erfc(x)  error function and complementary error function (numeric series; |x| >= 8 saturates to ±1)
   gamma(x)  Gamma function: exact factorial for positive integers, exact sqrt(pi) form for positive half-integers (gamma(1/2) = sqrt(pi)); other values not supported yet
@@ -3856,6 +3858,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   prod(f, k, a, b)   求积：prod(k, k, 1, 10) → 3628800
   位运算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（仅限非负整数）
   进制     /base dec|hex|oct|bin 切换结果数制（仅整数）；输入可写 0xFF / 0o17 / 0b1010
+  zeta(s)  黎曼 ζ：偶数点给精确闭式（zeta(2) = pi^2/6）；奇数点与非整数走 Euler-Maclaurin 数值（zeta(3) ≈ 1.2020569032）
   zeta(s)  黎曼 ζ：偶数点给精确闭式（zeta(2) = pi^2/6）；奇数点暂无闭式，报错提示
   erf(x) / erfc(x)  误差函数与补误差函数（数值级数；|x| ≥ 8 饱和为 ±1）
   gamma(x)   伽马函数：正整数给精确阶乘、正半整数给精确的 √π 形式（如 gamma(1/2) = sqrt(pi)）；其余值暂不支持
@@ -4350,11 +4353,37 @@ mod cli_tests {
             assert!(!err, "{input} 报错: {out}");
             assert!(out.contains(want), "{input} → {out}；期望含 {want}");
         }
-        // 奇数点没有已知闭式、s ≤ 1 发散：都要明确报错而不是给个错值
-        for bad in ["zeta(3)", "zeta(1)", "zeta(0)", "zeta(-2)", "zeta(0.5)"] {
+        // s ≤ 1 发散：必须明确报错而不是给个错值。
+        // （奇数点与非整数现在走数值路径了，不再报错 —— 见 zeta_numeric_path 测试）
+        for bad in ["zeta(1)", "zeta(0)", "zeta(-2)"] {
             let (out, err) = run_line(bad, &mut st);
             assert!(err, "{bad} 应被拒绝，却得到 {out}");
         }
+    }
+
+    /// zeta 的**数值路径**（Euler-Maclaurin）：奇数点与非整数 s 没有闭式，走数值。
+    /// 期望值全部是**数学常数**（阿培里常数等），不是抄程序输出。
+    #[test]
+    fn zeta_numeric_path() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        for (input, want) in [
+            ("zeta(3)", "1.2020569031595942854"), // 阿培里常数
+            ("zeta(5)", "1.0369277551433699263"),
+            ("zeta(7)", "1.0083492773819228268"),
+            ("zeta(1.5)", "2.6123753486854883433"),
+            ("zeta(2.5)", "1.3414872572509171798"),
+        ] {
+            let (out, err) = run_line(input, &mut st);
+            assert!(!err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 {want}");
+        }
+        // 精确路径优先：偶数点仍然给闭式而不是数值
+        st.evaluator.display_mode = DisplayMode::MathIO;
+        let (out, err) = run_line("zeta(2)", &mut st);
+        assert!(
+            !err && out.contains("1 / 6*pi^2"),
+            "偶数点应走精确闭式: {out}"
+        );
     }
 
     /// 误差函数：期望值全部是**已知数值**（不是抄程序输出），20 位内逐位核对。

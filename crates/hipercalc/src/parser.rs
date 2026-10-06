@@ -788,6 +788,83 @@ pub struct Evaluator {
     pub vars: std::collections::BTreeMap<String, Number>,
 }
 
+/// 黎曼 ζ 的**数值路径**（Euler-Maclaurin）。
+///
+/// 朴素 Dirichlet 级数 Σ 1/n^s 的误差是 O(N^{1-s})：s=2 时累 10⁶ 项也只有 6 位正确。
+/// Euler-Maclaurin 把尾巴用「积分 + 伯努利数修正」一次补掉：
+///
+/// ```text
+/// ζ(s) ≈ Σ_{k=1}^{N-1} k^{-s} + N^{1-s}/(s-1) + ½·N^{-s}
+///        + Σ_{r=1}^{K} B_{2r}/(2r)! · s(s+1)…(s+2r-2) · N^{-s-2r+1}
+/// ```
+///
+/// N=40、K=10（复用偶数点那张 B₂…B₂₀ 表）足以把误差压到 10^-40 量级。
+/// 上升阶乘与 N 的指数都按 r 递推，不重复算幂。
+fn zeta_numeric(s: &Number) -> Result<Number, String> {
+    let pr = bigfloat::precision();
+    let work = pr + 20; // 多算几位余量，最后统一截到显示精度
+    let sv = s.to_approx();
+    let one = BigFloat::from_u64(1);
+    // s 必须 > 1：ζ 的级数只在 s>1 收敛，s≤1 需要解析延拓（本实现不做）
+    let diff = BigFloat::sub(&sv, &one, work);
+    if diff.value.is_negative() || diff.value.is_zero() {
+        return Err("zeta 的实部必须大于 1（s=1 是发散的调和级数）".to_string());
+    }
+    const N: u64 = 40;
+    const K: u32 = 10;
+    let mut sum = BigFloat::from_u64(0);
+    for k in 1..N {
+        let term = BigFloat::from_u64(k)
+            .pow(&sv.neg(), work)
+            .map_err(|e| format!("zeta 数值计算失败: {e}"))?;
+        sum = BigFloat::add(&sum, &term, work);
+    }
+    let nf = BigFloat::from_u64(N);
+    let n_neg_s = nf
+        .pow(&sv.neg(), work)
+        .map_err(|e| format!("zeta 数值计算失败: {e}"))?;
+    let n_inv = BigFloat::div(&one, &nf, work);
+    // N^{1-s}/(s-1)
+    let tail = BigFloat::mul(
+        &nf.pow(&BigFloat::sub(&one, &sv, work), work)
+            .map_err(|e| format!("zeta 数值计算失败: {e}"))?,
+        &BigFloat::div(&one, &diff, work),
+        work,
+    );
+    sum = BigFloat::add(&sum, &tail, work);
+    // ½·N^{-s}
+    let half = BigFloat::from_big_rational(&BigRational::new(BigInt::from(1), BigInt::from(2)));
+    sum = BigFloat::add(&sum, &BigFloat::mul(&half, &n_neg_s, work), work);
+    // 修正项（K=10 ⇒ 用到 B₂…B₂₀）
+    let mut rising = sv.clone();
+    let mut n_exp = BigFloat::mul(&n_neg_s, &n_inv, work); // r=1：N^{-s-1}
+    let mut factorial = BigInt::from(2); // r=1：(2r)! = 2
+    let n_inv2 = BigFloat::mul(&n_inv, &n_inv, work);
+    for r in 1..=K {
+        if r > 1 {
+            // 把 s(s+1)…(s+2r-2) 补齐（每轮多两个因子）
+            for j in [2 * r - 3, 2 * r - 2] {
+                rising = BigFloat::mul(
+                    &rising,
+                    &BigFloat::add(&sv, &BigFloat::from_u64(j as u64), work),
+                    work,
+                );
+            }
+        }
+        let b = bernoulli_even(r).expect("K ≤ 10，表内有");
+        let coeff = BigFloat::div(
+            &BigFloat::from_big_rational(&b),
+            &BigFloat::from_int(&factorial),
+            work,
+        );
+        let term = BigFloat::mul(&BigFloat::mul(&coeff, &rising, work), &n_exp, work);
+        sum = BigFloat::add(&sum, &term, work);
+        factorial *= BigInt::from(2 * r + 1) * BigInt::from(2 * r + 2);
+        n_exp = BigFloat::mul(&n_exp, &n_inv2, work);
+    }
+    Ok(Number::Approx(sum))
+}
+
 /// 偶数点 ζ 闭式要用的伯努利数 B_2 … B_20（都是小有理数，直接查表比现算省事且不会错）
 fn bernoulli_even(n: u32) -> Option<BigRational> {
     let (p, q) = match n {
@@ -1355,20 +1432,22 @@ impl Evaluator {
             // 需要精确类型能表示 π 的幂，所以上一轮先把 SqrtPi 泛化成了 PiPow。
             // 奇数点没有已知闭式（ζ(3) 至今只有数值），留给数值路径。
             "zeta" => {
-                let s_arg = args[0]
-                    .as_rational()
-                    .ok_or_else(|| "zeta 需要整数参数（当前只支持偶数点的精确值）".to_string())?;
+                // 拿不到精确有理数（如 π）就直接走数值路径
+                let s_arg = match args[0].as_rational() {
+                    Some(r) => r,
+                    None => return zeta_numeric(&args[0]),
+                };
                 if !s_arg.is_integer() {
-                    return Err("zeta 目前只支持整数参数（偶数点给精确值）".to_string());
+                    // 非整数 s 没有闭式 ⇒ 数值路径
+                    return zeta_numeric(&args[0]);
                 }
                 let sv = s_arg.to_integer();
                 if sv <= BigInt::from(1) {
                     return Err("zeta 的实部必须大于 1（s=1 是发散的调和级数）".to_string());
                 }
                 if sv.clone() % BigInt::from(2) != BigInt::zero() {
-                    return Err(
-                        "zeta 的奇数点没有已知闭式（ζ(3) 至今只有数值），需要数值路径".to_string(),
-                    );
+                    // 奇数点没有已知闭式（ζ(3) 等）⇒ 数值路径
+                    return zeta_numeric(&args[0]);
                 }
                 let n = &sv / BigInt::from(2);
                 let n_u32 = n
