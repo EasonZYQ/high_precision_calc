@@ -2721,7 +2721,7 @@ mod func_tests {
             ("7", "1/3"),
         ] {
             let lhs = eval_lineio(&format!("idiv({a},{b})*{b} + mod({a},{b})")).unwrap();
-            let rhs = eval_lineio(&a.to_string()).unwrap();
+            let rhs = eval_lineio(a).unwrap();
             assert_eq!(lhs, rhs, "恒等式在 a={a}, b={b} 下不成立");
         }
         // 错误：除数为 0 / 非精确参数

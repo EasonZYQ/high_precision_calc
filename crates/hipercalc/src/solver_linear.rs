@@ -15,10 +15,7 @@ pub struct LinearSolution {
 /// 高斯消元法求解线性方程组
 /// 输入: 增广矩阵 rows × (vars+1)，变量列表
 /// 输出: 解或 None（无解/无穷解）
-pub fn gaussian_elimination(
-    matrix: &mut Vec<Vec<Number>>,
-    vars: &[char],
-) -> Option<LinearSolution> {
+pub fn gaussian_elimination(matrix: &mut [Vec<Number>], vars: &[char]) -> Option<LinearSolution> {
     let n = matrix.len();
     let m = vars.len();
 

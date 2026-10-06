@@ -74,6 +74,7 @@ pub fn encode_var(v: &Number) -> String {
 /// 把变量编码成**可回放的脚本文本**（`/save` 用）：
 /// - 精确值走 MathIO 符号形式（`1 / 2`、`(1 / 2)*sqrt(2)`、`2*pi`），加载时重新解析即可精确还原；
 /// - 近似值走完整十进制串（由 `value`/`precision` 直接写出，无精度损失），加载后成为精确十进制。
+///
 /// 注意与 `encode_var` 的区别：后者是状态文件的内部格式（`E:`/`A:` 前缀），不能直接喂给求值器。
 pub fn encode_var_for_script(v: &Number) -> String {
     match v {

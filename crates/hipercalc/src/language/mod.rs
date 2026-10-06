@@ -49,12 +49,9 @@ pub fn get(tag: &str) -> &'static [(String, String)] {
                     .find(|(x, _)| *x == tag)
                     .map(|(_, s)| *s)
                     .unwrap_or("{}");
-                match parse_object(raw) {
-                    Ok(v) => v,
-                    // 解析失败不 panic（否则整个程序起不来）：退化成"无翻译"，
-                    // 并由 `json_files_parse` 测试在 CI 阶段拦住。
-                    Err(_) => Vec::new(),
-                }
+                // 解析失败不 panic（否则整个程序起不来）：退化成"无翻译"，
+                // 并由 `json_files_parse` 测试在 CI 阶段拦住。
+                parse_object(raw).unwrap_or_default()
             });
         }
     }

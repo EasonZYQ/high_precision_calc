@@ -451,9 +451,7 @@ fn match_in(run: &str, zh: &str) -> Option<(usize, usize, Vec<(usize, usize, Str
             positions.push((from, from));
             continue;
         }
-        let Some((pos, end)) = find_lit(run, from, lit) else {
-            return None;
-        };
+        let (pos, end) = find_lit(run, from, lit)?;
         positions.push((pos, end));
         from = end;
     }
@@ -476,9 +474,6 @@ fn match_in(run: &str, zh: &str) -> Option<(usize, usize, Vec<(usize, usize, Str
     Some((start, end, values, literal_len))
 }
 
-/// 文案表：(`简体中文原文`, `繁體中文`, `English`)。
-/// 简体中文一列必须与代码里的字面量**逐字一致**（含 `{n}` 占位符），否则该条不生效。
-#[rustfmt::skip]
 // 词条表已迁移到 `src/language/<语言代码>.json`（编译期内嵌）
 
 #[cfg(test)]
@@ -502,9 +497,7 @@ mod tests {
     }
 
     fn with_lang<T>(lang: Lang, f: impl FnOnce() -> T) -> T {
-        let _guard = TEST_LANG_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = TEST_LANG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = get();
         set(lang);
         let r = f();
@@ -529,7 +522,10 @@ mod tests {
                 .chars()
                 .filter(|c| SIMPLIFIED_ONLY.contains(*c))
                 .collect();
-            assert!(hit.is_empty(), "繁体词条残留简体字「{hit}」: {zh:?} -> {tw:?}");
+            assert!(
+                hit.is_empty(),
+                "繁体词条残留简体字「{hit}」: {zh:?} -> {tw:?}"
+            );
         }
     }
 

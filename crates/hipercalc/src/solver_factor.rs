@@ -1161,29 +1161,25 @@ fn factor_multivariate(p: &Poly, vars: &[char], mode: DisplayMode) -> FactorOutc
         }
     }
 
-    loop {
-        match find_linear_factor(&cur, vars) {
-            Some((lin, pivot)) => {
-                if let Some((quo, _)) = div_linear_by_pivot(&cur, &lin, pivot) {
-                    let mut merged = false;
-                    for f in factors.iter_mut() {
-                        if let FactorRep::Poly(fp, exp) = f
-                            && poly_equal(fp, &lin)
-                        {
-                            *exp += 1;
-                            merged = true;
-                            break;
-                        }
-                    }
-                    if !merged {
-                        factors.push(FactorRep::Poly(lin, 1));
-                    }
-                    cur = quo;
-                } else {
+    // 每次找出一个线性因子就除掉再继续，直到找不出（或除不尽）为止
+    while let Some((lin, pivot)) = find_linear_factor(&cur, vars) {
+        if let Some((quo, _)) = div_linear_by_pivot(&cur, &lin, pivot) {
+            let mut merged = false;
+            for f in factors.iter_mut() {
+                if let FactorRep::Poly(fp, exp) = f
+                    && poly_equal(fp, &lin)
+                {
+                    *exp += 1;
+                    merged = true;
                     break;
                 }
             }
-            None => break,
+            if !merged {
+                factors.push(FactorRep::Poly(lin, 1));
+            }
+            cur = quo;
+        } else {
+            break;
         }
     }
 

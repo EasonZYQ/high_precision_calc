@@ -655,7 +655,7 @@ fn number_tol() -> num_bigint::BigInt {
 
 /// 对增广矩阵做完全行化简（RREF），返回"主元列 → 所在行"的列表；
 /// 出现"全零系数行 + 非零右端"⇒ 矛盾（Err）。列数 `cols`，最后一列为右端。
-fn rref(matrix: &mut Vec<Vec<Number>>, cols: usize) -> Result<Vec<(usize, usize)>, String> {
+fn rref(matrix: &mut [Vec<Number>], cols: usize) -> Result<Vec<(usize, usize)>, String> {
     let rows = matrix.len();
     let mut pivots: Vec<(usize, usize)> = Vec::new();
     let mut row = 0usize;

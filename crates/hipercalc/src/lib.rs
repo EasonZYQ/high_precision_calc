@@ -1415,9 +1415,9 @@ impl ConditionalEventHandler for BracketHandler {
     ) -> Option<Cmd> {
         // 字符取自 handler 自己的字段（与 FullwidthHandler 同一写法，避免猜 Event 的形状）
         if self.ch == ')' {
-            let next_is_close = LINE_SNAPSHOT.lock().ok().map_or(false, |g| {
+            let next_is_close = LINE_SNAPSHOT.lock().ok().is_some_and(|g| {
                 g.as_ref()
-                    .map_or(false, |(l, p)| l.chars().nth(*p) == Some(')'))
+                    .is_some_and(|(l, p)| l.chars().nth(*p) == Some(')'))
             });
             return Some(if next_is_close {
                 Cmd::Move(rustyline::Movement::ForwardChar(1))
@@ -4480,7 +4480,7 @@ mod cli_tests {
             let _ = run_line(c, &mut st);
             rows.push((t.elapsed().as_micros(), c));
         }
-        rows.sort_by(|a, b| b.0.cmp(&a.0));
+        rows.sort_by_key(|r| std::cmp::Reverse(r.0));
         println!("=== 最慢 12 条（微秒）===");
         for (us, c) in rows.iter().take(12) {
             println!("{:10} us  {}", us, c);
