@@ -162,7 +162,7 @@ fn format_exact_expr(expr: &ExactExpr) -> String {
     let all_zero = expr.terms.iter().all(|t| match t {
         ExactTerm::Rational(r) => r.is_zero(),
         ExactTerm::Sqrt(c, _) => c.is_zero(),
-        ExactTerm::SqrtPi(c) => c.is_zero(),
+        ExactTerm::PiPow(c, _) => c.is_zero(),
         ExactTerm::Pi(c) => c.is_zero(),
         ExactTerm::E(c) => c.is_zero(),
     });
@@ -282,9 +282,7 @@ fn format_term_latex(term: &ExactTerm) -> String {
             }
         }
         ExactTerm::Pi(c) => format!("{} \\pi", latex_coeff(c)).trim_start().to_string(),
-        ExactTerm::SqrtPi(c) => format!("{} \\sqrt{{\\pi}}", latex_coeff(c))
-            .trim_start()
-            .to_string(),
+        ExactTerm::PiPow(c, k) => latex_pipow(c, k),
         ExactTerm::E(c) => format!("{}e", latex_coeff(c)),
     }
 }
@@ -294,7 +292,7 @@ fn format_term(term: &ExactTerm) -> String {
         ExactTerm::Rational(r) => format_rational(r),
         ExactTerm::Sqrt(coeff, rad) => format_sqrt_term(coeff, rad),
         ExactTerm::Pi(coeff) => format_pi_term(coeff),
-        ExactTerm::SqrtPi(coeff) => format_sqrtpi_term(coeff),
+        ExactTerm::PiPow(coeff, k) => format_pipow_term(coeff, k),
         ExactTerm::E(coeff) => format_e_term(coeff),
     }
 }
@@ -309,18 +307,41 @@ fn format_rational(r: &BigRational) -> String {
     }
 }
 
-/// c*sqrt(pi)：与 sqrt 的风格保持一致（系数 1 省略、-1 只留负号）
-fn format_sqrtpi_term(coeff: &BigRational) -> String {
+/// c*π^k：k=1/2 写成 sqrt(pi)（沿用既有风格），k=1 是 pi，其余写 pi^k
+fn format_pipow_term(coeff: &BigRational, k: &BigRational) -> String {
     if coeff.is_zero() {
         return String::new();
     }
+    let half = BigRational::new(BigInt::from(1), BigInt::from(2));
+    let base = if k == &half {
+        "sqrt(pi)".to_string()
+    } else if k.is_one() {
+        "pi".to_string()
+    } else {
+        format!("pi^{}", format_rational(k))
+    };
     if coeff.is_one() {
-        return "sqrt(pi)".to_string();
+        return base;
     }
     if coeff == &BigRational::from_integer(BigInt::from(-1)) {
-        return "-sqrt(pi)".to_string();
+        return format!("-{base}");
     }
-    format!("{}*sqrt(pi)", format_rational(coeff))
+    format!("{}*{base}", format_rational(coeff))
+}
+
+/// LaTeX 版：k=1/2 走 \\sqrt{\\pi}，其余走 \\pi^{k}
+fn latex_pipow(c: &BigRational, k: &BigRational) -> String {
+    let half = BigRational::new(BigInt::from(1), BigInt::from(2));
+    let base = if k == &half {
+        "\\sqrt{\\pi}".to_string()
+    } else if k.is_one() {
+        "\\pi".to_string()
+    } else {
+        format!("\\pi^{{{}}}", format_rational(k))
+    };
+    format!("{} {base}", latex_coeff(c))
+        .trim_start()
+        .to_string()
 }
 
 fn format_sqrt_term(coeff: &BigRational, rad: &BigInt) -> String {
@@ -401,7 +422,7 @@ fn is_term_zero(term: &ExactTerm) -> bool {
     match term {
         ExactTerm::Rational(r) => r.is_zero(),
         ExactTerm::Sqrt(c, _) => c.is_zero(),
-        ExactTerm::SqrtPi(c) => c.is_zero(),
+        ExactTerm::PiPow(c, _) => c.is_zero(),
         ExactTerm::Pi(c) => c.is_zero(),
         ExactTerm::E(c) => c.is_zero(),
     }

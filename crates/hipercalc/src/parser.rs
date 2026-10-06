@@ -1195,7 +1195,7 @@ impl Evaluator {
             }
             // 伽马函数：只给**精确**结果，不做数值近似（避免"看起来精确"的假象）
             //   Γ(n)     = (n-1)!          —— 正整数
-            //   Γ(n+1/2) = (2n)!/(4^n·n!)·√π —— 正半整数，靠新加的 ExactTerm::SqrtPi 精确表示
+            //   Γ(n+1/2) = (2n)!/(4^n·n!)·√π —— 正半整数，靠 ExactTerm::PiPow（指数 1/2）精确表示
             "gamma" => {
                 let two = BigInt::from(2);
                 let err = "gamma 目前只支持正整数与正半整数（其余值需要数值近似，暂未开放）";
@@ -1241,8 +1241,10 @@ impl Evaluator {
                         i += BigInt::from(1);
                     }
                     let coeff = BigRational::new(num_fac, BigInt::from(4).pow(n_u32) * n_fac);
+                    // Γ(n+1/2) = coeff · π^(1/2)
+                    let half = BigRational::new(BigInt::from(1), BigInt::from(2));
                     return Ok(Number::Exact(ExactExpr {
-                        terms: vec![ExactTerm::SqrtPi(coeff)],
+                        terms: vec![ExactTerm::PiPow(coeff, half)],
                         denominator: BigInt::one(),
                     }));
                 }
