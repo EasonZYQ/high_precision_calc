@@ -110,10 +110,41 @@ pub fn install_handler() {
     });
 }
 
-/// 非 Windows：rustyline 的 raw 模式已经处理了空闲时的 Ctrl+C；
-/// 计算中的中断暂不支持（留待有需求时按各平台的终端信号补齐）。
+/// 非 Windows（Linux / macOS / BSD）：装 `SIGINT` 处理器，与 Windows 分支**对称**。
+///
+/// 为什么手写 `extern "C"` 而不是引 `libc`：项目现有的两处 FFI（本文件的 Win32 调用、
+/// `i18n.rs` 的 `GetUserDefaultUILanguage`）都是手写声明、**不用任何 FFI crate**，
+/// 保持一致并维持"零额外依赖"；代价只是多写两行声明。
+///
+/// 用 `signal()` 而不是 `sigaction()`：后者要手写一个 struct 布局，FFI 面大得多，
+/// 而这里只需要"置一个标志"这种最简用法 —— 处理器只写一个 `AtomicBool`，是异步信号安全的。
+/// （`signal()` 在 glibc/BSD 上是持久绑定，不会像旧 SysV 那样处理一次就复位。）
+///
+/// 空闲时不做事：那时 rustyline 处于 raw 模式，终端**根本不产生** `SIGINT`
+/// （`^C` 由它自己读走并转成 `Interrupted`）—— 所以这里的逻辑与 Windows 一致：
+/// 只在计算中置位，交出控制权给检查点。
 #[cfg(not(windows))]
-pub fn install_handler() {}
+pub fn install_handler() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        // int signal(int sig, void (*handler)(int))；用 usize 承载函数指针（与 Win32 分支同风格）
+        unsafe extern "C" {
+            fn signal(sig: i32, handler: usize) -> usize;
+        }
+        // Linux / macOS / BSD 上 SIGINT 都是 2
+        const SIGINT: i32 = 2;
+        unsafe extern "C" fn on_sigint(_sig: i32) {
+            if is_computing() {
+                CANCEL.store(true, Ordering::Relaxed);
+            }
+        }
+        // SAFETY: 传入的是本模块内 'static 的函数指针，进程生命周期内一直有效。
+        unsafe {
+            signal(SIGINT, on_sigint as usize);
+        }
+    });
+}
 
 #[cfg(test)]
 mod tests {

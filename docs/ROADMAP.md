@@ -183,7 +183,18 @@
    `crates/hipercalc-core/src/bigfloat.rs:236` 与 `:347` 的 `clippy::approx_constant`（近似常量，涉及 `LOG2_10`）。  
    若那里用截断常量做范围归约，偏差会渗进 exp/ln 的结果 ⇒ **优先级应高于其余 11 条风格告警**。  
    （CI 的 clippy 目前是**非阻塞**阶段一，等于是个收集器；这两条要先查。）
-3. **非 Windows 的计算中中断**（`cancel.rs` 的平台差异，README 已如实描述）：`cancel.rs:107-110` 明说不支持；README 已改成准确表述（不再是缺陷，是待办）。
+3. **非 Windows 的计算中中断**　✅ 已解决（选**手写裸 FFI**，不加依赖）
+
+   非 Windows 分支原本是空实现。现在装 `SIGINT` 处理器，与 Windows 分支对称（只在**计算中**置 `CANCEL`）。
+   - **为什么手写 `extern "C"` 而不是引 `libc`**：项目现有的两处 FFI（`cancel.rs` 的 Win32、
+     `i18n.rs` 的 `GetUserDefaultUILanguage`）都是手写声明、不用任何 FFI crate ⇒ 保持一致且维持零依赖；
+     代价只是多写两行声明，二进制大小**恒为 0**（`extern` 块不生成代码）。
+   - **为什么 `signal()` 而不是 `sigaction()`**：后者要手写 struct 布局、FFI 面大得多，
+     而这里只需要"置一个 `AtomicBool`"（异步信号安全）。glibc/BSD 的 `signal()` 是持久绑定。
+   - **空闲时为什么不处理**：那时 rustyline 处于 raw 模式，终端不产生 `SIGINT`（`^C` 由它读走转 `Interrupted`）。
+   - **验证方式**：本机（Windows）只能验证不破坏编译；`cargo check --target x86_64-unknown-linux-gnu`
+     被本机沙箱挡住（进程管道错误）⇒ **真实编译验证交给 CI 的三平台构建 + 6 目标交叉编译**。
+
 4. **复数非整数次幂**　✅ 已解决：`complex.rs` **早就实现了** `exp`/`ln`/`sqrt`/`arg`
    （`ln(z) = ln|z| + i·arg z` 走 `atan2`），缺的只是接线 —— `Number::pow` 对非整数指数直接报错、
    且没有 `ComplexNum::pow`。补上 `ComplexNum::pow(w) = exp(w·ln z)`（**主值**，ln 取主支 ⇒ 辐角 ∈ (−π, π]）
