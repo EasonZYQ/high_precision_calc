@@ -110,6 +110,18 @@ const FUNCTIONS_META: &[FnMeta] = &[
         sig: "(n)",
     },
     FnMeta {
+        name: "erf",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
+        name: "erfc",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
         name: "gamma",
         min: 1,
         max: 1,
@@ -3680,6 +3692,7 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   prod(f, k, a, b)   求積：prod(k, k, 1, 10) → 3628800
   位運算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（僅限非負整數）
   進位     /base dec|hex|oct|bin 切換結果進位（僅整數）；輸入可寫 0xFF / 0o17 / 0b1010
+  erf(x) / erfc(x)  誤差函數與補誤差函數（數值級數；|x| ≥ 8 飽和為 ±1）
   gamma(x)   伽馬函數：正整數給精確階乘、正半整數給精確的 √π 形式（如 gamma(1/2) = sqrt(pi)）；其餘值暫不支援
   整數序列 fib(n) catalan(n) doublefac(n)（斐波那契 / 卡塔蘭數 / 雙階乘；快速模式有上限，/mode deep 可取消）
   LaTeX    /mode latex 讓結果用 LaTeX 記號（\\frac{}{}、\\sqrt{}、\\pi），可直接貼進論文；切回 /mode mathio
@@ -3753,6 +3766,7 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   prod(f, k, a, b)   product: prod(k, k, 1, 10) -> 3628800
   Bitwise   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n) (non-negative integers only)
   Bases     /base dec|hex|oct|bin switches the result base (integers only); input accepts 0xFF / 0o17 / 0b1010
+  erf(x) / erfc(x)  error function and complementary error function (numeric series; |x| >= 8 saturates to ±1)
   gamma(x)  Gamma function: exact factorial for positive integers, exact sqrt(pi) form for positive half-integers (gamma(1/2) = sqrt(pi)); other values not supported yet
   Sequences fibonacci fib(n), Catalan catalan(n), double factorial doublefac(n) (fast mode caps them; /mode deep lifts the cap)
   LaTeX     /mode latex renders results in LaTeX (\\frac{}{}, \\sqrt{}, \\pi) ready to paste into a paper; /mode mathio switches back
@@ -3834,6 +3848,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   prod(f, k, a, b)   求积：prod(k, k, 1, 10) → 3628800
   位运算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（仅限非负整数）
   进制     /base dec|hex|oct|bin 切换结果数制（仅整数）；输入可写 0xFF / 0o17 / 0b1010
+  erf(x) / erfc(x)  误差函数与补误差函数（数值级数；|x| ≥ 8 饱和为 ±1）
   gamma(x)   伽马函数：正整数给精确阶乘、正半整数给精确的 √π 形式（如 gamma(1/2) = sqrt(pi)）；其余值暂不支持
   整数序列 fib(n) catalan(n) doublefac(n)（斐波那契 / 卡塔兰数 / 双阶乘；快速模式有上限，/mode deep 可取消）
   LaTeX    /mode latex 让结果用 LaTeX 记号（\\frac{}{}、\\sqrt{}、\\pi），可直接粘进论文；切回 /mode mathio
@@ -4307,6 +4322,29 @@ mod cli_tests {
         }
         let total: u128 = rows.iter().map(|r| r.0).sum();
         println!("--- 合计 {} us / {} 条 ---", total, rows.len());
+    }
+
+    /// 误差函数：期望值全部是**已知数值**（不是抄程序输出），20 位内逐位核对。
+    /// 它没有初等闭式，走泰勒级数 + 相对收敛判据；|x| ≥ 8 直接饱和成 ±1（差值已到 1e-29）。
+    #[test]
+    fn error_function() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        for (input, want) in [
+            ("erf(0)", "0"),
+            ("erf(1)", "0.84270079294971486934"),
+            ("erf(0.5)", "0.52049987781304653768"),
+            ("erf(2)", "0.99532226501895273416"),
+            ("erf(3)", "0.99997790950300141456"),
+            ("erf(-1)", "-0.84270079294971486934"), // 奇函数
+            ("erfc(0)", "1"),
+            ("erfc(1)", "0.15729920705028513066"),
+            ("erf(10)", "1"), // |x| ≥ 8 饱和
+            ("erf(-10)", "-1"),
+        ] {
+            let (out, err) = run_line(input, &mut st);
+            assert!(!err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 {want}");
+        }
     }
 
     /// 伽马函数：整数给精确阶乘；半整数给**精确的 √π 形式**（靠新加的 ExactTerm::SqrtPi）。

@@ -2,7 +2,7 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
-use hipercalc_core::bigfloat;
+use hipercalc_core::bigfloat::{self, BigFloat};
 use hipercalc_core::number::{ExactExpr, ExactTerm, Number};
 use hipercalc_core::trig::{self, AngleMode};
 
@@ -84,6 +84,8 @@ pub const FUNCTIONS: &[&str] = &[
     "catalan",
     "doublefac",
     "gamma",
+    "erf",
+    "erfc",
 ];
 
 /// 需要两个参数的函数（其余函数都是单参；`log` 有专门的报错文案，单独处理）
@@ -1245,6 +1247,87 @@ impl Evaluator {
                     }));
                 }
                 Err(err.to_string())
+            }
+            // 误差函数 erf(x) = (2/√π)·∫₀ˣ e^(-t²) dt，以及补误差函数 erfc(x) = 1 - erf(x)。
+            // **没有初等闭式** ⇒ 走泰勒级数：
+            //   erf(x) = 2/√π · Σ_{n≥0} (-1)^n x^(2n+1) / (n!·(2n+1))
+            // 项递推：t_{n+1} = -t_n · x² · (2n+1) / ((n+1)·(2n+3))（不必反复算幂与阶乘）
+            // 判据用**相对**判据（与 exp 一致）：绝对判据在大 |x| 下永不收敛。
+            "erf" | "erfc" => {
+                let p = bigfloat::precision();
+                let xf = args[0].to_approx();
+                // |x| ≥ 8 时 erf 与 ±1 的差已到 1e-29（20 位显示下就是 ±1），
+                // 直接饱和而不是硬算：级数在 x=8 附近要损失约 28 位有效数字。
+                // 只在能拿到精确有理数时做这个判断 —— 拿不到（如 π）就照常算级数，那些值本来也不大。
+                // 注意：这里返回的是"饱和成 +1 还是 -1"，None 表示**不饱和**。
+                // 早先写成 `if let Some(neg) = saturate` 是错的 —— 那个 Option 对所有有理数都是 Some，
+                // 于是 erf(1) 这类正常输入也被当成饱和值直接返回 ±1。
+                let saturate_sign = args[0].as_rational().and_then(|r| {
+                    let eight = BigRational::from_integer(BigInt::from(8));
+                    let neg_eight = -eight.clone();
+                    if r >= eight {
+                        Some(false)
+                    } else if r <= neg_eight {
+                        Some(true)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(neg) = saturate_sign {
+                    let one = BigFloat::from_u64(1);
+                    let mut out = one;
+                    if neg {
+                        out = out.neg();
+                    }
+                    if name == "erfc" {
+                        out = BigFloat::sub(&BigFloat::from_u64(1), &out, p);
+                    }
+                    return Ok(Number::Approx(out));
+                }
+
+                // BigFloat 是 value / 10^precision 的定点表示 —— 符号就在公开的 value 里
+                let neg = xf.value.is_negative();
+                let x = if neg { xf.neg() } else { xf };
+                let two = BigFloat::from_u64(2);
+                let x2 = BigFloat::mul(&x, &x, p);
+                let mut term = x.clone(); // n = 0 项：x
+                let mut sum = term.clone();
+                let limit_rel = BigFloat::from_big_rational(&BigRational::new(
+                    BigInt::from(1),
+                    BigInt::from(10).pow(p.saturating_sub(2) as u32),
+                ));
+                for n in 0..400u32 {
+                    // t_{n+1} = -t_n · x² · (2n+1) / ((n+1)(2n+3))
+                    let num = BigFloat::from_u64((2 * n + 1) as u64);
+                    let den = BigFloat::from_u64(((n + 1) as u64) * ((2 * n + 3) as u64));
+                    term = BigFloat::mul(&term, &x2, p);
+                    term = BigFloat::mul(&term, &num, p);
+                    term = BigFloat::div(&term, &den, p);
+                    term = term.neg();
+                    sum = BigFloat::add(&sum, &term, p);
+                    // |t_{n+1}| ≤ |sum|·10^-(p-2) 即认为收敛
+                    let scaled = BigFloat::mul(&sum, &limit_rel, p);
+                    let abs_term = if term.value.is_negative() {
+                        term.neg()
+                    } else {
+                        term.clone()
+                    };
+                    // 同样看定点尾数的符号：diff = |t| - |sum|·10^-(p-2)，为负即已收敛
+                    let diff = BigFloat::sub(&abs_term, &scaled, p);
+                    if diff.value.is_negative() {
+                        break;
+                    }
+                }
+                // erf = 2/√π · sum
+                let two_over_sqrt_pi = BigFloat::div(&two, &BigFloat::pi(p).sqrt(p), p);
+                let mut out = BigFloat::mul(&sum, &two_over_sqrt_pi, p);
+                if neg {
+                    out = out.neg();
+                }
+                if name == "erfc" {
+                    out = BigFloat::sub(&BigFloat::from_u64(1), &out, p);
+                }
+                Ok(Number::Approx(out))
             }
             "mod" => args[0].modulo(&args[1]),
             "idiv" => args[0].idiv(&args[1]),
