@@ -2866,7 +2866,8 @@ mod func_tests {
         // 只读名单：短名与长名都要认出来
         assert!(is_phys_constant("C0") && is_phys_constant("LIGHT_SPEED"));
         // pi / e 不受影响（常量表里没有它们的名字）
-        assert!(eval_lineio("pi").unwrap().contains("pi"));
+        // pi 仍按数值输出（LineIO 显示小数，不是字符串 pi）—— 与既有测试同一写法
+        assert!(eval_lineio("pi").unwrap().starts_with("3.14159"));
         // i 是常数：2i 走隐式乘法、i^2 = -1
         assert_eq!(eval_mathio("i").unwrap(), "i");
         assert_eq!(eval_mathio("2i").unwrap(), "2i");
