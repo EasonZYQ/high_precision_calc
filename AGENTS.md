@@ -24,7 +24,7 @@ crates/hipercalc/        parser / equation / primefac / solver_* / solve_aux / c
 ## 路线图
 
 待做功能的清单（含每项的现有基础 / 要改的接口 / 成本 / 风险）见 [docs/ROADMAP.md](docs/ROADMAP.md)，
-其中也登记了三笔技术债：左括号自动配对、clippy 那 2 条疑似精度隐患的 `approx_constant`、非 Windows 的计算中中断。
+其中登记的技术债**已全部清完**（左括号自动配对、复数非整数次幂、非 Windows 的计算中中断、clippy）——clippy 仅剩 10 条纯外观项（core 侧 0 条；CI 已把 correctness 类设为阻塞）。
 
 ## 构建与验证
 
