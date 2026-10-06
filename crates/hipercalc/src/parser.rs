@@ -86,6 +86,7 @@ pub const FUNCTIONS: &[&str] = &[
     "gamma",
     "erf",
     "erfc",
+    "zeta",
 ];
 
 /// 需要两个参数的函数（其余函数都是单参；`log` 有专门的报错文案，单独处理）
@@ -787,6 +788,24 @@ pub struct Evaluator {
     pub vars: std::collections::BTreeMap<String, Number>,
 }
 
+/// 偶数点 ζ 闭式要用的伯努利数 B_2 … B_20（都是小有理数，直接查表比现算省事且不会错）
+fn bernoulli_even(n: u32) -> Option<BigRational> {
+    let (p, q) = match n {
+        1 => (1, 6),
+        2 => (-1, 30),
+        3 => (1, 42),
+        4 => (-1, 30),
+        5 => (5, 66),
+        6 => (-691, 2730),
+        7 => (7, 6),
+        8 => (-3617, 510),
+        9 => (43867, 798),
+        10 => (-174611, 330),
+        _ => return None,
+    };
+    Some(BigRational::new(BigInt::from(p), BigInt::from(q)))
+}
+
 /// 整数序列在快速模式下的统一上限提示
 const SEQUENCE_LIMIT: &str = "参数在快速模式下超出上限（/mode deep 可取消限制）";
 
@@ -1330,6 +1349,54 @@ impl Evaluator {
                     out = BigFloat::sub(&BigFloat::from_u64(1), &out, p);
                 }
                 Ok(Number::Approx(out))
+            }
+            // 黎曼 ζ 函数。**偶数点有精确闭式**：
+            //   ζ(2n) = (-1)^(n+1) · B_{2n} · (2π)^{2n} / (2·(2n)!)   ⇒  系数 · π^(2n)
+            // 需要精确类型能表示 π 的幂，所以上一轮先把 SqrtPi 泛化成了 PiPow。
+            // 奇数点没有已知闭式（ζ(3) 至今只有数值），留给数值路径。
+            "zeta" => {
+                let s_arg = args[0]
+                    .as_rational()
+                    .ok_or_else(|| "zeta 需要整数参数（当前只支持偶数点的精确值）".to_string())?;
+                if !s_arg.is_integer() {
+                    return Err("zeta 目前只支持整数参数（偶数点给精确值）".to_string());
+                }
+                let sv = s_arg.to_integer();
+                if sv <= BigInt::from(1) {
+                    return Err("zeta 的实部必须大于 1（s=1 是发散的调和级数）".to_string());
+                }
+                if sv.clone() % BigInt::from(2) != BigInt::zero() {
+                    return Err(
+                        "zeta 的奇数点没有已知闭式（ζ(3) 至今只有数值），需要数值路径".to_string(),
+                    );
+                }
+                let n = &sv / BigInt::from(2);
+                let n_u32 = n
+                    .to_u32()
+                    .filter(|v| *v <= 10)
+                    .ok_or_else(|| "zeta 目前只支持到 ζ(20)（伯努利数表到此为止）".to_string())?;
+                let b = bernoulli_even(n_u32).expect("已按范围校验");
+                // 系数 = (-1)^(n+1) · B_{2n} · 2^(2n) / (2·(2n)!)
+                // (-1)^(n+1)：n 为奇数时是 +1（ζ(2)、ζ(6)…），n 为偶数时是 -1
+                // —— 之前写成 (n+1)%2==1 恰好反了，ζ(2) 会输出成 -pi^2/6
+                let sign = if n_u32 % 2 == 1 { 1 } else { -1 };
+                let two_pow = BigInt::from(2).pow(2 * n_u32);
+                let mut factorial = BigInt::from(1);
+                let mut i = BigInt::from(2);
+                let two_n = BigInt::from(2 * n_u32);
+                while i <= two_n {
+                    factorial *= &i;
+                    i += BigInt::one();
+                }
+                let coeff = BigRational::new(
+                    BigInt::from(sign) * b.numer() * &two_pow,
+                    b.denom() * BigInt::from(2) * factorial,
+                );
+                let exp = BigRational::from_integer(BigInt::from(2 * n_u32));
+                return Ok(Number::Exact(ExactExpr {
+                    terms: vec![ExactTerm::PiPow(coeff, exp)],
+                    denominator: BigInt::one(),
+                }));
             }
             "mod" => args[0].modulo(&args[1]),
             "idiv" => args[0].idiv(&args[1]),

@@ -122,6 +122,12 @@ const FUNCTIONS_META: &[FnMeta] = &[
         sig: "(x)",
     },
     FnMeta {
+        name: "zeta",
+        min: 1,
+        max: 1,
+        sig: "(s)",
+    },
+    FnMeta {
         name: "gamma",
         min: 1,
         max: 1,
@@ -3692,6 +3698,7 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   prod(f, k, a, b)   求積：prod(k, k, 1, 10) → 3628800
   位運算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（僅限非負整數）
   進位     /base dec|hex|oct|bin 切換結果進位（僅整數）；輸入可寫 0xFF / 0o17 / 0b1010
+  zeta(s)  黎曼 ζ：偶數點給精確閉式（zeta(2) = pi^2/6）；奇數點暫無閉式，報錯提示
   erf(x) / erfc(x)  誤差函數與補誤差函數（數值級數；|x| ≥ 8 飽和為 ±1）
   gamma(x)   伽馬函數：正整數給精確階乘、正半整數給精確的 √π 形式（如 gamma(1/2) = sqrt(pi)）；其餘值暫不支援
   整數序列 fib(n) catalan(n) doublefac(n)（斐波那契 / 卡塔蘭數 / 雙階乘；快速模式有上限，/mode deep 可取消）
@@ -3766,6 +3773,7 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   prod(f, k, a, b)   product: prod(k, k, 1, 10) -> 3628800
   Bitwise   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n) (non-negative integers only)
   Bases     /base dec|hex|oct|bin switches the result base (integers only); input accepts 0xFF / 0o17 / 0b1010
+  zeta(s)  Riemann zeta: exact closed form at even points (zeta(2) = pi^2/6); odd points have no known closed form and report an error
   erf(x) / erfc(x)  error function and complementary error function (numeric series; |x| >= 8 saturates to ±1)
   gamma(x)  Gamma function: exact factorial for positive integers, exact sqrt(pi) form for positive half-integers (gamma(1/2) = sqrt(pi)); other values not supported yet
   Sequences fibonacci fib(n), Catalan catalan(n), double factorial doublefac(n) (fast mode caps them; /mode deep lifts the cap)
@@ -3848,6 +3856,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   prod(f, k, a, b)   求积：prod(k, k, 1, 10) → 3628800
   位运算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（仅限非负整数）
   进制     /base dec|hex|oct|bin 切换结果数制（仅整数）；输入可写 0xFF / 0o17 / 0b1010
+  zeta(s)  黎曼 ζ：偶数点给精确闭式（zeta(2) = pi^2/6）；奇数点暂无闭式，报错提示
   erf(x) / erfc(x)  误差函数与补误差函数（数值级数；|x| ≥ 8 饱和为 ±1）
   gamma(x)   伽马函数：正整数给精确阶乘、正半整数给精确的 √π 形式（如 gamma(1/2) = sqrt(pi)）；其余值暂不支持
   整数序列 fib(n) catalan(n) doublefac(n)（斐波那契 / 卡塔兰数 / 双阶乘；快速模式有上限，/mode deep 可取消）
@@ -4322,6 +4331,30 @@ mod cli_tests {
         }
         let total: u128 = rows.iter().map(|r| r.0).sum();
         println!("--- 合计 {} us / {} 条 ---", total, rows.len());
+    }
+
+    /// 黎曼 ζ 的**偶数点精确闭式**：ζ(2n) = 系数 · π^(2n)，系数来自伯努利数。
+    /// 期望值取自已知闭式（π²/6、π⁴/90、π⁶/945、π⁸/9450、π¹⁰/93555），不是抄程序输出。
+    #[test]
+    fn zeta_even_points_are_exact() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        st.evaluator.display_mode = DisplayMode::MathIO; // 直接改 evaluator，不碰 /mode 的全局态
+        for (input, want) in [
+            ("zeta(2)", "1 / 6*pi^2"),
+            ("zeta(4)", "1 / 90*pi^4"),
+            ("zeta(6)", "1 / 945*pi^6"),
+            ("zeta(8)", "1 / 9450*pi^8"),
+            ("zeta(10)", "1 / 93555*pi^10"),
+        ] {
+            let (out, err) = run_line(input, &mut st);
+            assert!(!err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 {want}");
+        }
+        // 奇数点没有已知闭式、s ≤ 1 发散：都要明确报错而不是给个错值
+        for bad in ["zeta(3)", "zeta(1)", "zeta(0)", "zeta(-2)", "zeta(0.5)"] {
+            let (out, err) = run_line(bad, &mut st);
+            assert!(err, "{bad} 应被拒绝，却得到 {out}");
+        }
     }
 
     /// 误差函数：期望值全部是**已知数值**（不是抄程序输出），20 位内逐位核对。
