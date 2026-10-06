@@ -39,7 +39,14 @@ pub fn is_stat_name(name: &str) -> bool {
 /// 那个节点必须再走一遍 calculus 才能展开 ⇒ 预扫要把统计名也算上。
 pub fn input_may_have_stats(input: &str) -> bool {
     [
-        "mean", "var", "var_s", "stddev", "stddev_s", "median", "percentile", "corr",
+        "mean",
+        "var",
+        "var_s",
+        "stddev",
+        "stddev_s",
+        "median",
+        "percentile",
+        "corr",
     ]
     .iter()
     .any(|n| input.contains(n))
@@ -233,7 +240,8 @@ fn expand_median_like(ev: &Evaluator, name: &str, args: Vec<Expr>) -> Result<Exp
             let lo = rank
                 .to_integer()
                 .to_i64()
-                .ok_or_else(|| "percentile 的位置超出范围".to_string())? as usize;
+                .ok_or_else(|| "percentile 的位置超出范围".to_string())?
+                as usize;
             let frac = &rank - BigRational::from_integer(BigInt::from(lo as i64));
             if frac.is_zero() || lo + 1 >= n {
                 return Ok(Expr::Number(vals[lo].clone()));

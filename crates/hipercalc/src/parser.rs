@@ -98,7 +98,6 @@ pub const FUNCTIONS: &[&str] = &[
     "list",
 ];
 
-
 /// 需要两个参数的函数（其余函数都是单参；`log` 有专门的报错文案，单独处理）
 pub const TWO_ARG_FUNCTIONS: &[&str] = &[
     "nroot", "mod", "idiv", "nCr", "nPr", "gcd", "lcm", "and", "or", "xor", "shl", "shr",
@@ -2570,8 +2569,8 @@ pub fn parse_and_eval(input: &str, evaluator: &mut Evaluator) -> Result<EvalResu
     let expr = crate::stats::expand_stats(evaluator, &expr)?;
     // 统计展开会**生成 `sum(...)` 节点**，而那个节点要靠 calculus 那一遍来展开 ⇒
     // 预扫必须把"输入里有统计函数"也算进来，否则 `mean(k, k, 1, 4)` 会残留一个未展开的 sum。
-    let had_calculus =
-        crate::calculus::input_may_have_calculus(input) || crate::stats::input_may_have_stats(input);
+    let had_calculus = crate::calculus::input_may_have_calculus(input)
+        || crate::stats::input_may_have_stats(input);
     let expr = if had_calculus {
         crate::calculus::expand_calculus(evaluator, expr)?
     } else {

@@ -4423,12 +4423,14 @@ mod cli_tests {
     #[test]
     fn statistics_functions() {
         let mut st = eq_state(trig::AngleMode::Radian);
+        // 期望值是**精确分数/根式** ⇒ 必须用 MathIO（默认 LineIO 会把 5/2 显示成 2.5）
+        st.evaluator.display_mode = DisplayMode::MathIO;
         for (input, want) in [
             // 均值：(1+2+3+4)/4
             ("mean([1,2,3,4])", "5 / 2"),
-            ("mean(1,2,3,4)", "5 / 2"),          // 裸参数形态
-            ("mean(k, k, 1, 4)", "5 / 2"),        // 范围形态，判别规则：4 参且第 2 个是变量
-            ("mean(k^2, k, 1, 4)", "15 / 2"),     // (1+4+9+16)/4 = 30/4
+            ("mean(1,2,3,4)", "5 / 2"),       // 裸参数形态
+            ("mean(k, k, 1, 4)", "5 / 2"),    // 范围形态，判别规则：4 参且第 2 个是变量
+            ("mean(k^2, k, 1, 4)", "15 / 2"), // (1+4+9+16)/4 = 30/4
             // 方差：教科书例子 [2,4,4,4,5,5,7,9] → 总体 4、样本 32/7
             ("var([2,4,4,4,5,5,7,9])", "4"),
             ("var_s([2,4,4,4,5,5,7,9])", "32 / 7"),
@@ -4450,7 +4452,11 @@ mod cli_tests {
             assert!(out.contains(want), "{input} → {out}；期望含 {want}");
         }
         // 数据点不足 / 百分位越界：明确报错
-        for bad in ["mean([1])", "percentile(150, [1,2,3])", "corr([1,2],[1,2,3])"] {
+        for bad in [
+            "mean([1])",
+            "percentile(150, [1,2,3])",
+            "corr([1,2],[1,2,3])",
+        ] {
             let (out, err) = run_line(bad, &mut st);
             assert!(err, "{bad} 应被拒绝，却得到 {out}");
         }
