@@ -172,7 +172,7 @@ fn format_exact_expr(expr: &ExactExpr) -> String {
 
     let mut numerator_str = String::new();
 
-    for (_i, term) in expr.terms.iter().enumerate() {
+    for term in expr.terms.iter() {
         if is_term_zero(term) {
             continue;
         }
@@ -183,8 +183,8 @@ fn format_exact_expr(expr: &ExactExpr) -> String {
 
         if numerator_str.is_empty() {
             numerator_str = term_str;
-        } else if term_str.starts_with('-') {
-            numerator_str.push_str(&format!(" - {}", &term_str[1..]));
+        } else if let Some(rest) = term_str.strip_prefix('-') {
+            numerator_str.push_str(&format!(" - {rest}"));
         } else {
             numerator_str.push_str(&format!(" + {}", term_str));
         }

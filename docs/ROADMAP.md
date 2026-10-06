@@ -160,7 +160,7 @@
    `crates/hipercalc-core/src/bigfloat.rs:236` 与 `:347` 的 `clippy::approx_constant`（近似常量，涉及 `LOG2_10`）。  
    若那里用截断常量做范围归约，偏差会渗进 exp/ln 的结果 ⇒ **优先级应高于其余 11 条风格告警**。  
    （CI 的 clippy 目前是**非阻塞**阶段一，等于是个收集器；这两条要先查。）
-3. **非 Windows 的计算中中断**：`cancel.rs:107-110` 明说不支持；README 已改成准确表述（不再是缺陷，是待办）。
+3. **非 Windows 的计算中中断**（`cancel.rs` 的平台差异，README 已如实描述）：`cancel.rs:107-110` 明说不支持；README 已改成准确表述（不再是缺陷，是待办）。
 4. **复数非整数次幂**：`number.rs:363-369` 暂不支持（`e^(i*pi)` 就落在这里）。
 
 ---

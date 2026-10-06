@@ -233,7 +233,7 @@ impl BigFloat {
             return f64::NEG_INFINITY;
         }
         // value = |x|·10^precision ⇒ log2|x| = bits(value) - precision·log2(10)
-        const LOG2_10: f64 = 3.321_928_094_887_362;
+        const LOG2_10: f64 = std::f64::consts::LOG2_10;
         let bits = self.value.abs().bits() as f64;
         (bits - self.precision as f64 * LOG2_10) / LOG2_10
     }
@@ -344,11 +344,7 @@ impl BigFloat {
 
         let total_prec = target_prec + MARGIN + b.precision;
         let ten = BigInt::from(10);
-        let scale = if a.precision < total_prec {
-            total_prec - a.precision
-        } else {
-            0
-        };
+        let scale = total_prec.saturating_sub(a.precision);
 
         let numerator = a.value.abs() * ten.pow(scale as u32);
         let denominator = b.value.abs();
@@ -628,8 +624,7 @@ impl BigFloat {
         let mut term = BigFloat::from_u64(1);
         // 计数器用 u64（旧实现每轮 `&k + &step` 都要做一次 BigInt 加法并克隆，
         // 而 exp 在牛顿迭代里被反复调用，这里省掉即可）
-        let mut k: u64 = 1;
-        for _ in 0..2000 {
+        for k in 1..=2000u64 {
             term = BigFloat::div(
                 &BigFloat::mul(&term, &arg, work_prec),
                 &BigFloat::from_u64(k),
@@ -641,7 +636,6 @@ impl BigFloat {
             if &term.value.abs() * &scale <= result.value.abs() {
                 break;
             }
-            k += 1;
         }
 
         // 平方 halvings 次还原：exp(arg)^(2^halvings) = exp(x)
@@ -686,7 +680,7 @@ impl BigFloat {
         // 2 的幂缩放：log2(x) ≈ bits(|value|) - precision·log2(10)
         let bits = self.value.abs().bits() as f64;
         let p = self.precision as f64;
-        let mut m = (bits - p * 3.321928094887362 - 4.0).floor() as i64;
+        let mut m = (bits - p * std::f64::consts::LOG2_10 - 4.0).floor() as i64;
         let mut scaled = if m >= 0 {
             let two_m = BigFloat::from_int(&BigInt::from(2).pow(m as u32));
             BigFloat::div(self, &two_m, work_prec)
@@ -1030,11 +1024,7 @@ impl BigFloat {
             };
         }
 
-        let int_digits = if prec < total_len {
-            total_len - prec
-        } else {
-            0
-        };
+        let int_digits = total_len.saturating_sub(prec);
 
         // 死算模式：完整十进制（整数部分全写 + 全部小数位），不截断、不用科学计数法
         if crate::calc_mode::is_deep() {

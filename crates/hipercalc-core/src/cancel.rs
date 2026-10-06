@@ -58,6 +58,12 @@ pub fn check() -> Result<(), String> {
 /// 无论正常返回还是提前 `?` 返回错误，离开时都会复位 `COMPUTING`。
 pub struct Scope;
 
+impl Default for Scope {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Scope {
     pub fn new() -> Self {
         CANCEL.store(false, Ordering::Relaxed);

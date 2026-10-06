@@ -2,8 +2,8 @@
 //!
 //! 背景（实测复现）：num-bigint 0.4.7 在"被除数约为除数平方"的形状下，
 //! `biguint/division.rs:259` 的 `debug_assert!(ah < b)` 会失败并 panic 退出：
-//! - `sqr(10^100000)`、`sqr(10^100000+1)`；
-//! - `(10^200000+pi)/(10^100000+pi)`、`(10^100000+pi)/(10^50000+pi)`。
+//!   - `sqr(10^100000)`、`sqr(10^100000+1)`；
+//!   - `(10^200000+pi)/(10^100000+pi)`、`(10^100000+pi)/(10^50000+pi)`。
 //! 该断言属于 debug 断言（dev profile 下 `debug-assertions` 默认开启，第三方依赖也不例外），
 //! 触发后进程直接 panic；若断言被关掉，则会继续跑在有问题的分支上，风险更大。
 //!
@@ -59,7 +59,7 @@ pub fn int_sqrt(n: &BigInt) -> BigInt {
     }
     // 大值：自带牛顿迭代
     // 初值取 2^ceil(bits/2) ≥ √n ⇒ 迭代序列单调递减，收敛到 floor(√n)
-    let mut x = BigInt::one() << ((n.bits() + 1) / 2);
+    let mut x = BigInt::one() << (n.bits() + 1).div_ceil(2);
     loop {
         let q = div(n, &x);
         if q >= x {
@@ -68,7 +68,6 @@ pub fn int_sqrt(n: &BigInt) -> BigInt {
         x = (&x + q) >> 1;
     }
     // 收尾校验（正常路径无需修正，仅作保险）
-    let mut x = x;
     while &x * &x > *n {
         x -= BigInt::one();
     }
@@ -263,7 +262,7 @@ fn div_rem_mag(u: &[u64], v: &[u64]) -> (Vec<u64>, Vec<u64>) {
     let m = u.len() - n;
 
     // 归一化：把除数最高位移到最高位，使商位的估计误差 ≤ 2
-    let shift = v[n - 1].leading_zeros() as u32;
+    let shift = v[n - 1].leading_zeros();
     let vn = shl_bits(v, shift);
     let mut un = shl_bits(u, shift);
     un.push(0); // 额外的高位 limb
