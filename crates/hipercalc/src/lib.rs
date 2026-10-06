@@ -72,6 +72,7 @@ const COMMANDS: &[&str] = &[
     "/var",
     "/del",
     "/base",
+    "/unit",
     "/reset",
     "/save",
     "/load",
@@ -92,6 +93,7 @@ const COMMAND_HINTS: &[(&str, &str)] = &[
     ("/let", "NAME = <表达式>（变量名须全大写）"),
     ("/del", "NAME 或 all"),
     ("/base", "dec|hex|oct|bin（结果按该进制显示；仅整数）"),
+    ("/unit", "单位名|off（结果按该单位显示；如 /unit km）"),
     ("/reset", "[all]（all = 连模式与颜色一起恢复默认）"),
     ("/save", "<文件路径>"),
     ("/load", "<文件路径>"),
@@ -2016,6 +2018,28 @@ fn handle_command(input: &str, state: &mut AppState) -> bool {
         "/save" => handle_save(&parts, state),
         "/load" => handle_load(&parts, state),
         // 结果数制：只影响**显示**（数值本身不变），且只对整数生效
+        // 结果单位：只影响**显示**（数值仍是 SI）——与 /base 同层
+        "/unit" => match parts.get(1).map(|a| a.to_lowercase()) {
+            Some(a) if a == "off" || a == "none" => {
+                hipercalc_core::display::set_unit(None);
+                lprint!("{}", i18n::t("结果单位显示已关闭"));
+            }
+            Some(a) => match crate::parser::unit_factor(&a).and_then(|n| n.as_rational()) {
+                Some(r) => {
+                    hipercalc_core::display::set_unit(Some((a.clone(), r)));
+                    lprint!("{}", i18n::fmt("结果单位已设为 {0}", &[&a]));
+                }
+                None => leprint!(
+                    "{}",
+                    i18n::fmt(
+                        "{0} 不是已知单位（单字母单位不收，可写 meter/second/gram）",
+                        &[&a]
+                    )
+                ),
+            },
+            None => lprint!("{}", i18n::t("用法: /unit 单位名|off（如 /unit km）")),
+        },
+
         "/base" => match parts.get(1).map(|a| a.to_lowercase()) {
             Some(a) => {
                 let base = match a.as_str() {
@@ -4019,6 +4043,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   进制     /base dec|hex|oct|bin 切换结果数制（仅整数）；输入可写 0xFF / 0o17 / 0b1010
   zeta(s)  黎曼 ζ：偶数点给精确闭式（zeta(2) = pi^2/6）；奇数点与非整数走 Euler-Maclaurin 数值（zeta(3) ≈ 1.2020569032）
   zeta(s)  黎曼 ζ：偶数点给精确闭式（zeta(2) = pi^2/6）；奇数点暂无闭式，报错提示
+  单位     3 km、2 mile、500 meter（解析期折成 SI）；/unit km 让结果按该单位显示、/unit off 关闭
   物理常量 C0/LIGHT_SPEED、KB/BOLTZMANN、NA/AVOGADRO、HPL/PLANCK、ME、MP…（CODATA 2022，只读：不能用作变量名）
   ( )       自动配对：敲 ( 自动补出 ) 并把光标放进中间；再敲 ) 会**越过**已有的 )，不会重复
   z^w      复数幂（主值）：i^i ≈ 0.2078795764、2^i ≈ 0.7692389014 + 0.6389612763i；整数指数仍给精确值

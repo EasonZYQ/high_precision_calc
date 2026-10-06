@@ -35,6 +35,75 @@ pub const PHYS_CONSTANTS: &[(&str, &str, &str)] = &[
     ("GACC", "EARTH_G", "9.80665"),
 ];
 
+/// 单位系数表：`(单位名, 折成 SI 的系数)`。系数写成十进制字面量 ⇒ 解析后是**精确有理数**。
+///
+/// **只收多字母单位**：单字母（`m`/`s`/`g`/`A`/`K`…）与变量命名空间冲突，
+/// 刻意排除（可写 `meter`/`second`/`gram`）。`KB` 也不收 —— 它是玻尔兹曼常量。
+/// 用法：`3 km` / `3km` / `500 m` 在解析期就折成 SI（`3 km` → `3*1000` → `3000`）。
+pub const PHYS_UNITS: &[(&str, &str)] = &[
+    // 长度（SI 基本单位：米）
+    ("meter", "1"),
+    ("metre", "1"),
+    ("km", "1000"),
+    ("cm", "0.01"),
+    ("mm", "0.001"),
+    ("um", "0.000001"),
+    ("nm", "0.000000001"),
+    ("inch", "0.0254"),
+    ("foot", "0.3048"),
+    ("feet", "0.3048"),
+    ("yard", "0.9144"),
+    ("mile", "1609.344"),
+    ("nmi", "1852"),
+    // 时间（秒）
+    ("second", "1"),
+    ("sec", "1"),
+    ("ms", "0.001"),
+    ("us", "0.000001"),
+    ("ns", "0.000000001"),
+    ("minute", "60"),
+    ("min", "60"),
+    ("hour", "3600"),
+    ("day", "86400"),
+    ("week", "604800"),
+    // 质量（SI 基本单位：千克）
+    ("gram", "0.001"),
+    ("kg", "1"),
+    ("mg", "0.000001"),
+    ("tonne", "1000"),
+    ("pound", "0.45359237"),
+    ("oz", "0.028349523125"),
+    // 体积 / 面积
+    ("liter", "0.001"),
+    ("litre", "0.001"),
+    ("ml", "0.000001"),
+    ("hectare", "10000"),
+    ("acre", "4046.8564224"),
+    // 速度 / 能量 / 压强（折到 m/s、J、Pa）
+    ("kph", "0.2777777777777777777777777777777777777777"),
+    ("mph", "0.44704"),
+    ("knot", "0.5144444444444444444444444444444444444444"),
+    ("cal", "4.184"),
+    ("eV", "0.0000000000000000001602176634"),
+    ("bar", "100000"),
+    ("atm", "101325"),
+];
+
+/// 取某个单位的 SI 系数（供 `/unit` 指令使用）。
+///
+/// 表里的系数是十进制字面量 ⇒ 这里复用**既有的数字解析**，不另写一套字符串→数值转换。
+pub fn unit_factor(name: &str) -> Option<Number> {
+    let text = PHYS_UNITS
+        .iter()
+        .find(|(u, _)| *u == name)
+        .map(|(_, f)| *f)?;
+    let mut p = Parser::new(text);
+    match p.parse_number() {
+        Ok(Expr::Number(n)) => Some(n),
+        _ => None,
+    }
+}
+
 /// 该名字是否是内置物理常量（短名或长名）——`/let` 用它来做重名检查
 pub fn is_phys_constant(name: &str) -> bool {
     PHYS_CONSTANTS
@@ -567,7 +636,33 @@ impl Parser {
                 self.next();
                 Ok(expr)
             }
-            Some(c) if c.is_ascii_digit() || c == '.' => self.parse_number(),
+            Some(c) if c.is_ascii_digit() || c == '.' => {
+                let num = self.parse_number()?;
+                // 单位后缀：`3 km` / `3km` ⇒ 解析期立刻折成 SI（乘系数）。
+                // 必须在这里做：再往后走，"多字母隐式乘法"会把 `km` 拆成 k·m。
+                self.skip_whitespace();
+                let save = self.pos;
+                let start = self.pos;
+                while self
+                    .peek()
+                    .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+                {
+                    self.next();
+                }
+                if self.pos > start {
+                    let word: String = self.input[start..self.pos].iter().collect();
+                    if let Some(factor) =
+                        PHYS_UNITS.iter().find(|(u, _)| *u == word).map(|(_, f)| *f)
+                    {
+                        let mut fp = Parser::new(factor);
+                        let f = fp.parse_number()?;
+                        return Ok(Expr::Binary(Box::new(num), BinOp::Mul, Box::new(f)));
+                    }
+                }
+                // 不是单位 ⇒ 回退，交给原有的隐式乘法（`3 x` 仍是 3·x，语义不变）
+                self.pos = save;
+                Ok(num)
+            }
             Some(c) if c.is_alphabetic() || c == '_' => self.parse_identifier_or_function(),
             _ => Err(format!(
                 "位置 {} 处意外的字符: '{}'",
@@ -2854,6 +2949,25 @@ mod func_tests {
 
     #[test]
     fn complex_syntax_and_dispatch() {
+        // 单位后缀：解析期折成 SI（精确有理数相除/相乘）
+        for (input, want) in [
+            ("3 km", "3000"),
+            ("3km", "3000"),        // 连写也可以
+            ("2 mile", "3218.688"), // 2 × 1609.344（精确）
+            ("3 km + 500 meter", "3500"),
+            ("2 hour * 60", "432000"),
+        ] {
+            let got = eval_lineio(input).unwrap();
+            assert_eq!(got, want, "{input} → {got}，期望 {want}");
+        }
+        // 单位系数查询（/unit 指令用它）
+        assert_eq!(
+            unit_factor("km").and_then(|n| n.as_rational()),
+            Some(BigRational::from_integer(BigInt::from(1000)))
+        );
+        assert!(unit_factor("xyz").is_none());
+        // 关键非回归：`2 pi` 仍是隐式乘法，不能被单位表吃掉
+        assert!(eval_lineio("2 pi").unwrap().starts_with("6.2831853"));
         // 内置物理常量：值取 CODATA 2022（SI 定义值逐位精确），并验证只读登记表
         for (name, want) in [
             ("C0", "299792458"),

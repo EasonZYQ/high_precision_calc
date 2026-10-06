@@ -301,5 +301,11 @@
   "结果数制已设为 {0}（只影响整数）": "result base set to {0} (integers only)",
   "参数在快速模式下超出上限（/mode deep 可取消限制）": "argument exceeds the fast-mode limit (use /mode deep to lift it)",
   "gamma 目前只支持正整数与正半整数（其余值需要数值近似，暂未开放）": "gamma currently supports positive integers and positive half-integers only (other values need numeric approximation)",
-  "{0} 是内置物理常量（只读），不能用作变量名": "{0} is a built-in physical constant (read-only) and cannot be used as a variable name"
+  "{0} 是内置物理常量（只读），不能用作变量名": "{0} is a built-in physical constant (read-only) and cannot be used as a variable name",
+  "结果单位显示已关闭": "unit display off",
+  "结果单位已设为 {0}": "result unit set to {0}",
+  "{0} 不是已知单位（单字母单位不收，可写 meter/second/gram）": "{0} is not a known unit (single-letter units are not accepted; use meter/second/gram)",
+  "用法: /unit 单位名|off（如 /unit km）": "usage: /unit <name>|off (e.g. /unit km)",
+  "无法解析该单位的系数": "cannot parse the conversion factor for that unit",
+  "单位名|off（结果按该单位显示；如 /unit km）": "unit name|off (show results in that unit; e.g. /unit km)"
 }

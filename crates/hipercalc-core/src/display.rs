@@ -3,10 +3,16 @@ use crate::number::{ExactExpr, ExactTerm, Number};
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// 数学显示模式（mathio）：尽可能使用符号表示
 pub fn format_mathio(num: &Number) -> String {
+    let (scaled, suffix) = unit_scaled(num);
+    format!("{}{}", format_mathio_raw(&scaled), suffix)
+}
+
+fn format_mathio_raw(num: &Number) -> String {
     if let Some(s) = format_radix(num) {
         return s;
     }
@@ -23,7 +29,7 @@ pub fn format_mathio(num: &Number) -> String {
             let s = f.to_significant_string(bigfloat::display_digits());
             if s == "-0" { "0".to_string() } else { s }
         }
-        Number::Complex(z) => format_complex(z, &format_mathio),
+        Number::Complex(z) => format_complex(z, &format_mathio_raw),
     }
 }
 
@@ -65,6 +71,34 @@ fn format_complex(z: &crate::complex::ComplexNum, part: &dyn Fn(&Number) -> Stri
 }
 
 /// 线性显示模式（lineio）：一律使用小数
+/// 结果单位（`/unit km`）：`(标签, 折成 SI 的系数)`。
+///
+/// 与数制开关同层：**只影响显示**，不动数值本身。做法是把结果**除以**系数再格式化，
+/// 于是 `3000` 在 `/unit km` 下显示成 `3 km`（精确值相除仍是精确值）。
+/// 单字母单位不收（`m`/`s`/`g`… 与变量命名空间冲突），所以标签一律是多字母的。
+static UNIT: Mutex<Option<(String, BigRational)>> = Mutex::new(None);
+
+/// 设置结果单位；传 `None` 关闭
+pub fn set_unit(u: Option<(String, BigRational)>) {
+    if let Ok(mut g) = UNIT.lock() {
+        *g = u;
+    }
+}
+
+fn unit_scaled(num: &Number) -> (Number, String) {
+    let g = match UNIT.lock() {
+        Ok(g) => g,
+        Err(_) => return (num.clone(), String::new()),
+    };
+    match g.as_ref() {
+        Some((label, factor)) if !factor.is_zero() => {
+            let f = Number::from_rational(factor.clone());
+            (Number::div(num, &f), format!(" {label}"))
+        }
+        _ => (num.clone(), String::new()),
+    }
+}
+
 /// LaTeX 输出开关（`/mode latex`）。
 ///
 /// 用**显示层开关**而不是给 `DisplayMode` 加枚举分支：`DisplayMode::` 在全仓有 87 处引用，
@@ -131,8 +165,13 @@ fn radix_string(n: &BigInt, base: u32) -> String {
 }
 
 pub fn format_lineio(num: &Number) -> String {
+    let (scaled, suffix) = unit_scaled(num);
+    format!("{}{}", format_lineio_raw(&scaled), suffix)
+}
+
+fn format_lineio_raw(num: &Number) -> String {
     if let Number::Complex(z) = num {
-        return format_complex(z, &format_lineio);
+        return format_complex(z, &format_lineio_raw);
     }
     if let Some(s) = format_radix(num) {
         return s;
@@ -144,6 +183,11 @@ pub fn format_lineio(num: &Number) -> String {
 
 /// 小数格式（用于 sd 函数在 mathio 模式下的输出）
 pub fn format_decimal(num: &Number) -> String {
+    // 这个入口是 sd() 之类的内部显示，**不套单位**
+    format_decimal_raw(num)
+}
+
+fn format_decimal_raw(num: &Number) -> String {
     if let Number::Complex(z) = num {
         return format_complex(z, &format_decimal);
     }
