@@ -4,6 +4,7 @@
 //! `biguint/division.rs:259` 的 `debug_assert!(ah < b)` 会失败并 panic 退出：
 //!   - `sqr(10^100000)`、`sqr(10^100000+1)`；
 //!   - `(10^200000+pi)/(10^100000+pi)`、`(10^100000+pi)/(10^50000+pi)`。
+//!
 //! 该断言属于 debug 断言（dev profile 下 `debug-assertions` 默认开启，第三方依赖也不例外），
 //! 触发后进程直接 panic；若断言被关掉，则会继续跑在有问题的分支上，风险更大。
 //!
@@ -392,6 +393,19 @@ fn shr_bits(a: &[u64], shift: u32) -> Vec<u64> {
     out
 }
 
+/// 测试辅助：BigInt 的 10^k（仅测试使用）
+#[cfg(test)]
+trait MulPow10 {
+    fn mul_pow10(&self, k: u32) -> BigInt;
+}
+
+#[cfg(test)]
+impl MulPow10 for BigInt {
+    fn mul_pow10(&self, k: u32) -> BigInt {
+        self * BigInt::from(10u64).pow(k)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,18 +524,5 @@ mod tests {
         // 零与小数
         assert_eq!(int_sqrt(&BigInt::from(0)), BigInt::from(0));
         assert_eq!(int_sqrt(&BigInt::from(15)), BigInt::from(3));
-    }
-}
-
-/// 测试辅助：BigInt 的 10^k（仅测试使用）
-#[cfg(test)]
-trait MulPow10 {
-    fn mul_pow10(&self, k: u32) -> BigInt;
-}
-
-#[cfg(test)]
-impl MulPow10 for BigInt {
-    fn mul_pow10(&self, k: u32) -> BigInt {
-        self * BigInt::from(10u64).pow(k)
     }
 }
