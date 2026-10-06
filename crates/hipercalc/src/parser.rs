@@ -10,6 +10,38 @@ use hipercalc_core::trig::{self, AngleMode};
 /// 有效的单字母变量名。
 /// 注意：**不含小写 `i`**——它被虚数单位占用（`2i`、`i^2` 等）；
 /// 这也是相对旧版本的破坏性变更：以往 `i` 可作未知数（如 `i^2-4=0`），现在表示虚数单位。
+/// 内置物理常量：`(短名, 长名别名, 十进制字面量)`。
+///
+/// - 数值取 **CODATA 2022**；SI 定义值逐位精确（如光速 299792458 是定义值）。
+/// - 名字**从变量命名空间收回**：`/let` 用这些名字会报错（只读内置常量）——
+///   这是用户明确选定的取舍，因为习惯写法 `c`/`h`/`k` 已被单字母变量占死。
+/// - 短名与长名都给，覆盖两种书写习惯。
+pub const PHYS_CONSTANTS: &[(&str, &str, &str)] = &[
+    ("C0", "LIGHT_SPEED", "299792458"),
+    ("G0", "GRAV_CONST", "6.67430e-11"),
+    ("HPL", "PLANCK", "6.62607015e-34"),
+    ("HBAR", "REDUCED_PLANCK", "1.0545718176461565e-34"),
+    ("KB", "BOLTZMANN", "1.380649e-23"),
+    ("NA", "AVOGADRO", "6.02214076e23"),
+    ("QE", "ELEMENTARY_CHARGE", "1.602176634e-19"),
+    ("ME", "ELECTRON_MASS", "9.1093837139e-31"),
+    ("MP", "PROTON_MASS", "1.67262192595e-27"),
+    ("MN", "NEUTRON_MASS", "1.67492750056e-27"),
+    ("RGAS", "GAS_CONST", "8.31446261815324"),
+    ("SIGMA", "STEFAN_BOLTZMANN", "5.670374419e-8"),
+    ("ALPHA", "FINE_STRUCTURE", "7.2973525643e-3"),
+    ("MU0", "VACUUM_PERMEABILITY", "1.25663706212e-6"),
+    ("EPS0", "VACUUM_PERMITTIVITY", "8.8541878128e-12"),
+    ("GACC", "EARTH_G", "9.80665"),
+];
+
+/// 该名字是否是内置物理常量（短名或长名）——`/let` 用它来做重名检查
+pub fn is_phys_constant(name: &str) -> bool {
+    PHYS_CONSTANTS
+        .iter()
+        .any(|(short, long, _)| *short == name || *long == name)
+}
+
 pub const VALID_VARIABLES: &str = "xyzabcdefghjklmnopqrstuvwABCDEFGHIJKLMNOPQRSTUVW";
 
 /// 白名单函数名：解析校验、多字母拆分、REPL 高亮共用同一份常量。
@@ -738,6 +770,16 @@ impl Parser {
             } else {
                 return Err(format!("未知函数: {}", func_name));
             }
+        }
+
+        // 内置物理常量（查表 ⇒ 返回其十进制字面量解析出的数值）。
+        // 放在 match **之前**：表里全是 2 字母以上的名字，与 pi/e/tau/phi/i 无冲突。
+        if let Some((_, _, text)) = PHYS_CONSTANTS
+            .iter()
+            .find(|(s, l, _)| *s == ident || *l == ident)
+        {
+            let mut np = Parser::new(text);
+            return np.parse_number();
         }
 
         // 常量或变量
@@ -2812,6 +2854,19 @@ mod func_tests {
 
     #[test]
     fn complex_syntax_and_dispatch() {
+        // 内置物理常量：值取 CODATA 2022（SI 定义值逐位精确），并验证只读登记表
+        for (name, want) in [
+            ("C0", "299792458"),
+            ("LIGHT_SPEED", "299792458"), // 长名别名
+            ("GACC", "9.80665"),          // 精确值 196133/20000，LineIO 显示为小数
+        ] {
+            let got = eval_lineio(name).unwrap();
+            assert!(got.contains(want), "{name} → {got}；期望含 {want}");
+        }
+        // 只读名单：短名与长名都要认出来
+        assert!(is_phys_constant("C0") && is_phys_constant("LIGHT_SPEED"));
+        // pi / e 不受影响（常量表里没有它们的名字）
+        assert!(eval_lineio("pi").unwrap().contains("pi"));
         // i 是常数：2i 走隐式乘法、i^2 = -1
         assert_eq!(eval_mathio("i").unwrap(), "i");
         assert_eq!(eval_mathio("2i").unwrap(), "2i");

@@ -300,5 +300,6 @@
   "用法: /base dec|hex|oct|bin": "usage: /base dec|hex|oct|bin",
   "结果数制已设为 {0}（只影响整数）": "result base set to {0} (integers only)",
   "参数在快速模式下超出上限（/mode deep 可取消限制）": "argument exceeds the fast-mode limit (use /mode deep to lift it)",
-  "gamma 目前只支持正整数与正半整数（其余值需要数值近似，暂未开放）": "gamma currently supports positive integers and positive half-integers only (other values need numeric approximation)"
+  "gamma 目前只支持正整数与正半整数（其余值需要数值近似，暂未开放）": "gamma currently supports positive integers and positive half-integers only (other values need numeric approximation)",
+  "{0} 是内置物理常量（只读），不能用作变量名": "{0} is a built-in physical constant (read-only) and cannot be used as a variable name"
 }

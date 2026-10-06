@@ -2944,6 +2944,14 @@ fn handle_let(input: &str, state: &mut AppState) {
         return;
     };
     let name = name.trim();
+    // 内置物理常量是**只读**的：这些名字已从变量命名空间收回（见 parser::PHYS_CONSTANTS）
+    if crate::parser::is_phys_constant(&name) {
+        leprint!(
+            "{}",
+            i18n::fmt("{0} 是内置物理常量（只读），不能用作变量名", &[name])
+        );
+        return;
+    }
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
         lprint!(
             "{}: 变量名必须为全大写字母（如 X、AB）",
@@ -4011,6 +4019,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   进制     /base dec|hex|oct|bin 切换结果数制（仅整数）；输入可写 0xFF / 0o17 / 0b1010
   zeta(s)  黎曼 ζ：偶数点给精确闭式（zeta(2) = pi^2/6）；奇数点与非整数走 Euler-Maclaurin 数值（zeta(3) ≈ 1.2020569032）
   zeta(s)  黎曼 ζ：偶数点给精确闭式（zeta(2) = pi^2/6）；奇数点暂无闭式，报错提示
+  物理常量 C0/LIGHT_SPEED、KB/BOLTZMANN、NA/AVOGADRO、HPL/PLANCK、ME、MP…（CODATA 2022，只读：不能用作变量名）
   ( )       自动配对：敲 ( 自动补出 ) 并把光标放进中间；再敲 ) 会**越过**已有的 )，不会重复
   z^w      复数幂（主值）：i^i ≈ 0.2078795764、2^i ≈ 0.7692389014 + 0.6389612763i；整数指数仍给精确值
   erf(x) / erfc(x)  误差函数与补误差函数（数值级数；|x| ≥ 8 饱和为 ±1）
