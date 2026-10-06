@@ -61,11 +61,10 @@ jobs:
       - name: Rustfmt check
         run: cargo fmt --all -- --check
 
-      # clippy：**阶段一先非阻塞**，只为把告警收集起来，观察后再收紧
-      # （收紧时优先 \`-- -D clippy::correctness\`，而不是一步 \`-D warnings\`）
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets
-        continue-on-error: true
+      # clippy：core 侧已 0 告警；app 侧存量风格告警不阻塞，
+      # 但**正确性类**直接当错误拦下来（第二阶段目标态；后续可再收紧为 -D warnings）
+      - name: Clippy (correctness is blocking)
+        run: cargo clippy --workspace --all-targets -- -D clippy::correctness
 
   cross:
     name: Build ${{ matrix.target }}

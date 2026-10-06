@@ -2,6 +2,22 @@
 // 这里用 `use` 把模块名带进本文件作用域：lib.rs 里有大量裸路径（`bigfloat::`、`trig::`、
 // `calc_mode::`…）原来是靠 crate 根的 `mod` 声明解析的，拆走后必须显式引入。
 // **不要**加 complex / bigint_ext：本文件从不使用它们，加了会触发 unused_imports。
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 有意的 lint 豁免（每条都写明理由；**不是**为了凑绿而关掉）
+//
+// needless_range_loop：这些循环全在**线性代数 / 数值**代码里（高斯消元、矩阵行列、
+//   多项式系数遍历）。那里 `for j in 0..n { a[j] }` 比 `for (j, x) in a.iter().enumerate()`
+//   更贴近数学写法、也更容易和公式对照 —— 换成迭代器链反而增加认知负担。
+// type_complexity：几处词条表与状态表是「嵌套容器」，抽 type 别名收益有限；
+//   真正需要时会随重构一起做，先如实标注而不是放任。
+// too_many_arguments：`state::save` 承载了"模式 + 变量 + 颜色 + 语言"一整组状态，
+//   参数多是这个职责的固有形状；要收敛应做一次状态结构重构，而不是拆成假参数对象。
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::too_many_arguments)]
+// ─────────────────────────────────────────────────────────────────────────────
+
 use hipercalc_core::{bigfloat, calc_mode, cancel, display, trig};
 
 mod calculus;
