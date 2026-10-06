@@ -110,6 +110,12 @@ const FUNCTIONS_META: &[FnMeta] = &[
         sig: "(n)",
     },
     FnMeta {
+        name: "gamma",
+        min: 1,
+        max: 1,
+        sig: "(x)",
+    },
+    FnMeta {
         name: "doublefac",
         min: 1,
         max: 1,
@@ -3674,6 +3680,7 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   prod(f, k, a, b)   求積：prod(k, k, 1, 10) → 3628800
   位運算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（僅限非負整數）
   進位     /base dec|hex|oct|bin 切換結果進位（僅整數）；輸入可寫 0xFF / 0o17 / 0b1010
+  gamma(x)   伽馬函數：正整數給精確階乘、正半整數給精確的 √π 形式（如 gamma(1/2) = sqrt(pi)）；其餘值暫不支援
   整數序列 fib(n) catalan(n) doublefac(n)（斐波那契 / 卡塔蘭數 / 雙階乘；快速模式有上限，/mode deep 可取消）
   LaTeX    /mode latex 讓結果用 LaTeX 記號（\\frac{}{}、\\sqrt{}、\\pi），可直接貼進論文；切回 /mode mathio
   ── 鍵盤與輸入 ──
@@ -3746,6 +3753,7 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   prod(f, k, a, b)   product: prod(k, k, 1, 10) -> 3628800
   Bitwise   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n) (non-negative integers only)
   Bases     /base dec|hex|oct|bin switches the result base (integers only); input accepts 0xFF / 0o17 / 0b1010
+  gamma(x)  Gamma function: exact factorial for positive integers, exact sqrt(pi) form for positive half-integers (gamma(1/2) = sqrt(pi)); other values not supported yet
   Sequences fibonacci fib(n), Catalan catalan(n), double factorial doublefac(n) (fast mode caps them; /mode deep lifts the cap)
   LaTeX     /mode latex renders results in LaTeX (\\frac{}{}, \\sqrt{}, \\pi) ready to paste into a paper; /mode mathio switches back
   -- Keyboard & input --
@@ -3826,6 +3834,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   prod(f, k, a, b)   求积：prod(k, k, 1, 10) → 3628800
   位运算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（仅限非负整数）
   进制     /base dec|hex|oct|bin 切换结果数制（仅整数）；输入可写 0xFF / 0o17 / 0b1010
+  gamma(x)   伽马函数：正整数给精确阶乘、正半整数给精确的 √π 形式（如 gamma(1/2) = sqrt(pi)）；其余值暂不支持
   整数序列 fib(n) catalan(n) doublefac(n)（斐波那契 / 卡塔兰数 / 双阶乘；快速模式有上限，/mode deep 可取消）
   LaTeX    /mode latex 让结果用 LaTeX 记号（\\frac{}{}、\\sqrt{}、\\pi），可直接粘进论文；切回 /mode mathio
   ── 显示与计算模式（/mode）──
@@ -4298,6 +4307,44 @@ mod cli_tests {
         }
         let total: u128 = rows.iter().map(|r| r.0).sum();
         println!("--- 合计 {} us / {} 条 ---", total, rows.len());
+    }
+
+    /// 伽马函数：整数给精确阶乘；半整数给**精确的 √π 形式**（靠新加的 ExactTerm::SqrtPi）。
+    /// 期望值全部可独立核对：Γ(n)=(n-1)!，Γ(1/2)=√π，Γ(3/2)=√π/2，Γ(5/2)=3√π/4，且 Γ(1/2)² = π。
+    #[test]
+    fn gamma_function() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        // 整数：精确阶乘
+        for (input, want) in [
+            ("gamma(1)", "= 1"),
+            ("gamma(2)", "= 1"),
+            ("gamma(3)", "= 2"),
+            ("gamma(5)", "= 24"),
+            ("gamma(6)", "= 120"),
+        ] {
+            let (out, err) = run_line(input, &mut st);
+            assert!(!err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 {want}");
+        }
+        // 半整数：必须给出**含 √π 的精确形式**（MathIO 下才看得到符号形式）。
+        // 这里直接改 evaluator 的显示模式，**不碰 /mode 的全局状态**（否则会污染并行测试）。
+        st.evaluator.display_mode = DisplayMode::MathIO;
+        for (input, want) in [
+            ("gamma(1/2)", "sqrt(pi)"),
+            ("gamma(3/2)", "1 / 2*sqrt(pi)"),
+            ("gamma(5/2)", "3 / 4*sqrt(pi)"),
+            // √π · √π = π —— 新变体唯一需要的运算规则
+            ("gamma(1/2)*gamma(1/2)", "= pi"),
+        ] {
+            let (out, err) = run_line(input, &mut st);
+            assert!(!err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 {want}");
+        }
+        // 极点与非支持值必须明确报错（不做"看起来精确"的近似）
+        for bad in ["gamma(0)", "gamma(-1)", "gamma(0.3)"] {
+            let (out, err) = run_line(bad, &mut st);
+            assert!(err, "{bad} 应被拒绝，却得到 {out}");
+        }
     }
 
     /// 整数序列：期望值全部来自**已知序列**（不是抄程序输出）

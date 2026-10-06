@@ -162,6 +162,7 @@ fn format_exact_expr(expr: &ExactExpr) -> String {
     let all_zero = expr.terms.iter().all(|t| match t {
         ExactTerm::Rational(r) => r.is_zero(),
         ExactTerm::Sqrt(c, _) => c.is_zero(),
+        ExactTerm::SqrtPi(c) => c.is_zero(),
         ExactTerm::Pi(c) => c.is_zero(),
         ExactTerm::E(c) => c.is_zero(),
     });
@@ -281,6 +282,9 @@ fn format_term_latex(term: &ExactTerm) -> String {
             }
         }
         ExactTerm::Pi(c) => format!("{} \\pi", latex_coeff(c)).trim_start().to_string(),
+        ExactTerm::SqrtPi(c) => format!("{} \\sqrt{{\\pi}}", latex_coeff(c))
+            .trim_start()
+            .to_string(),
         ExactTerm::E(c) => format!("{}e", latex_coeff(c)),
     }
 }
@@ -290,6 +294,7 @@ fn format_term(term: &ExactTerm) -> String {
         ExactTerm::Rational(r) => format_rational(r),
         ExactTerm::Sqrt(coeff, rad) => format_sqrt_term(coeff, rad),
         ExactTerm::Pi(coeff) => format_pi_term(coeff),
+        ExactTerm::SqrtPi(coeff) => format_sqrtpi_term(coeff),
         ExactTerm::E(coeff) => format_e_term(coeff),
     }
 }
@@ -302,6 +307,20 @@ fn format_rational(r: &BigRational) -> String {
     } else {
         format!("{} / {}", r.numer(), r.denom())
     }
+}
+
+/// c*sqrt(pi)：与 sqrt 的风格保持一致（系数 1 省略、-1 只留负号）
+fn format_sqrtpi_term(coeff: &BigRational) -> String {
+    if coeff.is_zero() {
+        return String::new();
+    }
+    if coeff.is_one() {
+        return "sqrt(pi)".to_string();
+    }
+    if coeff == &BigRational::from_integer(BigInt::from(-1)) {
+        return "-sqrt(pi)".to_string();
+    }
+    format!("{}*sqrt(pi)", format_rational(coeff))
 }
 
 fn format_sqrt_term(coeff: &BigRational, rad: &BigInt) -> String {
@@ -382,6 +401,7 @@ fn is_term_zero(term: &ExactTerm) -> bool {
     match term {
         ExactTerm::Rational(r) => r.is_zero(),
         ExactTerm::Sqrt(c, _) => c.is_zero(),
+        ExactTerm::SqrtPi(c) => c.is_zero(),
         ExactTerm::Pi(c) => c.is_zero(),
         ExactTerm::E(c) => c.is_zero(),
     }

@@ -16,6 +16,12 @@ pub enum ExactTerm {
     Pi(BigRational),
     /// 系数 * e
     E(BigRational),
+    /// 系数 * sqrt(pi)，如 Γ(1/2) = sqrt(pi)、Γ(5/2) = 3/4 * sqrt(pi)
+    ///
+    /// 为什么单开一项：项目的精确表示只认「有理数 × √整数」，而 √π 不属于这种形式。
+    /// 只加这一项、不泛化成 π 的任意分数次幂：√π × √π = π 用一条特例规则即可，
+    /// 其余组合（如 π 的 3/2 次幂）表示不了，交给既有的「先精确后数值回退」机制。
+    SqrtPi(BigRational),
 }
 
 /// 精确表达式（各项之和）/ 分母
@@ -694,6 +700,12 @@ impl ExactExpr {
                     let e = BigFloat::e(bigfloat::precision());
                     BigFloat::mul(&c, &e, bigfloat::precision())
                 }
+                ExactTerm::SqrtPi(coeff) => {
+                    let c = BigFloat::from_big_rational(coeff);
+                    let pi = BigFloat::pi(bigfloat::precision());
+                    let s = pi.sqrt(bigfloat::precision());
+                    BigFloat::mul(&c, &s, bigfloat::precision())
+                }
             };
             result = BigFloat::add(&result, &term_float, bigfloat::precision());
         }
@@ -724,6 +736,7 @@ impl ExactExpr {
                 .map(|t| match t {
                     ExactTerm::Rational(r) => ExactTerm::Rational(-r),
                     ExactTerm::Sqrt(c, r) => ExactTerm::Sqrt(-c, r.clone()),
+                    ExactTerm::SqrtPi(c) => ExactTerm::SqrtPi(-c),
                     ExactTerm::Pi(c) => ExactTerm::Pi(-c),
                     ExactTerm::E(c) => ExactTerm::E(-c),
                 })
@@ -867,6 +880,9 @@ impl ExactExpr {
                             c * &BigRational::from_integer(other.denominator.clone()),
                             rad.clone(),
                         ),
+                        ExactTerm::SqrtPi(c) => ExactTerm::SqrtPi(
+                            c * &BigRational::from_integer(other.denominator.clone()),
+                        ),
                         ExactTerm::Pi(c) => {
                             ExactTerm::Pi(c * &BigRational::from_integer(other.denominator.clone()))
                         }
@@ -889,6 +905,7 @@ impl ExactExpr {
                 let scaled = match t {
                     ExactTerm::Rational(r) => ExactTerm::Rational(r * &recip),
                     ExactTerm::Sqrt(c, rad) => ExactTerm::Sqrt(c * &recip, rad.clone()),
+                    ExactTerm::SqrtPi(c) => ExactTerm::SqrtPi(c * &recip),
                     ExactTerm::Pi(c) => ExactTerm::Pi(c * &recip),
                     ExactTerm::E(c) => ExactTerm::E(c * &recip),
                 };
@@ -972,6 +989,7 @@ impl ExactExpr {
                             let scaled = match t {
                                 ExactTerm::Rational(r) => ExactTerm::Rational(r * &recip),
                                 ExactTerm::Sqrt(c, r) => ExactTerm::Sqrt(c * &recip, r.clone()),
+                                ExactTerm::SqrtPi(c) => ExactTerm::SqrtPi(c * &recip),
                                 ExactTerm::Pi(c) => ExactTerm::Pi(c * &recip),
                                 ExactTerm::E(c) => ExactTerm::E(c * &recip),
                             };
@@ -998,6 +1016,7 @@ fn scale_term(term: &ExactTerm, factor: &BigInt) -> ExactTerm {
     match term {
         ExactTerm::Rational(r) => ExactTerm::Rational(r * &f),
         ExactTerm::Sqrt(c, rad) => ExactTerm::Sqrt(c * &f, rad.clone()),
+        ExactTerm::SqrtPi(c) => ExactTerm::SqrtPi(c * &f),
         ExactTerm::Pi(c) => ExactTerm::Pi(c * &f),
         ExactTerm::E(c) => ExactTerm::E(c * &f),
     }
@@ -1010,6 +1029,7 @@ fn scale_term_rational(term: &ExactTerm, factor: &BigRational) -> ExactTerm {
     match term {
         ExactTerm::Rational(r) => ExactTerm::Rational(r * factor),
         ExactTerm::Sqrt(c, rad) => ExactTerm::Sqrt(c * factor, rad.clone()),
+        ExactTerm::SqrtPi(c) => ExactTerm::SqrtPi(c * factor),
         ExactTerm::Pi(c) => ExactTerm::Pi(c * factor),
         ExactTerm::E(c) => ExactTerm::E(c * factor),
     }
@@ -1036,6 +1056,15 @@ fn merge_term(terms: &mut Vec<ExactTerm>, new_term: ExactTerm) {
                         *existing_c = std::mem::replace(existing_c, BigRational::zero()) + new_c;
                         return;
                     }
+                }
+            }
+            terms.push(new_term);
+        }
+        ExactTerm::SqrtPi(new_c) => {
+            for t in terms.iter_mut() {
+                if let ExactTerm::SqrtPi(existing_c) = t {
+                    *existing_c = std::mem::replace(existing_c, BigRational::zero()) + new_c;
+                    return;
                 }
             }
             terms.push(new_term);
@@ -1081,6 +1110,11 @@ fn mul_terms(t1: &ExactTerm, t2: &ExactTerm) -> Option<ExactTerm> {
             let (simplified_c, simplified_r) = simplify_radical(new_coeff, new_rad);
             Some(ExactTerm::Sqrt(simplified_c, simplified_r))
         }
+        // √π 的两条规则：√π·√π = π（这是加 SqrtPi 项的**唯一动机**）；
+        // 其余含 √π 的组合（如 π 的 3/2 次幂）表示不了，走 _ => None 落到数值回退
+        (ExactTerm::SqrtPi(c1), ExactTerm::SqrtPi(c2)) => Some(ExactTerm::Pi(c1 * c2)),
+        (ExactTerm::Rational(r), ExactTerm::SqrtPi(c)) => Some(ExactTerm::SqrtPi(r * c)),
+        (ExactTerm::SqrtPi(c), ExactTerm::Rational(r)) => Some(ExactTerm::SqrtPi(r * c)),
         // 混合类型（如 sqrt * pi）不支持精确表示
         _ => None,
     }
@@ -1090,6 +1124,7 @@ fn is_term_zero(term: &ExactTerm) -> bool {
     match term {
         ExactTerm::Rational(r) => r.is_zero(),
         ExactTerm::Sqrt(c, _) => c.is_zero(),
+        ExactTerm::SqrtPi(c) => c.is_zero(),
         ExactTerm::Pi(c) => c.is_zero(),
         ExactTerm::E(c) => c.is_zero(),
     }
@@ -1187,7 +1222,7 @@ fn simplify_expr(expr: &mut ExactExpr) {
             ExactTerm::Sqrt(c, _) => {
                 nums.push(c.numer().abs());
             }
-            ExactTerm::Pi(c) | ExactTerm::E(c) => {
+            ExactTerm::Pi(c) | ExactTerm::E(c) | ExactTerm::SqrtPi(c) => {
                 nums.push(c.numer().abs());
             }
         }
@@ -1214,7 +1249,7 @@ fn simplify_expr(expr: &mut ExactExpr) {
                 ExactTerm::Sqrt(c, _) => {
                     *c = BigRational::new(c.numer() / &gcd, c.denom().clone());
                 }
-                ExactTerm::Pi(c) => {
+                ExactTerm::Pi(c) | ExactTerm::SqrtPi(c) => {
                     *c = BigRational::new(c.numer() / &gcd, c.denom().clone());
                 }
                 ExactTerm::E(c) => {

@@ -3,7 +3,7 @@ use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use hipercalc_core::bigfloat;
-use hipercalc_core::number::{ExactExpr, Number};
+use hipercalc_core::number::{ExactExpr, ExactTerm, Number};
 use hipercalc_core::trig::{self, AngleMode};
 
 /// 有效的单字母变量名
@@ -83,6 +83,7 @@ pub const FUNCTIONS: &[&str] = &[
     "fib",
     "catalan",
     "doublefac",
+    "gamma",
 ];
 
 /// 需要两个参数的函数（其余函数都是单参；`log` 有专门的报错文案，单独处理）
@@ -1189,6 +1190,61 @@ impl Evaluator {
                     _ => return Err(SEQUENCE_LIMIT.to_string()),
                 };
                 Ok(Number::from_bigint(double_factorial(nv)))
+            }
+            // 伽马函数：只给**精确**结果，不做数值近似（避免"看起来精确"的假象）
+            //   Γ(n)     = (n-1)!          —— 正整数
+            //   Γ(n+1/2) = (2n)!/(4^n·n!)·√π —— 正半整数，靠新加的 ExactTerm::SqrtPi 精确表示
+            "gamma" => {
+                let two = BigInt::from(2);
+                let err = "gamma 目前只支持正整数与正半整数（其余值需要数值近似，暂未开放）";
+                let r = args[0].as_rational().ok_or_else(|| err.to_string())?;
+                let (num, den) = (r.numer().clone(), r.denom().clone());
+                if den == BigInt::one() {
+                    // 正整数：Γ(n) = (n-1)!
+                    if num <= BigInt::from(0) {
+                        return Err("gamma 在 0 与负整数处是极点".to_string());
+                    }
+                    if num > BigInt::from(100_000) {
+                        return Err(SEQUENCE_LIMIT.to_string());
+                    }
+                    let mut acc = BigInt::from(1);
+                    let mut i = BigInt::from(2);
+                    while i < num {
+                        acc *= &i;
+                        i += BigInt::from(1);
+                    }
+                    return Ok(Number::from_bigint(acc));
+                }
+                if den == two {
+                    // 正半整数 x = m/2（m 为奇数）：Γ((2n+1)/2) = (2n)!/(4^n·n!)·√π，其中 n=(m-1)/2
+                    if num <= BigInt::from(0) {
+                        return Err(err.to_string());
+                    }
+                    let n = (&num - BigInt::from(1)) / BigInt::from(2);
+                    let n_u32 = match n.to_u32() {
+                        Some(v) if v <= 20_000 => v,
+                        _ => return Err(SEQUENCE_LIMIT.to_string()),
+                    };
+                    let mut num_fac = BigInt::from(1); // (2n)!
+                    let mut i = BigInt::from(2);
+                    let twon = &n * BigInt::from(2);
+                    while i <= twon {
+                        num_fac *= &i;
+                        i += BigInt::from(1);
+                    }
+                    let mut n_fac = BigInt::from(1); // n!
+                    let mut i = BigInt::from(2);
+                    while i <= n {
+                        n_fac *= &i;
+                        i += BigInt::from(1);
+                    }
+                    let coeff = BigRational::new(num_fac, BigInt::from(4).pow(n_u32) * n_fac);
+                    return Ok(Number::Exact(ExactExpr {
+                        terms: vec![ExactTerm::SqrtPi(coeff)],
+                        denominator: BigInt::one(),
+                    }));
+                }
+                Err(err.to_string())
             }
             "mod" => args[0].modulo(&args[1]),
             "idiv" => args[0].idiv(&args[1]),
