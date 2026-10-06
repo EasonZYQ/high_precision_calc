@@ -149,6 +149,19 @@
 
 ---
 
+## clippy 清理的最终状态（本次）
+
+- **core 侧 0 告警** ✓；**app 侧 150 → 10** ✓
+  - `cargo clippy --fix` 一趟清掉 86 条机器可修复项（`collapsible_if` 68 等），
+    18 文件净减 86 行，**178 项测试验证语义未变**。
+  - 余下用**带理由的 crate 级豁免**处理 3 类判断项（写在 `lib.rs` 顶部并逐条注明）：
+    `needless_range_loop`（22 条，全在线性代数/数值代码 —— 索引循环比迭代器链更贴近公式）、
+    `type_complexity`（6 条）、`too_many_arguments`（1 条，`state::save` 的固有形状）。
+  - 还剩 **10 条纯外观项**（空行、下划线分组、`sort_by_key` 等），建议下次一批清完。
+- **CI 已升级为拦 correctness**：
+  `cargo clippy --workspace --all-targets -- -D clippy::correctness`
+  —— 这条命令的**退出码验证过是 0**（不是拿告警计数当判据；这点之前判断错过一次）。
+
 ## 已登记但未做的技术债
 
 1. **左括号自动配对**（`(` 自动补 `)` 且光标落在中间）——  
