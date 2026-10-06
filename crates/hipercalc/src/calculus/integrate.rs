@@ -140,66 +140,60 @@ fn try_integrate(
         return Ok(Some(div(pow(f.clone(), num(2)), mul(num(2), a))));
     }
     // 幂：u^n（n 常数有理数）
-    if let Expr::Pow(base, exp) = f {
-        if !super::has_free_var_named(exp, var) {
-            if let Some(n) = constant_value(ev, exp).and_then(|v| v.as_rational()) {
-                if let Some((a, _b)) = linear_parts(ev, base, var)? {
-                    use num_traits::One;
-                    let minus_one =
-                        num_rational::BigRational::from_integer(num_bigint::BigInt::from(-1));
-                    if n == minus_one {
-                        // ∫u⁻¹ du = ln|u| / a
-                        return Ok(Some(div(call("ln", call("abs", base.as_ref().clone())), a)));
-                    }
-                    let np1 = Number::from_rational(n.clone() + num_rational::BigRational::one());
-                    return Ok(Some(div(
-                        pow(
-                            base.as_ref().clone(),
-                            Expr::Number(Number::from_rational(
-                                n + num_rational::BigRational::one(),
-                            )),
-                        ),
-                        mul(a, Expr::Number(np1)),
-                    )));
-                }
-            }
+    if let Expr::Pow(base, exp) = f
+        && !super::has_free_var_named(exp, var)
+        && let Some(n) = constant_value(ev, exp).and_then(|v| v.as_rational())
+        && let Some((a, _b)) = linear_parts(ev, base, var)?
+    {
+        use num_traits::One;
+        let minus_one = num_rational::BigRational::from_integer(num_bigint::BigInt::from(-1));
+        if n == minus_one {
+            // ∫u⁻¹ du = ln|u| / a
+            return Ok(Some(div(call("ln", call("abs", base.as_ref().clone())), a)));
         }
+        let np1 = Number::from_rational(n.clone() + num_rational::BigRational::one());
+        return Ok(Some(div(
+            pow(
+                base.as_ref().clone(),
+                Expr::Number(Number::from_rational(n + num_rational::BigRational::one())),
+            ),
+            mul(a, Expr::Number(np1)),
+        )));
     }
     // 根式先归约成有理指数幂，交给幂规则（`sqrt(x)` 是 Function 而不是 Pow）
-    if let Expr::Function(name, args) = f {
-        if args.len() == 1 {
-            let exp = match name.as_str() {
-                "sqrt" | "sqr" => Some(num_rational::BigRational::new(
-                    num_bigint::BigInt::from(1),
-                    num_bigint::BigInt::from(2),
-                )),
-                "cbrt" => Some(num_rational::BigRational::new(
-                    num_bigint::BigInt::from(1),
-                    num_bigint::BigInt::from(3),
-                )),
-                _ => None,
-            };
-            if let Some(r) = exp {
-                let as_pow = pow(args[0].clone(), Expr::Number(Number::from_rational(r)));
-                return try_integrate(ev, &as_pow, var);
-            }
+    if let Expr::Function(name, args) = f
+        && args.len() == 1
+    {
+        let exp = match name.as_str() {
+            "sqrt" | "sqr" => Some(num_rational::BigRational::new(
+                num_bigint::BigInt::from(1),
+                num_bigint::BigInt::from(2),
+            )),
+            "cbrt" => Some(num_rational::BigRational::new(
+                num_bigint::BigInt::from(1),
+                num_bigint::BigInt::from(3),
+            )),
+            _ => None,
+        };
+        if let Some(r) = exp {
+            let as_pow = pow(args[0].clone(), Expr::Number(Number::from_rational(r)));
+            return try_integrate(ev, &as_pow, var);
         }
     }
     // 基本表：f = g(u)，u = a·var + b 线性
-    if let Expr::Function(name, args) = f {
-        if args.len() == 1 {
-            if let Some((a, _b)) = linear_parts(ev, &args[0], var)? {
-                let u = args[0].clone();
-                let integral = match name.as_str() {
-                    "exp" => Some(call("exp", u.clone())),
-                    "sin" => Some(neg(call("cos", u.clone()))),
-                    "cos" => Some(call("sin", u.clone())),
-                    _ => None,
-                };
-                if let Some(g) = integral {
-                    return Ok(Some(div(g, a)));
-                }
-            }
+    if let Expr::Function(name, args) = f
+        && args.len() == 1
+        && let Some((a, _b)) = linear_parts(ev, &args[0], var)?
+    {
+        let u = args[0].clone();
+        let integral = match name.as_str() {
+            "exp" => Some(call("exp", u.clone())),
+            "sin" => Some(neg(call("cos", u.clone()))),
+            "cos" => Some(call("sin", u.clone())),
+            _ => None,
+        };
+        if let Some(g) = integral {
+            return Ok(Some(div(g, a)));
         }
     }
     // sec²u → tan u / a
@@ -224,48 +218,35 @@ fn special_reciprocal(
         return Ok(None);
     };
     if constant_value(ev, numer)
-        .map(|v| v.as_rational())
-        .flatten()
+        .and_then(|v| v.as_rational())
         .is_none()
     {
         return Ok(None);
     }
     // 1/(1+x²)
-    if let Expr::Binary(one, BinOp::Add, sq) = denom.as_ref() {
-        if is_one_expr(ev, one) {
-            if let Expr::Pow(base, e2) = sq.as_ref() {
-                if is_two_expr(ev, e2) {
-                    if let Some((a, _)) = linear_parts(ev, base, var)? {
-                        // 分子必须是常数 1
-                        if is_one_expr(ev, numer) {
-                            return Ok(Some((a, base.as_ref().clone(), ReciprocalKind::Arctan)));
-                        }
-                    }
-                }
-            }
+    if let Expr::Binary(one, BinOp::Add, sq) = denom.as_ref()
+        && is_one_expr(ev, one)
+        && let Expr::Pow(base, e2) = sq.as_ref()
+        && is_two_expr(ev, e2)
+        && let Some((a, _)) = linear_parts(ev, base, var)?
+    {
+        // 分子必须是常数 1
+        if is_one_expr(ev, numer) {
+            return Ok(Some((a, base.as_ref().clone(), ReciprocalKind::Arctan)));
         }
     }
     // 1/sqrt(1-x²)
-    if let Expr::Function(name, args) = denom.as_ref() {
-        if name == "sqrt" && args.len() == 1 {
-            if let Expr::Binary(one, BinOp::Sub, sq) = &args[0] {
-                if is_one_expr(ev, one) {
-                    if let Expr::Pow(base, e2) = &**sq {
-                        if is_two_expr(ev, e2) {
-                            if let Some((a, _)) = linear_parts(ev, base, var)? {
-                                if is_one_expr(ev, numer) {
-                                    return Ok(Some((
-                                        a,
-                                        base.as_ref().clone(),
-                                        ReciprocalKind::Arcsin,
-                                    )));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    if let Expr::Function(name, args) = denom.as_ref()
+        && name == "sqrt"
+        && args.len() == 1
+        && let Expr::Binary(one, BinOp::Sub, sq) = &args[0]
+        && is_one_expr(ev, one)
+        && let Expr::Pow(base, e2) = &**sq
+        && is_two_expr(ev, e2)
+        && let Some((a, _)) = linear_parts(ev, base, var)?
+        && is_one_expr(ev, numer)
+    {
+        return Ok(Some((a, base.as_ref().clone(), ReciprocalKind::Arcsin)));
     }
     Ok(None)
 }
@@ -282,12 +263,12 @@ fn sec_squared(
     if !is_two_expr(ev, e2) {
         return Ok(None);
     }
-    if let Expr::Function(name, args) = base.as_ref() {
-        if name == "sec" && args.len() == 1 {
-            if let Some((a, _)) = linear_parts(ev, &args[0], var)? {
-                return Ok(Some((a, args[0].clone())));
-            }
-        }
+    if let Expr::Function(name, args) = base.as_ref()
+        && name == "sec"
+        && args.len() == 1
+        && let Some((a, _)) = linear_parts(ev, &args[0], var)?
+    {
+        return Ok(Some((a, args[0].clone())));
     }
     Ok(None)
 }
@@ -533,10 +514,10 @@ fn singular_inside(
     for d in &denoms {
         // 分母在端点上为零也可能发散（如 ∫_0^1 1/x），一并算奇点
         for x in [a.clone(), b.clone()] {
-            if let Ok(v) = ev.evaluate_with_var(d, var, &x) {
-                if v.is_zero() {
-                    return Ok(true);
-                }
+            if let Ok(v) = ev.evaluate_with_var(d, var, &x)
+                && v.is_zero()
+            {
+                return Ok(true);
             }
         }
         let Some(vc) = var.chars().next() else {
@@ -623,7 +604,7 @@ fn gauss_legendre(n: usize, prec: usize) -> Vec<(BigFloat, BigFloat)> {
     let pi = BigFloat::pi(prec);
     let two_n_plus_1 = BigFloat::from_u64((2 * n + 1) as u64);
     let two = BigFloat::from_u64(2);
-    for i in 0..(n + 1) / 2 {
+    for i in 0..n.div_ceil(2) {
         // 第 i 个正根的初值：cos(π·(i + 3/4) / (n + 1/2))
         //   = cos(π(4i+3) / (4n+2)) = cos(π(4i+3) / (2(2n+1)))
         // 注意分母是 **2(2n+1)**；写成 4(2n+1) 会让所有初值挤到最大根附近，

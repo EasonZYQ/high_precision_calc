@@ -134,11 +134,7 @@ pub fn newton_solve(
     match evaluator.evaluate_with_var(f_expr, &var.to_string(), &Number::Approx(x.clone())) {
         Ok(v) if !v.is_complex() => {
             let bf = v.to_approx();
-            if bf.value.abs()
-                <= BigInt::from(10)
-                    .pow(bigfloat::precision().div_ceil(2) as u32)
-                    .into()
-            {
+            if bf.value.abs() <= BigInt::from(10).pow(bigfloat::precision().div_ceil(2) as u32) {
                 Some(x.rounded(bigfloat::precision()))
             } else {
                 None
@@ -199,11 +195,10 @@ fn collect_terms(
             } else if name == "ans" {
                 // ans 取上一次结果的实际值，而不是常数 0
                 terms.push((evaluator.ans.clone(), 0));
-            } else if let Some(val) = evaluator.vars.get(name) {
+            } else {
+                let val = evaluator.vars.get(name)?;
                 // 已存储的变量（/let，全大写）作为常数项
                 terms.push((val.clone(), 0));
-            } else {
-                return None;
             }
             Some(())
         }
@@ -266,47 +261,44 @@ fn collect_terms(
         }
         Expr::Pow(base, exp) => {
             // 底数是变量且指数是常数整数（快捷路径）
-            if let Expr::Variable(name) = base.as_ref() {
-                if name.len() == 1 && name.chars().next().unwrap() == var {
-                    if let Expr::Number(n) = exp.as_ref() {
-                        if let Some(rat) = n.as_rational() {
-                            if rat.is_integer() {
-                                let deg_u32 = rat.to_integer().to_u32()?;
-                                terms.push((Number::from_int(1), deg_u32));
-                                return Some(());
-                            }
-                        }
-                    }
-                }
+            if let Expr::Variable(name) = base.as_ref()
+                && name.len() == 1
+                && name.chars().next().unwrap() == var
+                && let Expr::Number(n) = exp.as_ref()
+                && let Some(rat) = n.as_rational()
+                && rat.is_integer()
+            {
+                let deg_u32 = rat.to_integer().to_u32()?;
+                terms.push((Number::from_int(1), deg_u32));
+                return Some(());
             }
             // 一般底数的小整数幂：展开为连乘（如 (x+1)^2）
-            if let Expr::Number(n) = exp.as_ref() {
-                if let Some(rat) = n.as_rational() {
-                    if rat.is_integer() {
-                        let k = rat.to_integer();
-                        if k.is_zero() {
-                            terms.push((Number::from_int(1), 0));
-                            return Some(());
-                        }
-                        if let Some(k) = k.to_u32() {
-                            if (2..=64).contains(&k) {
-                                let mut base_terms = Vec::new();
-                                collect_terms(evaluator, base, var, &mut base_terms)?;
-                                let mut acc = base_terms.clone();
-                                for _ in 1..k {
-                                    let mut new_acc = Vec::new();
-                                    for (c1, d1) in &acc {
-                                        for (c2, d2) in &base_terms {
-                                            new_acc.push((c1.mul(c2), d1 + d2));
-                                        }
-                                    }
-                                    acc = new_acc;
-                                }
-                                terms.extend(acc);
-                                return Some(());
+            if let Expr::Number(n) = exp.as_ref()
+                && let Some(rat) = n.as_rational()
+                && rat.is_integer()
+            {
+                let k = rat.to_integer();
+                if k.is_zero() {
+                    terms.push((Number::from_int(1), 0));
+                    return Some(());
+                }
+                if let Some(k) = k.to_u32()
+                    && (2..=64).contains(&k)
+                {
+                    let mut base_terms = Vec::new();
+                    collect_terms(evaluator, base, var, &mut base_terms)?;
+                    let mut acc = base_terms.clone();
+                    for _ in 1..k {
+                        let mut new_acc = Vec::new();
+                        for (c1, d1) in &acc {
+                            for (c2, d2) in &base_terms {
+                                new_acc.push((c1.mul(c2), d1 + d2));
                             }
                         }
+                        acc = new_acc;
                     }
+                    terms.extend(acc);
+                    return Some(());
                 }
             }
             // 一般幂，不支持直接提取

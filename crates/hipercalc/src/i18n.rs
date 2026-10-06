@@ -109,7 +109,7 @@ pub fn detect_system() -> Lang {
                 _ => Lang::ZhCn,
             };
         }
-        return Lang::En;
+        Lang::En
     }
     // 2) 其它平台：退回环境变量（zh* → 中文，其余非空 → 英文）
     #[cfg(not(windows))]
@@ -213,11 +213,11 @@ fn fill(template: &str, values: &[String]) -> String {
         }
         if !num.is_empty() && chars.peek() == Some(&'}') {
             chars.next();
-            if let Ok(k) = num.parse::<usize>() {
-                if let Some(v) = values.get(k) {
-                    out.push_str(v);
-                    continue;
-                }
+            if let Ok(k) = num.parse::<usize>()
+                && let Some(v) = values.get(k)
+            {
+                out.push_str(v);
+                continue;
             }
         }
         out.push('{');
@@ -290,11 +290,11 @@ fn replace_best(run: &str, lang: Lang, depth: usize) -> Option<String> {
             }
             if !num.is_empty() && chars.peek() == Some(&'}') {
                 chars.next();
-                if let Ok(k) = num.parse::<usize>() {
-                    if let Some((_, _, v)) = values.get(k) {
-                        filled.push_str(&translate_run(v, depth - 1));
-                        continue;
-                    }
+                if let Ok(k) = num.parse::<usize>()
+                    && let Some((_, _, v)) = values.get(k)
+                {
+                    filled.push_str(&translate_run(v, depth - 1));
+                    continue;
                 }
                 // 占位符越界（模板与运行时不一致）：原样保留
                 filled.push('{');

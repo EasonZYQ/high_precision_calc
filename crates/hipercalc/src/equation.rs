@@ -74,7 +74,7 @@ pub fn is_polynomial(expr: &Expr) -> bool {
         Expr::Sd(_) => false,
         Expr::Factor(inner) => is_polynomial(inner),
         Expr::Equation(left, right) => is_polynomial(left) && is_polynomial(right),
-        Expr::System(eqs) => eqs.iter().all(|e| is_polynomial(e)),
+        Expr::System(eqs) => eqs.iter().all(is_polynomial),
     }
 }
 
@@ -154,7 +154,7 @@ fn check_linear(expr: &Expr) -> bool {
         Expr::Sd(_) => false,
         Expr::Factor(inner) => check_linear(inner),
         Expr::Equation(l, r) => check_linear(l) && check_linear(r),
-        Expr::System(eqs) => eqs.iter().all(|e| check_linear(e)),
+        Expr::System(eqs) => eqs.iter().all(check_linear),
     }
 }
 
@@ -168,7 +168,7 @@ fn has_variable(expr: &Expr) -> bool {
         Expr::Sd(inner) => has_variable(inner),
         Expr::Factor(inner) => has_variable(inner),
         Expr::Equation(l, r) => has_variable(l) || has_variable(r),
-        Expr::System(eqs) => eqs.iter().any(|e| has_variable(e)),
+        Expr::System(eqs) => eqs.iter().any(has_variable),
         Expr::Number(_) => false,
     }
 }

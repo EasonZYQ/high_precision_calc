@@ -677,10 +677,8 @@ fn unmatched_brackets(line: &str, pos: usize) -> Vec<usize> {
     for (i, c) in chars.iter().enumerate() {
         match c {
             '(' => stack.push(i),
-            ')' => {
-                if stack.pop().is_none() {
-                    bad.push(i);
-                }
+            ')' if stack.pop().is_none() => {
+                bad.push(i);
             }
             _ => {}
         }
@@ -1257,26 +1255,25 @@ impl Hinter for CalcHelper {
         // 只在**光标位于行尾**时显示：rustyline 的 hint 只能追加在整行末尾，
         // 光标停在行中间时它会跑到最右边、看起来像行尾的垃圾（用户反馈过）。
         // 行尾正是正常打字的位置，此时提示就贴在手边。
-        if pos == line.len() {
-            if let Some((name, _open, argc)) = enclosing_function_call(line, pos) {
-                if let Some(m) = fn_meta(&name) {
-                    let (kind, text) = if argc > m.max {
-                        (
-                            HintKind::TooMany,
-                            i18n::fmt("参数过多：最多 {0} 个", &[&m.max.to_string()]),
-                        )
-                    } else if argc < m.min {
-                        // 渐进提示：只显示还没写的参数
-                        (HintKind::Incomplete, remaining_args_hint(m.sig, argc))
-                    } else {
-                        (HintKind::Normal, remaining_args_hint(m.sig, argc))
-                    };
-                    self.hint_kind.set(kind);
-                    return Some(ArgHint {
-                        text: format!("  {}", text),
-                    });
-                }
-            }
+        if pos == line.len()
+            && let Some((name, _open, argc)) = enclosing_function_call(line, pos)
+            && let Some(m) = fn_meta(&name)
+        {
+            let (kind, text) = if argc > m.max {
+                (
+                    HintKind::TooMany,
+                    i18n::fmt("参数过多：最多 {0} 个", &[&m.max.to_string()]),
+                )
+            } else if argc < m.min {
+                // 渐进提示：只显示还没写的参数
+                (HintKind::Incomplete, remaining_args_hint(m.sig, argc))
+            } else {
+                (HintKind::Normal, remaining_args_hint(m.sig, argc))
+            };
+            self.hint_kind.set(kind);
+            return Some(ArgHint {
+                text: format!("  {}", text),
+            });
         }
         self.hint_kind.set(HintKind::Normal);
         // B. 退回原有的"行尾"提示（指令用法 / 函数签名）
@@ -2675,62 +2672,56 @@ fn handle_equation(left: &parser::Expr, right: &parser::Expr, state: &mut AppSta
     let var = variables[0];
 
     // 尝试多项式求解
-    if equation::is_polynomial(&eq_expr) {
-        if let Some(coeffs) = solver_poly::extract_polynomial(&state.evaluator, &eq_expr, var) {
-            // 恒等式：所有系数为 0（如 x-x=0、5=5）
-            if coeffs.iter().all(|c| c.is_zero()) {
-                return colorize_result("恒等式：对变量的任意取值均成立", &state.colors);
-            }
-            if coeffs.len() == 2 {
-                // bx + c = 0 一次方程
-                let b = &coeffs[1];
-                let c = &coeffs[0];
-                let solutions = solver_poly::solve_quadratic(&Number::from_int(0), b, c);
-                return format_solutions(&solutions, var, state);
-            } else if coeffs.len() == 3 {
-                // ax^2 + bx + c = 0 二次方程
-                let a = &coeffs[2];
-                let b = &coeffs[1];
-                let c = &coeffs[0];
-                let solutions = solver_poly::solve_quadratic(a, b, c);
-                return format_solutions(&solutions, var, state);
-            } else {
-                // 高次方程——分解后求全部根（含复数）
-                match solver_poly::solve_poly_full(&coeffs) {
-                    Ok(sols) if !sols.is_empty() => {
-                        return format_solutions(&sols, var, state);
-                    }
-                    // 规模护栏明确拒绝（次数过高）：直接报错，不回退牛顿单根——
-                    // 高次多项式的牛顿求值代价极高（x^5000 每次求值都要算 5000 次幂），
-                    // 回退会让界面长时间无响应且只给出一个根
-                    Err(msg) if msg.starts_with(solver_poly::DEGREE_GUARD_PREFIX) => {
-                        return format!("{}: {}", "错误".color(state.colors.error).bold(), msg);
-                    }
-                    _ => {
-                        if let Some(root) = newton_with_guesses(&state.evaluator, &eq_expr, var) {
-                            let sol = solver_poly::PolySolution::Real(Number::Approx(root));
-                            return colorize_result(
-                                &format!(
-                                    "{} 的一个解: {} = {}",
-                                    variables
-                                        .iter()
-                                        .map(|c| c.to_string())
-                                        .collect::<Vec<_>>()
-                                        .join(","),
-                                    var,
-                                    solver_poly::format_solution(
-                                        &sol,
-                                        state.evaluator.display_mode
-                                    )
-                                ),
-                                &state.colors,
-                            );
-                        } else {
-                            return format!(
-                                "{}",
-                                "未能找到实数根".color(state.colors.error).bold()
-                            );
-                        }
+    if equation::is_polynomial(&eq_expr)
+        && let Some(coeffs) = solver_poly::extract_polynomial(&state.evaluator, &eq_expr, var)
+    {
+        // 恒等式：所有系数为 0（如 x-x=0、5=5）
+        if coeffs.iter().all(|c| c.is_zero()) {
+            return colorize_result("恒等式：对变量的任意取值均成立", &state.colors);
+        }
+        if coeffs.len() == 2 {
+            // bx + c = 0 一次方程
+            let b = &coeffs[1];
+            let c = &coeffs[0];
+            let solutions = solver_poly::solve_quadratic(&Number::from_int(0), b, c);
+            return format_solutions(&solutions, var, state);
+        } else if coeffs.len() == 3 {
+            // ax^2 + bx + c = 0 二次方程
+            let a = &coeffs[2];
+            let b = &coeffs[1];
+            let c = &coeffs[0];
+            let solutions = solver_poly::solve_quadratic(a, b, c);
+            return format_solutions(&solutions, var, state);
+        } else {
+            // 高次方程——分解后求全部根（含复数）
+            match solver_poly::solve_poly_full(&coeffs) {
+                Ok(sols) if !sols.is_empty() => {
+                    return format_solutions(&sols, var, state);
+                }
+                // 规模护栏明确拒绝（次数过高）：直接报错，不回退牛顿单根——
+                // 高次多项式的牛顿求值代价极高（x^5000 每次求值都要算 5000 次幂），
+                // 回退会让界面长时间无响应且只给出一个根
+                Err(msg) if msg.starts_with(solver_poly::DEGREE_GUARD_PREFIX) => {
+                    return format!("{}: {}", "错误".color(state.colors.error).bold(), msg);
+                }
+                _ => {
+                    if let Some(root) = newton_with_guesses(&state.evaluator, &eq_expr, var) {
+                        let sol = solver_poly::PolySolution::Real(Number::Approx(root));
+                        return colorize_result(
+                            &format!(
+                                "{} 的一个解: {} = {}",
+                                variables
+                                    .iter()
+                                    .map(|c| c.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(","),
+                                var,
+                                solver_poly::format_solution(&sol, state.evaluator.display_mode)
+                            ),
+                            &state.colors,
+                        );
+                    } else {
+                        return format!("{}", "未能找到实数根".color(state.colors.error).bold());
                     }
                 }
             }

@@ -75,12 +75,12 @@ pub fn limit(
     //    代入值并不等于极限（`lim(floor(x), x, 0)` 代入得 0，实际左右极限是 -1 与 0）。
     if let Target::Finite = target {
         let a = constant_value(ev, point).ok_or_else(|| ERROR_LIMIT_POINT.to_string())?;
-        if let Ok(v) = ev.evaluate_with_var(f, var, &a) {
-            if !v.is_complex() {
-                let cand = LimitValue::Finite(v.clone());
-                if numeric_allows(ev, f, var, &a, &cand) {
-                    return Ok(Expr::Number(v));
-                }
+        if let Ok(v) = ev.evaluate_with_var(f, var, &a)
+            && !v.is_complex()
+        {
+            let cand = LimitValue::Finite(v.clone());
+            if numeric_allows(ev, f, var, &a, &cand) {
+                return Ok(Expr::Number(v));
             }
         }
     }
@@ -297,18 +297,18 @@ fn numeric_limit(
                     } else {
                         disagree_streak = 0;
                     }
-                    if close(l, r, tol) {
-                        if let (Some(pl), Some(pr)) = (&prev_l, &prev_r) {
-                            if close(pl, l, tol) && close(pr, r, tol) {
-                                let avg = hipercalc_core::number::Number::div(
-                                    &hipercalc_core::number::Number::add(l, r),
-                                    &Number::from_int(2),
-                                );
-                                // 收敛值低于显示精度 ⇒ 按精确 0（`lim(sin(x)/x,x,inf)` 应是 0，
-                                // 而不是 `-9.9e-29` 这种把噪声当结果）
-                                return Ok(Expr::Number(snap_tiny(avg)));
-                            }
-                        }
+                    if close(l, r, tol)
+                        && let (Some(pl), Some(pr)) = (&prev_l, &prev_r)
+                        && close(pl, l, tol)
+                        && close(pr, r, tol)
+                    {
+                        let avg = hipercalc_core::number::Number::div(
+                            &hipercalc_core::number::Number::add(l, r),
+                            &Number::from_int(2),
+                        );
+                        // 收敛值低于显示精度 ⇒ 按精确 0（`lim(sin(x)/x,x,inf)` 应是 0，
+                        // 而不是 `-9.9e-29` 这种把噪声当结果）
+                        return Ok(Expr::Number(snap_tiny(avg)));
                     }
                 }
                 if l.is_some() {
@@ -322,15 +322,15 @@ fn numeric_limit(
             }
             // 只有**单侧**可用时（如 sqrt(x) 在 0 的左邻域无定义）才用可用的一侧；
             // 两侧都取到过值却没收敛 ⇒ 不能挑一侧当答案
-            if prev_l.is_none() {
-                if let Some(v) = last_r {
-                    return Ok(Expr::Number(snap_tiny(v)));
-                }
+            if prev_l.is_none()
+                && let Some(v) = last_r
+            {
+                return Ok(Expr::Number(snap_tiny(v)));
             }
-            if prev_r.is_none() {
-                if let Some(v) = last_l {
-                    return Ok(Expr::Number(snap_tiny(v)));
-                }
+            if prev_r.is_none()
+                && let Some(v) = last_l
+            {
+                return Ok(Expr::Number(snap_tiny(v)));
             }
             Err(ERROR_LIMIT_UNDECIDED.to_string())
         }
@@ -349,10 +349,10 @@ fn numeric_limit(
                 if v.is_complex() {
                     continue;
                 }
-                if let Some(p) = &prev {
-                    if close(p, &v, tol) {
-                        return Ok(Expr::Number(snap_tiny(v)));
-                    }
+                if let Some(p) = &prev
+                    && close(p, &v, tol)
+                {
+                    return Ok(Expr::Number(snap_tiny(v)));
                 }
                 prev = Some(v);
             }

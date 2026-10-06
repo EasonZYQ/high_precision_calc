@@ -433,7 +433,7 @@ fn solve_with_template(
     // 复验：把参数解代回原模板（数值抽样）看是否满足每个坐标
     verify_solution(&t.rhs, var, &unknowns, &forms, evaluator, pts)?;
 
-    let params: Vec<(String, LinForm)> = unknowns.iter().cloned().zip(forms.into_iter()).collect();
+    let params: Vec<(String, LinForm)> = unknowns.iter().cloned().zip(forms).collect();
     Ok(FitSolution {
         params,
         free,
@@ -867,10 +867,10 @@ mod tests {
                 let sol = solve_polynomial_fit(&fit.points, fit.template.as_ref(), &ev)?;
                 let mut lines = format_fit_params(&sol, mode);
                 lines.push(format_fit_solution(&sol, mode));
-                if sol.all_constant() {
-                    if let Some(v) = format_vertex_form(&sol.coeffs, sol.var, mode) {
-                        lines.push(format!("y = {}", v));
-                    }
+                if sol.all_constant()
+                    && let Some(v) = format_vertex_form(&sol.coeffs, sol.var, mode)
+                {
+                    lines.push(format!("y = {}", v));
                 }
                 Ok(lines)
             }

@@ -101,15 +101,15 @@ enum Data {
 
 /// 判别规则（**精确，不靠猜**）：4 个参数且第 2 个是变量 ⇒ 范围形态；否则按数据列表。
 fn parse_data(name: &str, args: &[Expr]) -> Result<Data, String> {
-    if args.len() == 4 {
-        if let Expr::Variable(k) = &args[1] {
-            return Ok(Data::Range(
-                args[0].clone(),
-                Expr::Variable(k.clone()),
-                args[2].clone(),
-                args[3].clone(),
-            ));
-        }
+    if args.len() == 4
+        && let Expr::Variable(k) = &args[1]
+    {
+        return Ok(Data::Range(
+            args[0].clone(),
+            Expr::Variable(k.clone()),
+            args[2].clone(),
+            args[3].clone(),
+        ));
     }
     let items = match args {
         [Expr::Function(n, xs)] if n == "list" => xs.clone(),
@@ -157,7 +157,7 @@ fn count_of(data: &Data) -> Expr {
 fn sum_of(data: &Data, term: impl Fn(&Expr) -> Expr) -> Expr {
     match data {
         Data::Items(xs) => {
-            let mut it = xs.iter().map(|x| term(x));
+            let mut it = xs.iter().map(&term);
             let first = it.next().expect("parse_data 已保证 ≥2 项");
             it.fold(first, add)
         }
@@ -278,14 +278,14 @@ fn expand_corr(args: Vec<Expr>) -> Result<Expr, String> {
         return Err("corr 用法：corr(x, y, k, a, b) 或 corr([x1, …], [y1, …])".to_string());
     };
     // 两个数据源的长度必须一致（列表形态能立刻查；范围形态由用户自己保证）
-    if let (Data::Items(xs), Data::Items(ys)) = (&dx, &dy) {
-        if xs.len() != ys.len() {
-            return Err(format!(
-                "corr 的两组数据长度必须相同（当前 {} 与 {}）",
-                xs.len(),
-                ys.len()
-            ));
-        }
+    if let (Data::Items(xs), Data::Items(ys)) = (&dx, &dy)
+        && xs.len() != ys.len()
+    {
+        return Err(format!(
+            "corr 的两组数据长度必须相同（当前 {} 与 {}）",
+            xs.len(),
+            ys.len()
+        ));
     }
     let nx = count_of(&dx);
     let ny = count_of(&dy);

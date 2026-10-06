@@ -127,7 +127,7 @@ pub fn format_prime_factorization(n: &BigInt) -> Result<String, String> {
 fn factor_u64(mut m: u64, out: &mut Vec<BigInt>) -> Result<(), String> {
     // 1) 小素数表
     for &p in small_primes() {
-        while m % p == 0 {
+        while m.is_multiple_of(p) {
             out.push(BigInt::from(p));
             m /= p;
         }
@@ -146,7 +146,7 @@ fn factor_u64(mut m: u64, out: &mut Vec<BigInt>) -> Result<(), String> {
         if d > TRIAL_MAX || d.checked_mul(d).is_none_or(|dd| dd > m) {
             break;
         }
-        while m % d == 0 {
+        while m.is_multiple_of(d) {
             out.push(BigInt::from(d));
             m /= d;
         }
@@ -226,13 +226,13 @@ fn is_prime_u64(n: u64) -> bool {
         return false;
     }
     for &p in small_primes() {
-        if n % p == 0 {
+        if n.is_multiple_of(p) {
             return n == p;
         }
     }
     let mut d = n - 1;
     let mut r = 0u32;
-    while d % 2 == 0 {
+    while d.is_multiple_of(2) {
         d /= 2;
         r += 1;
     }
@@ -257,7 +257,7 @@ fn is_prime_u64(n: u64) -> bool {
 ///
 /// `n` 必须是**合数**且已排除小素因子。
 fn pollard_u64(n: u64, budget: u64) -> Option<u64> {
-    if n % 2 == 0 {
+    if n.is_multiple_of(2) {
         return Some(2);
     }
     let mut used = 0u64;
@@ -576,8 +576,8 @@ mod tests {
             let want = !matches!(n, 4 | 561 | 1105 | 1729 | 2465 | 2821 | 6601);
             assert_eq!(is_prime_u64(n), want, "is_prime_u64({n})");
         }
-        assert_eq!(is_prime_u64(1_345_676_543_465_434_567), true);
-        assert_eq!(is_prime_u64(1_000_003 * 1_000_033), false);
+        assert!(is_prime_u64(1_345_676_543_465_434_567));
+        assert!(!is_prime_u64(1_000_003 * 1_000_033));
     }
 
     #[test]

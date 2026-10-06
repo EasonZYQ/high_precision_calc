@@ -379,9 +379,7 @@ fn bounds(ev: &crate::parser::Evaluator, a: &Expr, b: &Expr) -> Result<(i64, i64
 }
 
 fn eval_at(ev: &crate::parser::Evaluator, f: &Expr, var: &str, k: i64) -> Result<Number, String> {
-    let v = ev
-        .evaluate_with_var(f, var, &Number::from_int(k))
-        .map_err(|e| e)?;
+    let v = ev.evaluate_with_var(f, var, &Number::from_int(k))?;
     if v.is_complex() {
         return Err(ERROR_SUM_COMPLEX.to_string());
     }
@@ -389,7 +387,7 @@ fn eval_at(ev: &crate::parser::Evaluator, f: &Expr, var: &str, k: i64) -> Result
 }
 
 fn eval_const(ev: &crate::parser::Evaluator, f: &Expr) -> Result<Number, String> {
-    let v = ev.evaluate_with_vars(f, &[]).map_err(|e| e)?;
+    let v = ev.evaluate_with_vars(f, &[])?;
     if v.is_complex() {
         return Err(ERROR_SUM_COMPLEX.to_string());
     }
@@ -417,7 +415,7 @@ fn poly_coeffs(ev: &crate::parser::Evaluator, f: &Expr, var: &str) -> Option<Vec
 }
 
 fn factorial(n: i64) -> Result<Number, String> {
-    if n < 0 || n > super::FACTORIAL_MAX {
+    if !(0..=super::FACTORIAL_MAX).contains(&n) {
         return Err(ERROR_SUM_NO_CLOSED_FORM.to_string());
     }
     let mut acc = BigInt::one();

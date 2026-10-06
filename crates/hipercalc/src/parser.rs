@@ -595,15 +595,15 @@ impl Parser {
         }
 
         // 科学计数法: <尾数>e[±]<整数指数>，如 1e3、2.5e-2、1.2E+4
-        if self.peek().map_or(false, |c| c == 'e' || c == 'E') {
+        if self.peek().is_some_and(|c| c == 'e' || c == 'E') {
             let save_pos = self.pos;
             self.next(); // 跳过 e/E
             let exp_start = self.pos;
-            if self.peek().map_or(false, |c| c == '+' || c == '-') {
+            if self.peek().is_some_and(|c| c == '+' || c == '-') {
                 self.next();
             }
-            if self.peek().map_or(false, |c| c.is_ascii_digit()) {
-                while self.peek().map_or(false, |c| c.is_ascii_digit()) {
+            if self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                while self.peek().is_some_and(|c| c.is_ascii_digit()) {
                     self.next();
                 }
                 let exp_str: String = self.input[exp_start..self.pos].iter().collect();
@@ -936,7 +936,7 @@ fn fibonacci(n: u64) -> BigInt {
         let two_b = &b * 2;
         let c = &a * (&two_b - &a);
         let d = &a * &a + &b * &b;
-        if n % 2 == 0 {
+        if n.is_multiple_of(2) {
             (c, d)
         } else {
             (d.clone(), &c + &d)
@@ -1262,7 +1262,7 @@ impl Evaluator {
                 let x = &args[0];
                 let k = as_nonneg_int(&args[1], "nroot 的次数必须是 >= 2 的整数")?;
                 let kv = match k.to_u32() {
-                    Some(v) if v >= 2 && v <= 1_000_000 => v,
+                    Some(v) if (2..=1_000_000).contains(&v) => v,
                     _ => return Err("nroot 的次数超出支持范围（2 ~ 1000000）".to_string()),
                 };
                 let neg = x.is_negative();
@@ -1511,10 +1511,10 @@ impl Evaluator {
                     b.denom() * BigInt::from(2) * factorial,
                 );
                 let exp = BigRational::from_integer(BigInt::from(2 * n_u32));
-                return Ok(Number::Exact(ExactExpr {
+                Ok(Number::Exact(ExactExpr {
                     terms: vec![ExactTerm::PiPow(coeff, exp)],
                     denominator: BigInt::one(),
-                }));
+                }))
             }
             "mod" => args[0].modulo(&args[1]),
             "idiv" => args[0].idiv(&args[1]),
@@ -1645,10 +1645,10 @@ impl Evaluator {
                     return Ok(Number::from_int(1));
                 }
                 // 精确识别：底数与真数同为某数 α 的整数（可负）次幂时，log_b(x) = k/m
-                if let (Some(b), Some(v)) = (base.as_rational(), x.as_rational()) {
-                    if let Some(t) = rational_log_exact(&b, &v) {
-                        return Ok(Number::from_rational(t));
-                    }
+                if let (Some(b), Some(v)) = (base.as_rational(), x.as_rational())
+                    && let Some(t) = rational_log_exact(&b, &v)
+                {
+                    return Ok(Number::from_rational(t));
                 }
                 // 一般情形：log_b(x) = ln(x) / ln(b)
                 let ln_x = xx.ln(bigfloat::precision());
@@ -2322,7 +2322,7 @@ pub fn parse_triangle_call(
         && trimmed
             .as_bytes()
             .get("triangle".len())
-            .map_or(true, |b| !is_ident_byte(*b));
+            .is_none_or(|b| !is_ident_byte(*b));
     if !starts_with_ident {
         // 别处出现了 triangle ⇒ 用在了非最外层
         if contains_ident(trimmed, "triangle") {
@@ -2462,7 +2462,7 @@ pub fn parse_primefac(input: &str, evaluator: &mut Evaluator) -> Result<Option<N
         && trimmed
             .as_bytes()
             .get(IDENT.len())
-            .map_or(true, |b| !is_ident_byte(*b));
+            .is_none_or(|b| !is_ident_byte(*b));
     if !starts_with_ident {
         // 别处出现了 primefac ⇒ 用在了非最外层
         if contains_ident(trimmed, IDENT) {
@@ -2534,23 +2534,23 @@ pub fn parse_and_eval(input: &str, evaluator: &mut Evaluator) -> Result<EvalResu
     if let Ok(sd_expr) = parser.parse_sd() {
         // 高等数学函数也允许出现在 sd(...) 里；若它出现在 sd/fac 内部，展开时会明确报错
         let sd_expr = crate::calculus::expand_calculus(evaluator, sd_expr)?;
-        if let Expr::Sd(inner) = &sd_expr {
-            if let Expr::Equation(left, right) = inner.as_ref() {
-                return Ok(EvalResult::Equation(left.clone(), right.clone()));
-            }
+        if let Expr::Sd(inner) = &sd_expr
+            && let Expr::Equation(left, right) = inner.as_ref()
+        {
+            return Ok(EvalResult::Equation(left.clone(), right.clone()));
         }
         let result = evaluator.evaluate(&sd_expr)?;
         return Ok(EvalResult::SdValue(result));
     }
 
     // 再尝试解析为 factor 表达式
-    if let Ok(factor_expr) = parser.parse_factor() {
-        if let Expr::Factor(inner) = &factor_expr {
-            // 高等数学函数不允许出现在 fac/factor 内部；走一次重写通路即可给出明确报错
-            // （否则会落到"无法因式分解：仅支持有理数系数的多项式"，看不出真正原因）
-            let _ = crate::calculus::expand_calculus(evaluator, factor_expr.clone())?;
-            return Ok(EvalResult::Factor(inner.clone()));
-        }
+    if let Ok(factor_expr) = parser.parse_factor()
+        && let Expr::Factor(inner) = &factor_expr
+    {
+        // 高等数学函数不允许出现在 fac/factor 内部；走一次重写通路即可给出明确报错
+        // （否则会落到"无法因式分解：仅支持有理数系数的多项式"，看不出真正原因）
+        let _ = crate::calculus::expand_calculus(evaluator, factor_expr.clone())?;
+        return Ok(EvalResult::Factor(inner.clone()));
     }
 
     // 解析为方程组、等式或表达式
@@ -2721,7 +2721,7 @@ mod func_tests {
             ("7", "1/3"),
         ] {
             let lhs = eval_lineio(&format!("idiv({a},{b})*{b} + mod({a},{b})")).unwrap();
-            let rhs = eval_lineio(&format!("{a}")).unwrap();
+            let rhs = eval_lineio(&a.to_string()).unwrap();
             assert_eq!(lhs, rhs, "恒等式在 a={a}, b={b} 下不成立");
         }
         // 错误：除数为 0 / 非精确参数

@@ -166,13 +166,13 @@ fn to_terms_pow(
     // **不合并会出大问题**：两个底的字面不同 ⇒ 同底指数永远合不上 ⇒ 反复求导时
     // 会留下 `(1-x)^2^2^2…` 这种畸形节点、表达式指数膨胀直到撞护栏
     // （实测 `taylor(1/(1-x), x, 0, 4)` 会报"泰勒展开式过大"）。
-    if let Expr::Pow(inner, e1) = base {
-        if let (Some(r1), Some(r2)) = (constant_rational(ev, e1), constant_rational(ev, exp)) {
-            if r1.is_integer() && r2.is_integer() {
-                let combined = Expr::Number(Number::from_rational(r1 * r2));
-                return to_terms_pow(ev, inner, &combined);
-            }
-        }
+    if let Expr::Pow(inner, e1) = base
+        && let (Some(r1), Some(r2)) = (constant_rational(ev, e1), constant_rational(ev, exp))
+        && r1.is_integer()
+        && r2.is_integer()
+    {
+        let combined = Expr::Number(Number::from_rational(r1 * r2));
+        return to_terms_pow(ev, inner, &combined);
     }
     // 指数是常数
     if let Some(r) = constant_rational(ev, exp) {

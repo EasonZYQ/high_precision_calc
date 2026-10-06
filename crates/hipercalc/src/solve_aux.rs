@@ -26,7 +26,7 @@ pub fn result_prefix(n: &Number, mode: DisplayMode) -> &'static str {
                 // LineIO 一律输出小数：只有"能完整显示"的有理数才是 `=`。
                 // 有限小数超过 bigfloat::display_digits() 位有效数字时会被四舍五入，
                 // 旧实现只看分母是否只含 2/5 因子，导致 1/2^70 被标成 `=`（实际已截断）。
-                if e.as_rational().map_or(false, |r| finite_decimal_fits(&r)) {
+                if e.as_rational().is_some_and(|r| finite_decimal_fits(&r)) {
                     "="
                 } else {
                     "≈" // 循环小数、无理数（π、√2 等）
@@ -334,10 +334,7 @@ pub fn format_periodic_roots(roots: &[Number], var: char, angle_mode: AngleMode)
                 }
             }
         }
-        let bb = match b {
-            Some(bb) => bb,
-            None => return None,
-        };
+        let bb = b?;
         if !ok || same(&a, &bb) {
             return None;
         }
@@ -512,15 +509,15 @@ pub fn collect_all_roots(evaluator: &Evaluator, expr: &Expr, var: char) -> Vec<N
     // 阶段二：精收敛
     let mut roots: Vec<Number> = Vec::new();
     for c in cands {
-        if let Number::Approx(g0) = &c {
-            if let Some(r) = solver_poly::newton_solve(evaluator, expr, var, g0.clone(), 80) {
-                let dup = roots.iter().any(|x| match x {
-                    Number::Approx(bf) => root_close(bf, &r, &tol),
-                    _ => false,
-                });
-                if !dup {
-                    roots.push(Number::Approx(r));
-                }
+        if let Number::Approx(g0) = &c
+            && let Some(r) = solver_poly::newton_solve(evaluator, expr, var, g0.clone(), 80)
+        {
+            let dup = roots.iter().any(|x| match x {
+                Number::Approx(bf) => root_close(bf, &r, &tol),
+                _ => false,
+            });
+            if !dup {
+                roots.push(Number::Approx(r));
             }
         }
     }

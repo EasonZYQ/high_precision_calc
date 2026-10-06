@@ -70,15 +70,15 @@ fn render_number(n: &hipercalc_core::number::Number, mode: DisplayMode) -> Strin
 
 /// 渲染幂：指数 1/2、1/3 走根式函数，其余走 `^`
 fn render_pow(base: &Expr, exp: &Expr, mode: DisplayMode) -> String {
-    if let Expr::Number(n) = exp {
-        if let Some(r) = n.as_rational() {
-            let half = num_rational_half(&r);
-            if half == Some(2) {
-                return format!("sqrt({})", render_expr(base, mode));
-            }
-            if half == Some(3) {
-                return format!("cbrt({})", render_expr(base, mode));
-            }
+    if let Expr::Number(n) = exp
+        && let Some(r) = n.as_rational()
+    {
+        let half = num_rational_half(&r);
+        if half == Some(2) {
+            return format!("sqrt({})", render_expr(base, mode));
+        }
+        if half == Some(3) {
+            return format!("cbrt({})", render_expr(base, mode));
         }
     }
     // 幂底本身是幂时必须加括号：`x^2^3` 有歧义（应为 `(x^2)^3`）
@@ -102,12 +102,9 @@ fn num_rational_half(r: &num_rational::BigRational) -> Option<u32> {
     if !numer.is_one() {
         return None;
     }
-    for n in [2u32, 3u32] {
-        if denom == &num_bigint::BigInt::from(n) {
-            return Some(n);
-        }
-    }
-    None
+    [2u32, 3u32]
+        .into_iter()
+        .find(|&n| denom == &num_bigint::BigInt::from(n))
 }
 
 fn render_own(e: &Expr, mode: DisplayMode) -> (String, u8) {

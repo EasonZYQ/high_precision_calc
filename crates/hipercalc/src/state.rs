@@ -165,10 +165,11 @@ pub fn load() -> Option<(
             if let Some((name, val)) = v.split_once('=') {
                 let name = name.trim();
                 // 变量名合法性：全大写字母/下划线（与 /let 的校验一致）
-                if !name.is_empty() && name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
-                    if let Some(n) = decode_var(val.trim()) {
-                        vars.push((name.to_string(), n));
-                    }
+                if !name.is_empty()
+                    && name.chars().all(|c| c.is_ascii_uppercase() || c == '_')
+                    && let Some(n) = decode_var(val.trim())
+                {
+                    vars.push((name.to_string(), n));
                 }
             }
         } else if let Some(v) = line.strip_prefix("prec=") {
@@ -187,13 +188,13 @@ pub fn load() -> Option<(
             timing = v.trim() != "off";
         } else if let Some(v) = line.strip_prefix("lang=") {
             lang = Lang::parse(v);
-        } else if let Some(v) = line.strip_prefix("color:") {
-            if let Some((cat, name)) = v.split_once('=') {
-                let cat = cat.trim();
-                let name = name.trim();
-                if !cat.is_empty() && !name.is_empty() {
-                    colors.push((cat.to_string(), name.to_string()));
-                }
+        } else if let Some(v) = line.strip_prefix("color:")
+            && let Some((cat, name)) = v.split_once('=')
+        {
+            let cat = cat.trim();
+            let name = name.trim();
+            if !cat.is_empty() && !name.is_empty() {
+                colors.push((cat.to_string(), name.to_string()));
             }
         }
     }

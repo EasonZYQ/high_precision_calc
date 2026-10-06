@@ -89,7 +89,7 @@ fn diff_function(
     // log(底, 真数) 先重写成 ln(x)/ln(底)，复用 ln 规则
     if name == "log" {
         if args.len() != 2 {
-            return Err(format!("函数 log 需要两个参数"));
+            return Err("函数 log 需要两个参数".to_string());
         }
         let rewritten = div(call("ln", args[1].clone()), call("ln", args[0].clone()));
         return diff_raw(ev, &rewritten, var, depth + 1);

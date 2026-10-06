@@ -117,10 +117,7 @@ fn newton_once(
             row.push(Number::Approx(BigFloat::neg(&f[i])));
             aug.push(row);
         }
-        let ls = match solver_linear::gaussian_elimination(&mut aug, vars) {
-            Some(ls) => ls,
-            None => return None,
-        };
+        let ls = solver_linear::gaussian_elimination(&mut aug, vars)?;
         if !ls.unique {
             return None; // 奇异雅可比
         }
@@ -148,18 +145,18 @@ fn newton_once(
             bigfloat::precision(),
         );
         let f1 = eval_residuals(evaluator, equations, vars, &x);
-        if let Some(f1) = &f1 {
-            if f1.iter().all(|fi| fi.value.abs() <= tol.value.abs()) {
-                return Some(x);
-            }
+        if let Some(f1) = &f1
+            && f1.iter().all(|fi| fi.value.abs() <= tol.value.abs())
+        {
+            return Some(x);
         }
         if max_step.value.abs() <= tol.value.abs() {
             // 步长极小但残差未必达标（可能落在平坦区/局部极小），必须再校验残差，
             // 否则会返回"假根"（旧实现直接返回 x）。
-            if let Some(f1) = &f1 {
-                if f1.iter().all(|fi| fi.value.abs() <= loose_tol.value.abs()) {
-                    return Some(x);
-                }
+            if let Some(f1) = &f1
+                && f1.iter().all(|fi| fi.value.abs() <= loose_tol.value.abs())
+            {
+                return Some(x);
             }
         }
     }
@@ -210,10 +207,10 @@ pub fn solve_system(
         let guess: Vec<BigFloat> = idx.iter().map(|&k| grid[k].clone()).collect();
         // 粗扫：迭代少、容差为显示精度量级（默认 16 次、1e-12）
         let rough_tol_exp = (bigfloat::display_digits().div_ceil(2) + 2) as u32;
-        if let Some(c) = newton_once(evaluator, equations, vars, &guess, 16, rough_tol_exp, true) {
-            if !candidates.iter().any(|r| same_solution(r, &c)) {
-                candidates.push(c);
-            }
+        if let Some(c) = newton_once(evaluator, equations, vars, &guess, 16, rough_tol_exp, true)
+            && !candidates.iter().any(|r| same_solution(r, &c))
+        {
+            candidates.push(c);
         }
         // 进位（grid.len() 进制计数，遍历全部组合后自然结束）
         let mut pos = n;
@@ -240,10 +237,9 @@ pub fn solve_system(
             bigfloat::precision(),
             fine_tol_exp,
             false,
-        ) {
-            if !results.iter().any(|r| same_solution(r, &sol)) {
-                results.push(sol);
-            }
+        ) && !results.iter().any(|r| same_solution(r, &sol))
+        {
+            results.push(sol);
         }
     }
     results
@@ -261,7 +257,7 @@ mod tests {
     /// `BigFloat` 是 `value / 10^precision` 的**定点**表示 ⇒ 判"|x| 很小"必须同时看两个字段，
     /// 直接拿 `value` 比大小会把 `2.0`（即 2×10^80）当成天文数字（这个坑我自己先踩了一次）。
     fn is_tiny(b: &BigFloat, digits: usize) -> bool {
-        b.value.abs() < BigInt::from(10).pow((b.precision - digits) as u32).into()
+        b.value.abs() < BigInt::from(10).pow((b.precision - digits) as u32)
     }
 
     /// 判 |x| 是否小于 10^exp
@@ -271,7 +267,7 @@ mod tests {
         } else {
             BigInt::from(1)
         } * BigInt::from(10).pow(b.precision as u32);
-        b.value.abs() < limit.into()
+        b.value.abs() < limit
     }
 
     /// 把解代回各方程算残差 —— **测试自己验证**，不信任求解器内部的"找到了根"判定

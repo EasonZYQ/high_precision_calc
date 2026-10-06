@@ -223,7 +223,7 @@ fn div_linear_by_pivot(p: &Poly, lin: &Poly, pivot: usize) -> Option<(Poly, Poly
         .iter()
         .find(|t| t.mono[pivot] == 1)
         .map(|t| t.coeff.clone())
-        .unwrap_or_else(|| BigRational::zero());
+        .unwrap_or_else(BigRational::zero);
     if ap.is_zero() {
         return None;
     }
@@ -558,11 +558,11 @@ fn format_linear_factor(poly: &Poly, vars: &[char]) -> String {
     let f = BigRational::from_integer(lcm);
     let mut ints: Vec<BigInt> = coeffs.iter().map(|c| (c * &f).to_integer()).collect();
     // 符号归一
-    if let Some(first) = ints.iter().find(|i| !i.is_zero()) {
-        if first.is_negative() {
-            for _i in ints.iter_mut() {
-                *_i = -_i.clone();
-            }
+    if let Some(first) = ints.iter().find(|i| !i.is_zero())
+        && first.is_negative()
+    {
+        for _i in ints.iter_mut() {
+            *_i = -_i.clone();
         }
     }
     let mut s = String::new();
@@ -716,7 +716,7 @@ fn extract_quadratic_factor(
         .iter()
         .map(|c| c.numer().abs())
         .max()
-        .unwrap_or_else(|| BigInt::one());
+        .unwrap_or_else(BigInt::one);
     // 柯西界 |B| ≤ 2(1 + max|a_i|)，超过上限时截断并在返回值中标记
     let bmax = BigInt::from(2) * (BigInt::one() + max_c);
     let deep = hipercalc_core::calc_mode::is_deep();
@@ -834,21 +834,22 @@ fn push_factor_rep(factors: &mut Vec<FactorRep>, rep: FactorRep) {
                     d: ed,
                     exp: e2,
                 } = f
+                    && *ep == *p
+                    && *eq == *q
+                    && *ed == *d
                 {
-                    if *ep == *p && *eq == *q && *ed == *d {
-                        *e2 += exp;
-                        return;
-                    }
+                    *e2 += exp;
+                    return;
                 }
             }
         }
         FactorRep::Poly(p, exp) => {
             for f in factors.iter_mut() {
-                if let FactorRep::Poly(fp, e2) = f {
-                    if poly_equal(fp, p) {
-                        *e2 += exp;
-                        return;
-                    }
+                if let FactorRep::Poly(fp, e2) = f
+                    && poly_equal(fp, p)
+                {
+                    *e2 += exp;
+                    return;
                 }
             }
         }
@@ -961,12 +962,12 @@ fn factor_univariate(p: &Poly, vars: &[char], mode: DisplayMode) -> FactorOutcom
         let lin = poly_linear(vars, &[BigRational::one(), -r.clone()]);
         let mut merged = false;
         for f in factors.iter_mut() {
-            if let FactorRep::Poly(fp, exp) = f {
-                if poly_equal(fp, &lin) {
-                    *exp += 1;
-                    merged = true;
-                    break;
-                }
+            if let FactorRep::Poly(fp, exp) = f
+                && poly_equal(fp, &lin)
+            {
+                *exp += 1;
+                merged = true;
+                break;
             }
         }
         if !merged {
@@ -1166,12 +1167,12 @@ fn factor_multivariate(p: &Poly, vars: &[char], mode: DisplayMode) -> FactorOutc
                 if let Some((quo, _)) = div_linear_by_pivot(&cur, &lin, pivot) {
                     let mut merged = false;
                     for f in factors.iter_mut() {
-                        if let FactorRep::Poly(fp, exp) = f {
-                            if poly_equal(fp, &lin) {
-                                *exp += 1;
-                                merged = true;
-                                break;
-                            }
+                        if let FactorRep::Poly(fp, exp) = f
+                            && poly_equal(fp, &lin)
+                        {
+                            *exp += 1;
+                            merged = true;
+                            break;
                         }
                     }
                     if !merged {
@@ -1361,10 +1362,10 @@ fn find_linear_factor(p: &Poly, vars: &[char]) -> Option<(Poly, usize)> {
             continue;
         }
         seen.push(lin.clone());
-        if let Some((quo, _)) = div_linear_by_pivot(p, &lin, pivot) {
-            if poly_equal(&poly_mul(&quo, &lin), p) {
-                return Some((lin, pivot));
-            }
+        if let Some((quo, _)) = div_linear_by_pivot(p, &lin, pivot)
+            && poly_equal(&poly_mul(&quo, &lin), p)
+        {
+            return Some((lin, pivot));
         }
     }
     None
@@ -1413,12 +1414,11 @@ fn collect_expr_terms(
                 terms.push((vec![0u32; vars.len()], val.clone()));
             } else if name.len() == 1 {
                 let ch = name.chars().next().unwrap();
-                if let Some(pos) = vars.iter().position(|&v| v == ch) {
+                {
+                    let pos = vars.iter().position(|&v| v == ch)?;
                     let mut mono = vec![0u32; vars.len()];
                     mono[pos] = 1;
                     terms.push((mono, Number::from_int(1)));
-                } else {
-                    return None;
                 }
             } else {
                 return None;
@@ -1484,58 +1484,52 @@ fn collect_expr_terms(
             Some(())
         }
         Expr::Pow(base, exp) => {
-            if let Expr::Variable(name) = base.as_ref() {
-                if name.len() == 1 {
-                    let ch = name.chars().next().unwrap();
-                    if let Some(pos) = vars.iter().position(|&v| v == ch) {
-                        if let Expr::Number(n) = exp.as_ref() {
-                            if let Some(r) = n.as_rational() {
-                                if r.is_integer() && r.is_positive() {
-                                    if let Some(e) = r.to_integer().to_u32() {
-                                        let mut mono = vec![0u32; vars.len()];
-                                        mono[pos] = e;
-                                        terms.push((mono, Number::from_int(1)));
-                                        return Some(());
-                                    }
-                                }
-                            }
-                        }
-                    }
+            if let Expr::Variable(name) = base.as_ref()
+                && name.len() == 1
+            {
+                let ch = name.chars().next().unwrap();
+                if let Some(pos) = vars.iter().position(|&v| v == ch)
+                    && let Expr::Number(n) = exp.as_ref()
+                    && let Some(r) = n.as_rational()
+                    && r.is_integer()
+                    && r.is_positive()
+                    && let Some(e) = r.to_integer().to_u32()
+                {
+                    let mut mono = vec![0u32; vars.len()];
+                    mono[pos] = e;
+                    terms.push((mono, Number::from_int(1)));
+                    return Some(());
                 }
             }
             // 一般多项式底的小整数幂：折叠自乘（每轮合并同类项，避免 AST 指数爆炸）
-            if let Expr::Number(n) = exp.as_ref() {
-                if let Some(r) = n.as_rational() {
-                    if r.is_integer() {
-                        let k = r.to_integer();
-                        if k.is_zero() {
-                            terms.push((vec![0u32; vars.len()], Number::from_int(1)));
-                            return Some(());
-                        }
-                        if let Some(k) = k.to_u32() {
-                            if (1..=64).contains(&k) {
-                                let mut base_terms = Vec::new();
-                                collect_expr_terms(base, vars, evaluator, &mut base_terms)?;
-                                let mut acc = base_terms.clone();
-                                for _ in 1..k {
-                                    let mut new_acc: Vec<(Mono, Number)> = Vec::new();
-                                    for (m1, c1) in &acc {
-                                        for (m2, c2) in &base_terms {
-                                            let mono: Mono = m1
-                                                .iter()
-                                                .zip(m2.iter())
-                                                .map(|(a, b)| a + b)
-                                                .collect();
-                                            new_acc.push((mono, c1.mul(c2)));
-                                        }
-                                    }
-                                    acc = merge_raw_terms(new_acc);
-                                }
-                                terms.extend(acc);
-                                return Some(());
+            if let Expr::Number(n) = exp.as_ref()
+                && let Some(r) = n.as_rational()
+                && r.is_integer()
+            {
+                let k = r.to_integer();
+                if k.is_zero() {
+                    terms.push((vec![0u32; vars.len()], Number::from_int(1)));
+                    return Some(());
+                }
+                if let Some(k) = k.to_u32()
+                    && (1..=64).contains(&k)
+                {
+                    let mut base_terms = Vec::new();
+                    collect_expr_terms(base, vars, evaluator, &mut base_terms)?;
+                    let mut acc = base_terms.clone();
+                    for _ in 1..k {
+                        let mut new_acc: Vec<(Mono, Number)> = Vec::new();
+                        for (m1, c1) in &acc {
+                            for (m2, c2) in &base_terms {
+                                let mono: Mono =
+                                    m1.iter().zip(m2.iter()).map(|(a, b)| a + b).collect();
+                                new_acc.push((mono, c1.mul(c2)));
                             }
                         }
+                        acc = merge_raw_terms(new_acc);
                     }
+                    terms.extend(acc);
+                    return Some(());
                 }
             }
             None
