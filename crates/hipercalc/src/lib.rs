@@ -1125,8 +1125,10 @@ fn completion_edit(
     let pos = if len == 0 {
         // 空替换：不改文本，只把光标右移一格 —— 用于"跳过已有的右括号"
         orig_pos + 1
-    } else if elected.ends_with(')') {
-        // 函数补成 `name()` / 自动补右括号：光标落在右括号**之前**
+    } else if len > 1 && elected.ends_with(')') {
+        // 函数补成 `name()` / 自动补一对 `()`：光标落在右括号**之前**
+        // ⚠️ 必须限定 len > 1：用户**手打的单个 `)`** 也以 ')' 结尾，若同样把光标停在它前面，
+        // 之后每敲一个字符都会落进括号内 ⇒ 整行错位（自动配对两次失败都卡在这里）。
         start + len - 1
     } else {
         start + len
@@ -1197,6 +1199,8 @@ struct CalcHelper {
     vars: Vec<String>,
     /// 本帧提示种类（见 `HintKind`）
     hint_kind: Cell<HintKind>,
+    /// 右括号"跳过"专用：置位时 `update()` 只把光标右移一格、不动文本。
+    skip_close: Cell<bool>,
     /// `complete()` 时记录的光标位置（字符下标）。
     /// `update()` 必须用它来界定"原区间" —— 因为那里我们已把光标挪进括号，
     /// 若读 `line.pos()` 会越补越短。
@@ -1207,6 +1211,20 @@ impl Completer for CalcHelper {
     type Candidate = Pair;
 
     fn complete(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> RlResult<(usize, Vec<Pair>)> {
+        // 括号键触发的自动配对 / 跳过（start = pos ⇒ 不替换已有文字，见 BRACKET_KEY 注释）
+        let bk = BRACKET_KEY.swap(0, std::sync::atomic::Ordering::Relaxed);
+        if bk != 0 {
+            self.orig_pos.set(pos);
+            let text = "()"; // 只有 `(` 会走到这里（`)` 已在按键处理器里直接处理）
+            return Ok((
+                pos,
+                vec![Pair {
+                    display: text.to_string(),
+                    replacement: text.to_string(),
+                }],
+            ));
+        }
+
         // 取光标左侧的 token（字母数字下划线，以及行首指令的 `/`）。
         // 按**字符**扫描而不是字节：行内可能出现中文（变量之外的说明性文字），字节下标会与
         // rustyline 的字符下标错位。
@@ -1256,6 +1274,11 @@ impl Completer for CalcHelper {
     /// 这里插入后再把光标左移一格。注意 `line.pos()` 已被我们改过，所以原区间必须用
     /// `complete()` 记下的 `orig_pos` 来界定（循环补全每次都会回到同一区间重放）。
     fn update(&self, line: &mut LineBuffer, start: usize, elected: &str, cl: &mut Changeset) {
+        if self.skip_close.replace(false) {
+            // 右括号"跳过"：下一个字符已经是 `)` ⇒ 不动文本，只把光标右移一格
+            line.set_pos(line.pos() + 1);
+            return;
+        }
         let orig = self.orig_pos.get().clamp(start, line.len());
         let (range, pos) = completion_edit(start, orig, elected);
         line.replace(range, elected, cl);
@@ -1267,6 +1290,10 @@ impl Hinter for CalcHelper {
     type Hint = ArgHint;
 
     fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<ArgHint> {
+        // 给括号键处理器留一份行/光标快照（见 LINE_SNAPSHOT 的注释）
+        if let Ok(mut g) = LINE_SNAPSHOT.lock() {
+            *g = Some((line.to_string(), pos));
+        }
         // A. 光标落在某个函数调用的括号内 ⇒ 显示参数提示（不再要求光标在行尾）
         // 只在**光标位于行尾**时显示：rustyline 的 hint 只能追加在整行末尾，
         // 光标停在行中间时它会跑到最右边、看起来像行尾的垃圾（用户反馈过）。
@@ -1355,10 +1382,64 @@ impl ConditionalEventHandler for FullwidthHandler {
 
 /// 注册自定义键位：Ctrl+C 清行/连按退出 + 全角转半角。
 /// （Ctrl+L 清屏、Ctrl+R 反向历史搜索是 rustyline 的 Emacs 默认绑定，无需注册。）
+/// 最近按下的括号键（0 = 无）。
+///
+/// rustyline 一次按键只能返回一个 `Cmd`，"插入 `()` 再把光标左移"没有普通键位能表达；
+/// 但 `Completer::complete/update` 拿得到整行与 `&mut LineBuffer` —— 所以括号键改走补全通路：
+/// 按键处理器记下是哪个括号并返回 `Cmd::Complete`，`complete()` 给出候选，`update()` 负责落笔与光标。
+static BRACKET_KEY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// 最近的（整行, 光标位置）快照，由 `Hinter` 在每次刷新时更新。
+///
+/// 按键处理器**拿不到行内容**（rustyline 只给事件与上下文），而 `)` 需要判断
+/// "光标处是不是已经有一个 `)`"。`Hinter::hint` 每次刷新都会被调到 ⇒ 借它存一份快照。
+static LINE_SNAPSHOT: std::sync::Mutex<Option<(String, usize)>> = std::sync::Mutex::new(None);
+
+/// 括号键处理器。
+///
+/// - `)`：**不走补全通路**。走补全会有个隐蔽后果：补全循环里 `next_cmd` 会读走下一个键，
+///   而它**不会再调 `complete()`** —— 于是紧跟着的 `(` 直接被吞掉（这正是")(相邻括�号"
+///   两次失败的原因）。所以 `)` 直接用行快照判断：下一个是 `)` 就 `Move` 越过，否则 `Insert`。
+/// - `(`：仍需补全通路（要一次插入两个字符并把光标放进中间，一个 `Cmd` 表达不了）。
+struct BracketHandler {
+    ch: char,
+}
+
+impl ConditionalEventHandler for BracketHandler {
+    fn handle(
+        &self,
+        _evt: &Event,
+        _n: RepeatCount,
+        _positive: bool,
+        _ctx: &EventContext,
+    ) -> Option<Cmd> {
+        // 字符取自 handler 自己的字段（与 FullwidthHandler 同一写法，避免猜 Event 的形状）
+        if self.ch == ')' {
+            let next_is_close = LINE_SNAPSHOT.lock().ok().map_or(false, |g| {
+                g.as_ref()
+                    .map_or(false, |(l, p)| l.chars().nth(*p) == Some(')'))
+            });
+            return Some(if next_is_close {
+                Cmd::Move(rustyline::Movement::ForwardChar(1))
+            } else {
+                Cmd::Insert(1, ")".to_string())
+            });
+        }
+        BRACKET_KEY.store(b'(', std::sync::atomic::Ordering::Relaxed);
+        Some(Cmd::Complete)
+    }
+}
 fn install_key_bindings(rl: &mut Editor<CalcHelper, DefaultHistory>) {
     // **不给 Ctrl+C 绑定自定义动作**：空闲时应走 rustyline 默认的 `Cmd::Interrupt`
     // ⇒ `ReadlineError::Interrupted` ⇒ 主循环退出程序（"没运算时 Ctrl+C 退出"）。
     // 计算中的中断走 `cancel` 模块的控制台处理器（那里没有键盘读取）。
+    // 括号键：走补全通路实现自动配对（见 BRACKET_KEY 的注释）
+    for ch in ['(', ')'] {
+        rl.bind_sequence(
+            KeyEvent::from(ch),
+            EventHandler::Conditional(Box::new(BracketHandler { ch })),
+        );
+    }
     for (full, half) in FULLWIDTH_MAP {
         rl.bind_sequence(
             KeyEvent::from(*full),
@@ -1785,6 +1866,7 @@ pub fn run() -> i32 {
 
     let helper = CalcHelper {
         hint_kind: Cell::new(HintKind::Normal),
+        skip_close: Cell::new(false),
         orig_pos: Cell::new(0),
         colors: colors.clone(),
         vars: state.evaluator.vars.keys().cloned().collect(),
@@ -3765,6 +3847,7 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
             统计：mean([1,2,3,4]) 或 mean(k, k, 1, 4)；var 除 n、var_s 除 n−1；percentile(p, […])
   zeta(s)  黎曼 ζ：偶數點給精確閉式（zeta(2) = pi^2/6）；奇數點與非整數走 Euler-Maclaurin 數值（zeta(3) ≈ 1.2020569032）
   zeta(s)  黎曼 ζ：偶數點給精確閉式（zeta(2) = pi^2/6）；奇數點暫無閉式，報錯提示
+  ( )       自動配對：敲 ( 自動補出 ) 並把光標放進中間；再敲 ) 會**越過**已有的 )，不會重複
   z^w      複數冪（主值）：i^i ≈ 0.2078795764、2^i ≈ 0.7692389014 + 0.6389612763i；整數指數仍給精確值
   erf(x) / erfc(x)  誤差函數與補誤差函數（數值級數；|x| ≥ 8 飽和為 ±1）
   gamma(x)   伽馬函數：正整數給精確階乘、正半整數給精確的 √π 形式（如 gamma(1/2) = sqrt(pi)）；其餘值暫不支援
@@ -3842,6 +3925,7 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   Bases     /base dec|hex|oct|bin switches the result base (integers only); input accepts 0xFF / 0o17 / 0b1010
   zeta(s)  Riemann zeta: exact closed form at even points (zeta(2) = pi^2/6); odd points and non-integers use Euler-Maclaurin (zeta(3) ~= 1.2020569032)
   zeta(s)  Riemann zeta: exact closed form at even points (zeta(2) = pi^2/6); odd points have no known closed form and report an error
+  ( )       auto-pairing: typing ( inserts the closing ) with the cursor inside; a later ) moves over the existing one instead of duplicating it
   z^w      complex powers (principal value): i^i ~= 0.2078795764, 2^i ~= 0.7692389014 + 0.6389612763i; integer exponents stay exact
   erf(x) / erfc(x)  error function and complementary error function (numeric series; |x| >= 8 saturates to ±1)
   gamma(x)  Gamma function: exact factorial for positive integers, exact sqrt(pi) form for positive half-integers (gamma(1/2) = sqrt(pi)); other values not supported yet
@@ -3927,6 +4011,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   进制     /base dec|hex|oct|bin 切换结果数制（仅整数）；输入可写 0xFF / 0o17 / 0b1010
   zeta(s)  黎曼 ζ：偶数点给精确闭式（zeta(2) = pi^2/6）；奇数点与非整数走 Euler-Maclaurin 数值（zeta(3) ≈ 1.2020569032）
   zeta(s)  黎曼 ζ：偶数点给精确闭式（zeta(2) = pi^2/6）；奇数点暂无闭式，报错提示
+  ( )       自动配对：敲 ( 自动补出 ) 并把光标放进中间；再敲 ) 会**越过**已有的 )，不会重复
   z^w      复数幂（主值）：i^i ≈ 0.2078795764、2^i ≈ 0.7692389014 + 0.6389612763i；整数指数仍给精确值
   erf(x) / erfc(x)  误差函数与补误差函数（数值级数；|x| ≥ 8 饱和为 ±1）
   gamma(x)   伽马函数：正整数给精确阶乘、正半整数给精确的 √π 形式（如 gamma(1/2) = sqrt(pi)）；其余值暂不支持
@@ -4823,6 +4908,12 @@ mod cli_tests {
     ///   是 `pub(crate)`；把落点逻辑抽成纯函数后即可直接断言。）
     #[test]
     fn completion_edit_puts_cursor_inside_parens() {
+        // ⚠️ 回归：用户**手打的单个 `)`**（len == 1）光标必须越过它。
+        // 曾经把"以 ')' 结尾 ⇒ 光标停在它前面"这条规则无条件套用，于是手打 `)` 后
+        // 光标不前进，之后每个字符都插进括号里 ⇒ 整行错位（自动配对两次失败的真因）。
+        let (range, pos) = completion_edit(4, 4, ")");
+        assert_eq!(range, 4..4);
+        assert_eq!(pos, 5, "手打单个 ) 后光标必须越过它");
         let (range, pos) = completion_edit(0, 3, "sin()");
         assert_eq!(range, 0..3);
         assert_eq!(pos, 4, "光标应落在括号内：sin(|)");
