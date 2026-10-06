@@ -18,6 +18,7 @@ mod solver_nonlinear;
 mod solver_poly;
 mod solver_triangle;
 mod state;
+mod stats;
 
 use colored::*;
 use hipercalc_core::number::Number;
@@ -96,6 +97,61 @@ struct FnMeta {
 }
 
 const FUNCTIONS_META: &[FnMeta] = &[
+    // 统计（解析期展开成 sum / 算术形式，见 src/stats.rs）
+    FnMeta {
+        name: "mean",
+        min: 2,
+        max: usize::MAX,
+        sig: "([x1, x2, …]) 或 (f, k, a, b)",
+    },
+    FnMeta {
+        name: "var",
+        min: 2,
+        max: usize::MAX,
+        sig: "([x1, x2, …]) 或 (f, k, a, b)",
+    },
+    FnMeta {
+        name: "var_s",
+        min: 2,
+        max: usize::MAX,
+        sig: "([x1, x2, …]) 或 (f, k, a, b)",
+    },
+    FnMeta {
+        name: "stddev",
+        min: 2,
+        max: usize::MAX,
+        sig: "([x1, x2, …]) 或 (f, k, a, b)",
+    },
+    FnMeta {
+        name: "stddev_s",
+        min: 2,
+        max: usize::MAX,
+        sig: "([x1, x2, …]) 或 (f, k, a, b)",
+    },
+    FnMeta {
+        name: "median",
+        min: 2,
+        max: usize::MAX,
+        sig: "([x1, x2, …]) 或 (f, k, a, b)",
+    },
+    FnMeta {
+        name: "percentile",
+        min: 3,
+        max: usize::MAX,
+        sig: "(p, [x1, x2, …])",
+    },
+    FnMeta {
+        name: "corr",
+        min: 5,
+        max: 5,
+        sig: "(x, y, k, a, b)",
+    },
+    FnMeta {
+        name: "list",
+        min: 0,
+        max: usize::MAX,
+        sig: "(x1, x2, …)",
+    },
     // 整数序列
     FnMeta {
         name: "fib",
@@ -711,7 +767,7 @@ const CONSTANTS: &[&str] = &["pi", "π", "e", "tau", "phi", "φ", "i", "inf", "�
 /// 运算符（输入行与结果行共用）：后三个只出现在**结果**串里（`≈` 前缀、科学计数法的 `×`、
 /// 通式里的 `k·π`），补进来是为了让结果行也能把运算符一并点亮。
 const OPS: &[char] = &['+', '-', '*', '/', '^', '!', '=', '≈', '×', '·'];
-const BRACKETS: &[char] = &['(', ')', '|'];
+const BRACKETS: &[char] = &['(', ')', '|', '[', ']'];
 
 /// /set 可设置的类别（英文类别名, 中文标注）
 const COLOR_CATEGORIES: &[(&str, &str)] = &[
@@ -3698,6 +3754,8 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   prod(f, k, a, b)   求積：prod(k, k, 1, 10) → 3628800
   位運算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（僅限非負整數）
   進位     /base dec|hex|oct|bin 切換結果進位（僅整數）；輸入可寫 0xFF / 0o17 / 0b1010
+  mean / median / var / stddev / corr
+            统计：mean([1,2,3,4]) 或 mean(k, k, 1, 4)；var 除 n、var_s 除 n−1；percentile(p, […])
   zeta(s)  黎曼 ζ：偶數點給精確閉式（zeta(2) = pi^2/6）；奇數點與非整數走 Euler-Maclaurin 數值（zeta(3) ≈ 1.2020569032）
   zeta(s)  黎曼 ζ：偶數點給精確閉式（zeta(2) = pi^2/6）；奇數點暫無閉式，報錯提示
   erf(x) / erfc(x)  誤差函數與補誤差函數（數值級數；|x| ≥ 8 飽和為 ±1）
@@ -4356,6 +4414,43 @@ mod cli_tests {
         // s ≤ 1 发散：必须明确报错而不是给个错值。
         // （奇数点与非整数现在走数值路径了，不再报错 —— 见 zeta_numeric_path 测试）
         for bad in ["zeta(1)", "zeta(0)", "zeta(-2)"] {
+            let (out, err) = run_line(bad, &mut st);
+            assert!(err, "{bad} 应被拒绝，却得到 {out}");
+        }
+    }
+
+    /// 统计函数：**两种参数形态**都测（列表 / 表达式+范围），期望值全部可手算。
+    #[test]
+    fn statistics_functions() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        for (input, want) in [
+            // 均值：(1+2+3+4)/4
+            ("mean([1,2,3,4])", "5 / 2"),
+            ("mean(1,2,3,4)", "5 / 2"),          // 裸参数形态
+            ("mean(k, k, 1, 4)", "5 / 2"),        // 范围形态，判别规则：4 参且第 2 个是变量
+            ("mean(k^2, k, 1, 4)", "15 / 2"),     // (1+4+9+16)/4 = 30/4
+            // 方差：教科书例子 [2,4,4,4,5,5,7,9] → 总体 4、样本 32/7
+            ("var([2,4,4,4,5,5,7,9])", "4"),
+            ("var_s([2,4,4,4,5,5,7,9])", "32 / 7"),
+            ("stddev([1,2,3,4,5])", "sqrt(2)"),
+            ("stddev_s([1,2,3,4,5])", "(1 / 2)*sqrt(10)"),
+            ("var(k, k, 1, 5)", "2"),
+            // 中位数与百分位
+            ("median([3,1,2])", "2"),
+            ("median([1,2,3,4])", "5 / 2"),
+            ("median(k, k, 1, 5)", "3"),
+            ("percentile(50, [1,2,3,4])", "5 / 2"),
+            ("percentile(25, [1,2,3,4,5])", "2"),
+            // 相关系数：完全线性 → 1
+            ("corr([1,2,3],[2,4,6])", "1"),
+            ("corr(k, 2*k, k, 1, 5)", "1"),
+        ] {
+            let (out, err) = run_line(input, &mut st);
+            assert!(!err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 {want}");
+        }
+        // 数据点不足 / 百分位越界：明确报错
+        for bad in ["mean([1])", "percentile(150, [1,2,3])", "corr([1,2],[1,2,3])"] {
             let (out, err) = run_line(bad, &mut st);
             assert!(err, "{bad} 应被拒绝，却得到 {out}");
         }
