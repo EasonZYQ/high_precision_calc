@@ -212,7 +212,7 @@ fn format_exact_expr(expr: &ExactExpr) -> String {
         ExactTerm::Rational(r) => r.is_zero(),
         ExactTerm::Sqrt(c, _) => c.is_zero(),
         ExactTerm::PiPow(c, _) => c.is_zero(),
-        ExactTerm::PiPow(c, k) if k.is_one() => c.is_zero(),
+        ExactTerm::Pi(c) => c.is_zero(),
         ExactTerm::E(c) => c.is_zero(),
     });
     if all_zero {
@@ -330,9 +330,7 @@ fn format_term_latex(term: &ExactTerm) -> String {
                 format!("{c}{rad}")
             }
         }
-        ExactTerm::PiPow(c, k) if k.is_one() => {
-            format!("{} \\pi", latex_coeff(c)).trim_start().to_string()
-        }
+        ExactTerm::Pi(c) => format!("{} \\pi", latex_coeff(c)).trim_start().to_string(),
         ExactTerm::PiPow(c, k) => latex_pipow(c, k),
         ExactTerm::E(c) => format!("{}e", latex_coeff(c)),
     }
@@ -342,7 +340,7 @@ fn format_term(term: &ExactTerm) -> String {
     match term {
         ExactTerm::Rational(r) => format_rational(r),
         ExactTerm::Sqrt(coeff, rad) => format_sqrt_term(coeff, rad),
-        ExactTerm::PiPow(coeff, k) if k.is_one() => format_pi_term(coeff),
+        ExactTerm::Pi(coeff) => format_pi_term(coeff),
         ExactTerm::PiPow(coeff, k) => format_pipow_term(coeff, k),
         ExactTerm::E(coeff) => format_e_term(coeff),
     }
@@ -525,11 +523,11 @@ mod tests {
         );
         // π 与 e
         assert_eq!(
-            format_exact_expr_latex(&term(ExactTerm::PiPow(r(1, 1), BigRational::one()))),
+            format_exact_expr_latex(&term(ExactTerm::Pi(r(1, 1)))),
             "\\pi"
         );
         assert_eq!(
-            format_exact_expr_latex(&term(ExactTerm::PiPow(r(2, 1), BigRational::one()))),
+            format_exact_expr_latex(&term(ExactTerm::Pi(r(2, 1)))),
             "2 \\pi"
         );
         assert_eq!(format_exact_expr_latex(&term(ExactTerm::E(r(1, 1)))), "e");

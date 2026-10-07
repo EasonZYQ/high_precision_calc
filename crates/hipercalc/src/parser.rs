@@ -2391,7 +2391,7 @@ pub(crate) fn radians_to_degrees(result: Number) -> Number {
             for term in &expr.terms {
                 use hipercalc_core::number::ExactTerm;
                 match term {
-                    ExactTerm::PiPow(coeff, k) if k.is_one() => {
+                    ExactTerm::Pi(coeff) => {
                         // coeff * pi 弧度 = coeff * 180 度
                         let deg_coeff = coeff * BigRational::from_integer(BigInt::from(180));
                         new_terms.push(ExactTerm::Rational(deg_coeff));
