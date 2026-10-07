@@ -1302,10 +1302,10 @@ fn mul_terms(t1: &ExactTerm, t2: &ExactTerm) -> Option<ExactTerm> {
         (ExactTerm::Sqrt(c, rad), ExactTerm::Rational(r)) => {
             Some(ExactTerm::Sqrt(c * r, rad.clone()))
         }
-        (ExactTerm::Rational(r), ExactTerm::PiPow(c, BigRational::one())) => {
+        (ExactTerm::Rational(r), ExactTerm::PiPow(c, k)) if k.is_one() => {
             Some(ExactTerm::PiPow(r * c, BigRational::one()))
         }
-        (ExactTerm::PiPow(c, BigRational::one()), ExactTerm::Rational(r)) => {
+        (ExactTerm::PiPow(c, k), ExactTerm::Rational(r)) if k.is_one() => {
             Some(ExactTerm::PiPow(r * c, BigRational::one()))
         }
         (ExactTerm::Rational(r), ExactTerm::E(c)) => Some(ExactTerm::E(r * c)),
