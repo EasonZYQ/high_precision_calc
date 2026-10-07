@@ -209,7 +209,7 @@ impl Number {
             return Number::from_int(0);
         }
         Number::Exact(ExactExpr {
-            terms: vec![ExactTerm::PiPow(r, BigRational::one())],
+            terms: vec![ExactTerm::Pi(r)],
             denominator: BigInt::one(),
         })
     }
@@ -926,7 +926,7 @@ impl ExactExpr {
                     ExactTerm::Rational(r) => ExactTerm::Rational(-r),
                     ExactTerm::Sqrt(c, r) => ExactTerm::Sqrt(-c, r.clone()),
                     ExactTerm::PiPow(c, k) => ExactTerm::PiPow(-c, k.clone()),
-                    ExactTerm::Pi(c) => ExactTerm::PiPow(-c, BigRational::one()),
+                    ExactTerm::Pi(c) => ExactTerm::Pi(-c),
                     ExactTerm::E(c) => ExactTerm::E(-c),
                 })
                 .collect(),
@@ -1096,7 +1096,7 @@ impl ExactExpr {
                     ExactTerm::Rational(r) => ExactTerm::Rational(r * &recip),
                     ExactTerm::Sqrt(c, rad) => ExactTerm::Sqrt(c * &recip, rad.clone()),
                     ExactTerm::PiPow(c, k) => ExactTerm::PiPow(c * &recip, k.clone()),
-                    ExactTerm::Pi(c) => ExactTerm::PiPow(c * &recip, BigRational::one()),
+                    ExactTerm::Pi(c) => ExactTerm::Pi(c * &recip),
                     ExactTerm::E(c) => ExactTerm::E(c * &recip),
                 };
                 merge_term(&mut terms, scaled);
@@ -1180,9 +1180,7 @@ impl ExactExpr {
                                 ExactTerm::Rational(r) => ExactTerm::Rational(r * &recip),
                                 ExactTerm::Sqrt(c, r) => ExactTerm::Sqrt(c * &recip, r.clone()),
                                 ExactTerm::PiPow(c, k) => ExactTerm::PiPow(c * &recip, k.clone()),
-                                ExactTerm::Pi(c) => {
-                                    ExactTerm::PiPow(c * &recip, BigRational::one())
-                                }
+                                ExactTerm::Pi(c) => ExactTerm::Pi(c * &recip),
                                 ExactTerm::E(c) => ExactTerm::E(c * &recip),
                             };
                             merge_term(&mut result_terms, scaled);
@@ -1209,7 +1207,7 @@ fn scale_term(term: &ExactTerm, factor: &BigInt) -> ExactTerm {
         ExactTerm::Rational(r) => ExactTerm::Rational(r * &f),
         ExactTerm::Sqrt(c, rad) => ExactTerm::Sqrt(c * &f, rad.clone()),
         ExactTerm::PiPow(c, k) => ExactTerm::PiPow(c * &f, k.clone()),
-        ExactTerm::Pi(c) => ExactTerm::PiPow(c * &f, BigRational::one()),
+        ExactTerm::Pi(c) => ExactTerm::Pi(c * &f),
         ExactTerm::E(c) => ExactTerm::E(c * &f),
     }
 }
@@ -1222,7 +1220,7 @@ fn scale_term_rational(term: &ExactTerm, factor: &BigRational) -> ExactTerm {
         ExactTerm::Rational(r) => ExactTerm::Rational(r * factor),
         ExactTerm::Sqrt(c, rad) => ExactTerm::Sqrt(c * factor, rad.clone()),
         ExactTerm::PiPow(c, k) => ExactTerm::PiPow(c * factor, k.clone()),
-        ExactTerm::Pi(c) => ExactTerm::PiPow(c * factor, BigRational::one()),
+        ExactTerm::Pi(c) => ExactTerm::Pi(c * factor),
         ExactTerm::E(c) => ExactTerm::E(c * factor),
     }
 }
@@ -1294,12 +1292,8 @@ fn mul_terms(t1: &ExactTerm, t2: &ExactTerm) -> Option<ExactTerm> {
         (ExactTerm::Sqrt(c, rad), ExactTerm::Rational(r)) => {
             Some(ExactTerm::Sqrt(c * r, rad.clone()))
         }
-        (ExactTerm::Rational(r), ExactTerm::Pi(c)) => {
-            Some(ExactTerm::PiPow(r * c, BigRational::one()))
-        }
-        (ExactTerm::Pi(c), ExactTerm::Rational(r)) => {
-            Some(ExactTerm::PiPow(r * c, BigRational::one()))
-        }
+        (ExactTerm::Rational(r), ExactTerm::Pi(c)) => Some(ExactTerm::Pi(r * c)),
+        (ExactTerm::Pi(c), ExactTerm::Rational(r)) => Some(ExactTerm::Pi(r * c)),
         (ExactTerm::Rational(r), ExactTerm::E(c)) => Some(ExactTerm::E(r * c)),
         (ExactTerm::E(c), ExactTerm::Rational(r)) => Some(ExactTerm::E(r * c)),
         (ExactTerm::Sqrt(c1, r1), ExactTerm::Sqrt(c2, r2)) => {
