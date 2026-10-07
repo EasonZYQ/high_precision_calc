@@ -53,6 +53,50 @@ pub enum Number {
     Matrix(Box<Vec<Vec<Number>>>),
 }
 
+/// **二元运算的形态分发 + 回退纪律 —— 只此一处**。
+///
+/// 原先 `add`/`sub`/`mul`/`div` 各自手写了同样的一整套分支：
+///   ① 矩阵分发 ② 复数分发 ③ 先试精确 ④ 精确失败/非精确时回退近似（各自决定用哪个精度）。
+/// 二十多处重复带来两个实际问题：
+/// - **漏一处就是静默错误**：加矩阵形态时我给 `add/sub/mul/pow` 逐个补守卫，`pow` 就漏了，
+///   直到冒烟时 `[[1,2],[3,4]]^2` 输出为空才发现；
+/// - 回退纪律无法审计（"精确失败时各运算是否一致"只能逐处读）。
+///
+/// 现在各运算只提供"**该形态下怎么做**"（四条闭包），"**怎么走**"由本函数统一决定。
+/// 新增第 5 种形态时只需改这里一处，而且这里的 `match` 是穷尽的 ⇒ **编译器会强制回答**。
+///
+/// 语义与重构前**逐分支一致**（纯搬运，不改行为）：先矩阵、再复数、再精确、最后回退。
+fn binary_op<M, C, E, A>(a: &Number, b: &Number, mat: M, cx: C, exact: E, approx: A) -> Number
+where
+    M: FnOnce(&Number, &Number) -> Number,
+    C: FnOnce(&crate::complex::ComplexNum, &crate::complex::ComplexNum) -> Number,
+    E: FnOnce(&ExactExpr, &ExactExpr) -> Option<ExactExpr>,
+    A: FnOnce(&BigFloat, &BigFloat, usize) -> BigFloat,
+{
+    if a.is_matrix() || b.is_matrix() {
+        return mat(a, b);
+    }
+    if a.is_complex() || b.is_complex() {
+        let (x, y) = (a.to_complex(), b.to_complex());
+        return cx(&x, &y);
+    }
+    match (a, b) {
+        (Number::Exact(x), Number::Exact(y)) => match exact(x, y) {
+            Some(r) => Number::Exact(r),
+            None => Number::Approx(approx(
+                &x.to_bigfloat(),
+                &y.to_bigfloat(),
+                bigfloat::precision(),
+            )),
+        },
+        _ => Number::Approx(approx(
+            &a.to_approx(),
+            &b.to_approx(),
+            bigfloat::precision(),
+        )),
+    }
+}
+
 impl Number {
     /// 是否为矩阵
     pub fn is_matrix(&self) -> bool {
@@ -370,32 +414,14 @@ impl Number {
 
     /// 加法
     pub fn add(&self, other: &Number) -> Number {
-        // 矩阵：与标量同处一个值空间，但**只有合法组合**在这里实现：
-        //   矩阵 ± 矩阵（同形，逐元素）、矩阵 × 矩阵（矩阵乘）、数 × 矩阵、矩阵 × 数（数乘）
-        // 非法组合（数 + 矩阵、行列数不匹配）**由上层预检报错**；这里只保证不变式。
-        if self.is_matrix() || other.is_matrix() {
-            return crate::matrix::binary_add(self, other);
-        }
-
-        if self.is_complex() || other.is_complex() {
-            let (a, b) = (self.to_complex(), other.to_complex());
-            return Number::from_complex(a.add(&b));
-        }
-        match (self, other) {
-            (Number::Exact(a), Number::Exact(b)) => match a.add_exact(b) {
-                Some(result) => Number::Exact(result),
-                None => Number::Approx(BigFloat::add(
-                    &a.to_bigfloat(),
-                    &b.to_bigfloat(),
-                    bigfloat::precision(),
-                )),
-            },
-            _ => {
-                let a = self.to_approx();
-                let b = other.to_approx();
-                Number::Approx(BigFloat::add(&a, &b, bigfloat::precision()))
-            }
-        }
+        binary_op(
+            self,
+            other,
+            |a, b| crate::matrix::binary_add(a, b),
+            |x, y| Number::from_complex(x.add(y)),
+            |x, y| x.add_exact(y),
+            |x, y, p| BigFloat::add(x, y, p),
+        )
     }
 
     /// 减法
