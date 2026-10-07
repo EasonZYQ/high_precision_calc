@@ -44,4 +44,5 @@ pub mod complex;
 pub mod display;
 pub mod matrix;
 pub mod number;
+pub mod settings;
 pub mod trig;

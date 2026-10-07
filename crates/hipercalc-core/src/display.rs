@@ -1,5 +1,6 @@
 use crate::bigfloat;
 use crate::number::{ExactExpr, ExactTerm, Number};
+use crate::settings::{LATEX, RESULT_BASE};
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
@@ -81,17 +82,15 @@ fn format_complex(z: &crate::complex::ComplexNum, part: &dyn Fn(&Number) -> Stri
 /// 与数制开关同层：**只影响显示**，不动数值本身。做法是把结果**除以**系数再格式化，
 /// 于是 `3000` 在 `/unit km` 下显示成 `3 km`（精确值相除仍是精确值）。
 /// 单字母单位不收（`m`/`s`/`g`… 与变量命名空间冲突），所以标签一律是多字母的。
-static UNIT: Mutex<Option<(String, BigRational)>> = Mutex::new(None);
-
 /// 设置结果单位；传 `None` 关闭
 pub fn set_unit(u: Option<(String, BigRational)>) {
-    if let Ok(mut g) = UNIT.lock() {
+    if let Ok(mut g) = crate::settings::UNIT.lock() {
         *g = u;
     }
 }
 
 fn unit_scaled(num: &Number) -> (Number, String) {
-    let g = match UNIT.lock() {
+    let g = match crate::settings::UNIT.lock() {
         Ok(g) => g,
         Err(_) => return (num.clone(), String::new()),
     };
@@ -108,7 +107,6 @@ fn unit_scaled(num: &Number) -> (Number, String) {
 ///
 /// 用**显示层开关**而不是给 `DisplayMode` 加枚举分支：`DisplayMode::` 在全仓有 87 处引用，
 /// 加一个变体会牵动一大片 match；而 LaTeX 只影响"结果怎么排"，本质是显示层的事。
-static LATEX: AtomicBool = AtomicBool::new(false);
 
 /// 开关 LaTeX 输出（仅影响结果的符号渲染，数值不变）
 pub fn set_latex(on: bool) {
@@ -124,7 +122,6 @@ pub fn latex() -> bool {
 ///
 /// 与 `bigfloat::display_digits()` 同层：**显示层**的全局开关，不动数值本身。
 /// 只对**整数**生效 —— "0.5 的十六进制"没有标准答案，所以小数与根式一律仍按十进制输出。
-static RESULT_BASE: AtomicU32 = AtomicU32::new(10);
 
 /// 设置结果数制（只接受 2 / 8 / 10 / 16，其余忽略）
 pub fn set_base(base: u32) {

@@ -1,5 +1,8 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use crate::settings::{
+    DISPLAY_DIGITS as DISPLAY_DIGITS_RT, GROUP_DIGITS, PRECISION as PRECISION_RT, SCI_ALLOWED,
+};
 use num_bigint::{BigInt, Sign};
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
@@ -15,10 +18,8 @@ pub const DEFAULT_DISPLAY_DIGITS: usize = 20;
 
 /// 运行期工作精度（小数位数）：默认 80，可由 `/mode prec N` 修改。
 /// 之所以做成运行期开关：精度相关的常数缓存都以目标精度为键，切换精度后自动按新精度重算并各自缓存。
-static PRECISION_RT: AtomicUsize = AtomicUsize::new(DEFAULT_PRECISION);
 
 /// 运行期显示有效位数：默认 20，可由 `/mode digits N` 修改
-static DISPLAY_DIGITS_RT: AtomicUsize = AtomicUsize::new(DEFAULT_DISPLAY_DIGITS);
 
 /// 当前工作精度（小数位数）
 pub fn precision() -> usize {
@@ -31,10 +32,8 @@ pub fn set_precision(p: usize) {
 }
 
 /// 是否允许"整数部分超过显示位数"时改用科学计数法（`/mode sci off` 关闭，改为完整写出）
-static SCI_ALLOWED: AtomicBool = AtomicBool::new(true);
 
 /// 是否给整数部分加千分位分隔（`/mode group on`；仅显示层）
-static GROUP_DIGITS: AtomicBool = AtomicBool::new(false);
 
 /// 当前是否允许科学计数法
 pub fn sci_allowed() -> bool {

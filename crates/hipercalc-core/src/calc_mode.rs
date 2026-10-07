@@ -12,6 +12,7 @@
 //! 注意：`Deep` 只放开**规模**上限，不放开牛顿迭代的发散保护
 //! （`NEWTON_ABS_LIMIT`），否则 `2^x=8` 这类方程会回到卡死状态。
 
+use crate::settings::{DEEP, QUIET, TIMING};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 计算模式
@@ -24,13 +25,10 @@ pub enum CalcMode {
 }
 
 /// 当前是否处于死算模式（默认 Fast）
-static DEEP: AtomicBool = AtomicBool::new(false);
 
 /// 是否显示耗时（默认开）。关掉后不再打印"用时：N秒"行，便于脚本/断言
-static TIMING: AtomicBool = AtomicBool::new(true);
 
 /// 静默输出开关（`/load` 回放脚本时把命令自身的提示压掉，只在末尾给一行汇总）
-static QUIET: AtomicBool = AtomicBool::new(false);
 
 /// 当前是否处于静默输出状态（`lprint!` 等输出宏会据此跳过打印）
 pub fn quiet() -> bool {
