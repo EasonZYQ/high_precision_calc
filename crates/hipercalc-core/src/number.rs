@@ -12,8 +12,6 @@ pub enum ExactTerm {
     Rational(BigRational),
     /// 系数 * sqrt(被开方数), 如 3*sqrt(2)
     Sqrt(BigRational, BigInt),
-    /// 系数 * pi
-    Pi(BigRational),
     /// 系数 * e
     E(BigRational),
     /// 系数 * π^k（k 是有理数），如 Γ(1/2) = π^(1/2)、ζ(2) 的闭式里的 π²
@@ -869,7 +867,7 @@ impl ExactExpr {
                     let r = BigFloat::from_int(rad).sqrt(pr);
                     BigFloat::mul(&c, &r, pr)
                 }
-                ExactTerm::Pi(coeff) => {
+                ExactTerm::PiPow(coeff, k) if k.is_one() => {
                     let c = BigFloat::from_big_rational(coeff);
                     let pi = BigFloat::pi(pr);
                     BigFloat::mul(&c, &pi, pr)
@@ -926,7 +924,9 @@ impl ExactExpr {
                     ExactTerm::Rational(r) => ExactTerm::Rational(-r),
                     ExactTerm::Sqrt(c, r) => ExactTerm::Sqrt(-c, r.clone()),
                     ExactTerm::PiPow(c, k) => ExactTerm::PiPow(-c, k.clone()),
-                    ExactTerm::Pi(c) => ExactTerm::PiPow(-c, BigRational::one()),
+                    ExactTerm::PiPow(c, k) if k.is_one() => {
+                        ExactTerm::PiPow(-c, BigRational::one())
+                    }
                     ExactTerm::E(c) => ExactTerm::E(-c),
                 })
                 .collect(),
@@ -977,7 +977,7 @@ impl ExactExpr {
             return None;
         }
         match &self.terms[0] {
-            ExactTerm::Pi(r) => Some(r.clone()),
+            ExactTerm::PiPow(r, k) if k.is_one() => Some(r.clone()),
             _ => None,
         }
     }
@@ -1312,11 +1312,7 @@ fn mul_terms(t1: &ExactTerm, t2: &ExactTerm) -> Option<ExactTerm> {
         // π 的幂相乘：π^a · π^b = π^(a+b)（√π·√π = π 是 k=1/2 的特例）
         (ExactTerm::PiPow(c1, k1), ExactTerm::PiPow(c2, k2)) => {
             let k = k1 + k2;
-            if k.is_one() {
-                Some(ExactTerm::Pi(c1 * c2))
-            } else {
-                Some(ExactTerm::PiPow(c1 * c2, k))
-            }
+            Some(ExactTerm::PiPow(c1 * c2, k)) // 不再为 k=1 退回 Pi（该变体已合并掉）
         }
         (ExactTerm::PiPow(c1, k1), ExactTerm::Pi(c2)) => {
             Some(ExactTerm::PiPow(c1 * c2, k1 + BigRational::one()))
