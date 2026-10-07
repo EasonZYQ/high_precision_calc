@@ -438,35 +438,25 @@ impl Number {
 
     /// 乘法
     pub fn mul(&self, other: &Number) -> Number {
-        // 矩阵：与标量同处一个值空间，但**只有合法组合**在这里实现：
-        //   矩阵 ± 矩阵（同形，逐元素）、矩阵 × 矩阵（矩阵乘）、数 × 矩阵、矩阵 × 数（数乘）
-        // 非法组合（数 + 矩阵、行列数不匹配）**由上层预检报错**；这里只保证不变式。
-        if self.is_matrix() || other.is_matrix() {
-            return crate::matrix::binary_mul(self, other);
-        }
-
-        if self.is_complex() || other.is_complex() {
-            let (a, b) = (self.to_complex(), other.to_complex());
-            return Number::from_complex(a.mul(&b));
-        }
-        match (self, other) {
-            (Number::Exact(a), Number::Exact(b)) => match a.mul_exact(b) {
-                Some(result) => Number::Exact(result),
-                None => Number::Approx(BigFloat::mul(
-                    &a.to_bigfloat(),
-                    &b.to_bigfloat(),
-                    bigfloat::precision(),
-                )),
-            },
-            _ => {
-                let a = self.to_approx();
-                let b = other.to_approx();
-                Number::Approx(BigFloat::mul(&a, &b, bigfloat::precision()))
-            }
-        }
+        binary_op(
+            self,
+            other,
+            |a, b| crate::matrix::binary_mul(a, b),
+            |x, y| Number::from_complex(x.mul(y)),
+            |x, y| x.mul_exact(y),
+            |x, y, p| BigFloat::mul(x, y, p),
+        )
     }
 
-    /// 除法
+    /// 除法。
+    ///
+    /// **有意不走 `binary_op`**：它带两处额外守卫，而助手的骨架不建模这两件事 ——
+    /// 1. **除零兜底**：REPL 路径已由 parser 拦截（先判 `is_zero`），这里只兜底；
+    ///    不能落到 `BigFloat::div`（它的 `assert!` 会让进程 panic），所以改为断言 + 返回 0，
+    ///    便于在 debug 构建下暴露调用点。这个守卫必须**先于**精确分支，才会同时覆盖两条路径。
+    /// 2. **复数除法返回 `Result`**：除数为零时要走上面同样的兜底，形态与其它运算不同。
+    /// 硬塞进助手只会把两处兜底藏进闭包、更难读 ⇒ 保留原样，并在助手里也能看出
+    /// 其它运算的形态顺序（矩阵→复数→精确→回退）与这里一致。
     pub fn div(&self, other: &Number) -> Number {
         if self.is_complex() || other.is_complex() {
             let (a, b) = (self.to_complex(), other.to_complex());
