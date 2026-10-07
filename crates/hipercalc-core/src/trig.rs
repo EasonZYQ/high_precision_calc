@@ -138,7 +138,11 @@ fn try_exact_tan(angle: &Number, mode: AngleMode) -> Option<Number> {
 
 /// 从 Number 中提取角度度数（仅当为整数或有理数时）
 fn extract_degrees(angle: &Number) -> Option<BigInt> {
+    if angle.is_matrix() {
+        return None;
+    }
     match angle {
+        Number::Matrix(_) => None,
         Number::Exact(expr) => expr.as_integer(),
         Number::Approx(_) | Number::Complex(_) => None,
     }
@@ -562,7 +566,11 @@ fn is_exact_sqrt_ratio(num: &Number, rad: u64, den: u64) -> Option<()> {
     if num.is_complex() {
         return None;
     }
+    if num.is_matrix() {
+        return None;
+    }
     match num {
+        Number::Matrix(_) => None,
         Number::Complex(_) => None,
         Number::Exact(expr) => {
             // 形式1: denom=den, coeff=1, rad=rad → sqrt(rad)/den

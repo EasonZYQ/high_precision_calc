@@ -43,9 +43,45 @@ pub enum Number {
     Approx(BigFloat),
     /// 复数 `re + im·i`（实部虚部各自是 `Exact` 或 `Approx`，因此精确/近似统一处理）
     Complex(Box<crate::complex::ComplexNum>),
+    /// 矩阵（行主序）。元素仍是 `Number` ⇒ **复数矩阵、精确矩阵自动成立**
+    /// （元素的精确/近似由元素自己决定，与标量同一套规则）。
+    ///
+    /// 设计约定（矩阵改造的语义基础）：
+    /// - 矩阵与标量**同处一个值空间** ⇒ `/let` 变量、`ans`、显示、持久化都能装矩阵；
+    /// - 但**矩阵的元素不能是矩阵**（`Matrix` 里放 `Number::Matrix` 由构造函数保证不会发生）；
+    /// - 标量与矩阵混合运算：`数×矩阵`、`矩阵×数` 合法；`数+矩阵` 报错（不做广播）。
+    Matrix(Box<Vec<Vec<Number>>>),
 }
 
 impl Number {
+    /// 是否为矩阵
+    pub fn is_matrix(&self) -> bool {
+        matches!(self, Number::Matrix(_))
+    }
+
+    /// 取出矩阵（非矩阵返回 None）
+    pub fn as_matrix(&self) -> Option<&Vec<Vec<Number>>> {
+        match self {
+            Number::Matrix(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// 建矩阵（会检查"矩形"与"元素不是矩阵"两条不变量）
+    pub fn from_matrix(rows: Vec<Vec<Number>>) -> Result<Number, String> {
+        let cols = rows.first().map(|r| r.len()).unwrap_or(0);
+        if cols == 0 {
+            return Err("矩阵不能为空".to_string());
+        }
+        if rows.iter().any(|r| r.len() != cols) {
+            return Err("矩阵每行的列数必须相同".to_string());
+        }
+        if rows.iter().flatten().any(|x| x.is_matrix()) {
+            return Err("矩阵的元素不能还是矩阵".to_string());
+        }
+        Ok(Number::Matrix(Box::new(rows)))
+    }
+
     /// 是否为复数（实部虚部都在 Complex 变体里）
     pub fn is_complex(&self) -> bool {
         matches!(self, Number::Complex(_))
@@ -118,7 +154,14 @@ impl Number {
 
     /// 转换为 BigFloat 近似值
     pub fn to_approx(&self) -> BigFloat {
+        // 矩阵没有标量近似值。**所有用户可见入口都会先拦截矩阵**（显示、运算、函数），
+        // 所以这里放 0 只是为了让 match 穷尽；如果哪天它真被调到，说明有路径漏了拦截 ⇒ 加断言暴露。
+        if self.is_matrix() {
+            debug_assert!(false, "矩阵不应走到 to_approx（有入口漏了拦截）");
+            return BigFloat::from_u64(0);
+        }
         match self {
+            Number::Matrix(_) => BigFloat::from_u64(0),
             Number::Approx(f) => f.clone(),
             Number::Exact(expr) => expr.to_bigfloat(),
             // 复数没有单一实数值：调用方（parser）必须先用 is_complex() 分流。
@@ -132,7 +175,11 @@ impl Number {
 
     /// 判断是否为零
     pub fn is_zero(&self) -> bool {
+        if self.is_matrix() {
+            return false; // 矩阵"不是零"这个判断本身没意义，一律按"非零"处理，由调用方拦截
+        }
         match self {
+            Number::Matrix(_) => false,
             Number::Exact(expr) => expr.is_zero(),
             Number::Approx(f) => f.is_zero(),
             Number::Complex(z) => z.is_zero(),
@@ -141,7 +188,11 @@ impl Number {
 
     /// 判断是否为负
     pub fn is_negative(&self) -> bool {
+        if self.is_matrix() {
+            return false;
+        }
         match self {
+            Number::Matrix(_) => false,
             // 复数没有全序，不参与"负数"判定（开方/取模等都由 parser 先行分流）
             Number::Complex(_) => false,
             Number::Exact(expr) => {
@@ -157,7 +208,16 @@ impl Number {
 
     /// 取相反数
     pub fn neg(&self) -> Number {
+        if let Number::Matrix(m) = self {
+            return Number::Matrix(Box::new(
+                m.iter()
+                    .map(|r| r.iter().map(|x| x.neg()).collect())
+                    .collect(),
+            ));
+        }
+
         match self {
+            Number::Matrix(_) => self.clone(),
             Number::Exact(expr) => Number::Exact(expr.neg()),
             Number::Approx(f) => Number::Approx(f.neg()),
             Number::Complex(z) => Number::Complex(Box::new(z.neg())),
@@ -178,11 +238,15 @@ impl Number {
 
     /// 向下取整：≤ x 的最大整数
     pub fn floor(&self) -> Number {
+        if self.is_matrix() {
+            return self.clone(); // 矩阵取整无意义：调用方会先拦截，这里只保证不变式
+        }
         if self.is_complex() {
             debug_assert!(false, "复数不支持 floor（parser 已先行拦截）");
             return self.clone();
         }
         match self {
+            Number::Matrix(_) => self.clone(),
             Number::Exact(e) => {
                 if let Some(r) = e.as_rational() {
                     return Number::from_bigint(rational_floor(&r));
@@ -196,11 +260,15 @@ impl Number {
 
     /// 向上取整：≥ x 的最小整数
     pub fn ceil(&self) -> Number {
+        if self.is_matrix() {
+            return self.clone();
+        }
         if self.is_complex() {
             debug_assert!(false, "复数不支持 ceil（parser 已先行拦截）");
             return self.clone();
         }
         match self {
+            Number::Matrix(_) => self.clone(),
             Number::Exact(e) => {
                 if let Some(r) = e.as_rational() {
                     return Number::from_bigint(rational_ceil(&r));
@@ -240,7 +308,12 @@ impl Number {
 
     /// 有理数检测（用于特殊角度匹配）
     pub fn as_rational(&self) -> Option<BigRational> {
+        // 矩阵不是标量 ⇒ 统一返回 None（"非标量一律 None"是本文件的约定）
+        if self.is_matrix() {
+            return None;
+        }
         match self {
+            Number::Matrix(_) => None,
             Number::Exact(expr) => expr.as_rational(),
             Number::Approx(_) => None,
             Number::Complex(_) => None,
@@ -249,7 +322,11 @@ impl Number {
 
     /// 检测是否为 pi 的有理数倍（用于弧度模式 trig）
     pub fn as_pi_multiple(&self) -> Option<BigRational> {
+        if self.is_matrix() {
+            return None;
+        }
         match self {
+            Number::Matrix(_) => None,
             Number::Exact(expr) => expr.as_pi_multiple(),
             Number::Approx(_) => None,
             Number::Complex(_) => None,
@@ -258,6 +335,13 @@ impl Number {
 
     /// 加法
     pub fn add(&self, other: &Number) -> Number {
+        // 矩阵：与标量同处一个值空间，但**只有合法组合**在这里实现：
+        //   矩阵 ± 矩阵（同形，逐元素）、矩阵 × 矩阵（矩阵乘）、数 × 矩阵、矩阵 × 数（数乘）
+        // 非法组合（数 + 矩阵、行列数不匹配）**由上层预检报错**；这里只保证不变式。
+        if self.is_matrix() || other.is_matrix() {
+            return crate::matrix::binary_add(self, other);
+        }
+
         if self.is_complex() || other.is_complex() {
             let (a, b) = (self.to_complex(), other.to_complex());
             return Number::from_complex(a.add(&b));
@@ -281,11 +365,25 @@ impl Number {
 
     /// 减法
     pub fn sub(&self, other: &Number) -> Number {
+        // 矩阵：与标量同处一个值空间，但**只有合法组合**在这里实现：
+        //   矩阵 ± 矩阵（同形，逐元素）、矩阵 × 矩阵（矩阵乘）、数 × 矩阵、矩阵 × 数（数乘）
+        // 非法组合（数 + 矩阵、行列数不匹配）**由上层预检报错**；这里只保证不变式。
+        if self.is_matrix() || other.is_matrix() {
+            return crate::matrix::binary_sub(self, other);
+        }
+
         self.add(&other.neg())
     }
 
     /// 乘法
     pub fn mul(&self, other: &Number) -> Number {
+        // 矩阵：与标量同处一个值空间，但**只有合法组合**在这里实现：
+        //   矩阵 ± 矩阵（同形，逐元素）、矩阵 × 矩阵（矩阵乘）、数 × 矩阵、矩阵 × 数（数乘）
+        // 非法组合（数 + 矩阵、行列数不匹配）**由上层预检报错**；这里只保证不变式。
+        if self.is_matrix() || other.is_matrix() {
+            return crate::matrix::binary_mul(self, other);
+        }
+
         if self.is_complex() || other.is_complex() {
             let (a, b) = (self.to_complex(), other.to_complex());
             return Number::from_complex(a.mul(&b));
@@ -517,6 +615,11 @@ impl Number {
 
     /// 整数次幂
     fn int_pow(&self, exp: u32) -> Result<Number, String> {
+        // 矩阵幂：走 matrix 模块（顶部守卫已处理，这里写正确语义以满足穷尽匹配）
+        if self.is_matrix() {
+            return crate::matrix::int_pow(self, exp);
+        }
+
         if exp == 0 {
             return Ok(Number::from_int(1));
         }
@@ -525,6 +628,7 @@ impl Number {
         }
 
         match self {
+            Number::Matrix(_) => crate::matrix::int_pow(self, exp),
             Number::Complex(z) => Ok(Number::Complex(Box::new(z.int_pow(exp)?))),
             Number::Exact(expr) => {
                 if let Some(int_val) = expr.as_integer() {
@@ -624,6 +728,11 @@ impl Number {
 
     /// 平方根
     pub fn sqrt(&self) -> Number {
+        if self.is_matrix() {
+            debug_assert!(false, "矩阵不应走到 sqrt（有入口漏了拦截）");
+            return self.clone();
+        }
+
         if let Number::Complex(z) = self {
             // 复数的平方根（parser 的 sqr/sqrt 分支也会直接走这条路）
             return match z.sqrt() {
@@ -635,6 +744,7 @@ impl Number {
             };
         }
         match self {
+            Number::Matrix(_) => self.clone(),
             Number::Exact(expr) => {
                 // 检查是否为完全平方数
                 if let Some(int_val) = expr.as_integer() {

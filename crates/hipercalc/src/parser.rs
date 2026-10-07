@@ -411,7 +411,7 @@ impl Parser {
         let c0 = *self.input.get(self.pos)?;
         let c1 = self.input.get(self.pos + 1).copied();
         match (c0, c1) {
-            ('<', Some('=')) | ('<', Some('=')) => Some(("<=", 2)),
+            ('<', Some('=')) => Some(("<=", 2)),
             ('=', Some('=')) => None, // `==` 不认（保持既有语义）
             ('=', Some('<')) => Some(("=<", 2)),
             ('>', Some('=')) => Some((">=", 2)),
@@ -2314,6 +2314,7 @@ pub(crate) fn radians_to_degrees(result: Number) -> Number {
     match result {
         // 上面已提前返回复数
         Number::Complex(_) => unreachable!("radians_to_degrees 已在入口处理复数"),
+        Number::Matrix(m) => Number::Matrix(m), // 矩阵原样透传（角度制只作用于三角标量结果）
         Number::Exact(expr) => {
             // 精确值转换：Pi(coeff) → Rational(coeff * 180)
             let mut new_terms: Vec<hipercalc_core::number::ExactTerm> = Vec::new();

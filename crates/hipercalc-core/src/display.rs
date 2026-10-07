@@ -13,6 +13,10 @@ pub fn format_mathio(num: &Number) -> String {
 }
 
 fn format_mathio_raw(num: &Number) -> String {
+    // 矩阵：逐元素用**同一个 raw 格式化器**（避免重复套单位/缩放）
+    if let Number::Matrix(m) = num {
+        return crate::matrix::render(m, &format_mathio_raw);
+    }
     if let Some(s) = format_radix(num) {
         return s;
     }
@@ -30,6 +34,7 @@ fn format_mathio_raw(num: &Number) -> String {
             if s == "-0" { "0".to_string() } else { s }
         }
         Number::Complex(z) => format_complex(z, &format_mathio_raw),
+        Number::Matrix(m) => crate::matrix::render(m, &format_mathio_raw),
     }
 }
 
@@ -170,6 +175,9 @@ pub fn format_lineio(num: &Number) -> String {
 }
 
 fn format_lineio_raw(num: &Number) -> String {
+    if let Number::Matrix(m) = num {
+        return crate::matrix::render(m, &format_lineio_raw);
+    }
     if let Number::Complex(z) = num {
         return format_complex(z, &format_lineio_raw);
     }

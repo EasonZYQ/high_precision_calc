@@ -374,6 +374,7 @@ fn format_number(n: &Number, mode: DisplayMode) -> String {
 
 fn number_to_rational(n: &Number) -> Option<BigRational> {
     match n {
+        Number::Matrix(_) => None, // 矩阵不是标量
         Number::Exact(expr) => expr
             .as_rational()
             .or_else(|| expr.as_integer().map(BigRational::from_integer)),
