@@ -29,6 +29,7 @@ mod primefac;
 mod solve_aux;
 mod solver_factor;
 mod solver_fit;
+mod solver_ineq;
 mod solver_linear;
 mod solver_nonlinear;
 mod solver_poly;
@@ -163,6 +164,12 @@ const FUNCTIONS_META: &[FnMeta] = &[
         min: 5,
         max: 5,
         sig: "(x, y, k, a, b)",
+    },
+    FnMeta {
+        name: "ineq",
+        min: 3,
+        max: 3,
+        sig: "(f, 0, op)（内部使用；由 < <= > >= != 脱糖而来）",
     },
     FnMeta {
         name: "list",
@@ -2588,6 +2595,7 @@ fn run_line(input: &str, state: &mut AppState) -> (String, bool) {
         }
         Ok(EvalResult::Factor(inner)) => (handle_factor(&inner, state), false),
         Ok(EvalResult::Equation(left, right)) => (handle_equation(&left, &right, state), false),
+        Ok(EvalResult::Inequality(items)) => (handle_inequality(&items, state), false),
         Ok(EvalResult::System(equations)) => (handle_system(&equations, state), false),
         Ok(EvalResult::Fit(fit)) => (handle_fit(&fit, state), false),
         Ok(EvalResult::Triangle(tri)) => (handle_triangle(&tri, state), false),
@@ -2947,6 +2955,26 @@ fn newton_with_guesses(
         }
     }
     None
+}
+
+/// 解不等式（组）：交给 `solver_ineq`，输出**区间解集**。
+///
+/// 输出形如 `x ∈ (-∞, -2) ∪ (2, +∞)` —— 区间记号是通用写法，不需要翻译。
+fn handle_inequality(items: &[(crate::parser::Expr, u8)], state: &mut AppState) -> String {
+    let Some(var) = items
+        .iter()
+        .find_map(|(f, _)| crate::solver_ineq::find_var(f))
+    else {
+        leprint!("{}", i18n::t("不等式里没有自变量（如 x）"));
+        return String::new();
+    };
+    match crate::solver_ineq::solve(&state.evaluator, items, var) {
+        Ok(set) => format!("{var} ∈ {set}"),
+        Err(e) => {
+            leprint!("{}", e);
+            String::new()
+        }
+    }
 }
 
 /// /let：存储变量（变量名必须全大写字母）
@@ -4045,6 +4073,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   zeta(s)  黎曼 ζ：偶数点给精确闭式（zeta(2) = pi^2/6）；奇数点暂无闭式，报错提示
   单位     3 km、2 mile、500 meter（解析期折成 SI）；/unit km 让结果按该单位显示、/unit off 关闭
   物理常量 C0/LIGHT_SPEED、KB/BOLTZMANN、NA/AVOGADRO、HPL/PLANCK、ME、MP…（CODATA 2022，只读：不能用作变量名）
+  不等式   x^2>4 / x<=2 / x!=2（>= 与 =>、<= 与 =< 都收）；不等式组用逗号：x>1, x<3, x!=2
   ( )       自动配对：敲 ( 自动补出 ) 并把光标放进中间；再敲 ) 会**越过**已有的 )，不会重复
   z^w      复数幂（主值）：i^i ≈ 0.2078795764、2^i ≈ 0.7692389014 + 0.6389612763i；整数指数仍给精确值
   erf(x) / erfc(x)  误差函数与补误差函数（数值级数；|x| ≥ 8 饱和为 ±1）
@@ -4571,6 +4600,49 @@ mod cli_tests {
         // 0 的复数次幂未定义
         let (out, err) = run_line("0^i", &mut st);
         assert!(err, "0^i 应被拒绝，却得到 {out}");
+    }
+
+    /// 不等式：多项式不等式、不等式组（求交）、!= 排除点；期望值全部可手算核对。
+    #[test]
+    fn inequalities() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        for (input, want) in [
+            ("x^2>4", "x ∈ (-∞, -2) ∪ (2, ∞)"),
+            ("x^2 < 4", "x ∈ (-2, 2)"),
+            ("x^2>=4", "x ∈ (-∞, -2] ∪ [2, ∞)"),
+            ("x^2<=4", "x ∈ [-2, 2]"),
+            // 移项：x²-4<0 等价于 x²<4
+            ("x^2-4<0", "x ∈ (-2, 2)"),
+            // 三次多项式：符号在 1、2、3 处变号 ⇒ (1,2) ∪ (3,∞)
+            ("(x-1)*(x-2)*(x-3)>0", "x ∈ (1, 2) ∪ (3, ∞)"),
+            ("x^3-x>0", "x ∈ (-1, 0) ∪ (1, ∞)"),
+            // 恒成立 / 恒不成立
+            ("x^2+1>0", "x ∈ (-∞, ∞)"),
+            ("x^2+1<0", "∅"),
+            // 两种大于等于写法都收（用户要求）
+            ("x>=2", "x ∈ [2, ∞)"),
+            ("x=>2", "x ∈ [2, ∞)"),
+            ("x=<2", "x ∈ (-∞, 2]"),
+            // 不等式组：求交集
+            ("x>=1, x=<3", "x ∈ [1, 3]"),
+            ("x>0, x>2", "x ∈ (2, ∞)"),
+            // != 排除点（`!` 后面跟 `=` 不算阶乘）
+            ("x^2!=4", "x ∈ (-∞, -2) ∪ (-2, 2) ∪ (2, ∞)"),
+            ("x>1, x<3, x!=2", "x ∈ (1, 2) ∪ (2, 3)"),
+        ] {
+            let (out, err) = run_line(input, &mut st);
+            assert!(!err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 {want}");
+        }
+        // 非多项式：**不能给出解**（错误文案走 stderr，run_line 只看 stdout ⇒ 这里断言没有解）
+        let (out, _err) = run_line("sin(x)>0", &mut st);
+        assert!(
+            !out.contains("∈"),
+            "sin(x)>0 不该给出解（暂只支持多项式）: {out}"
+        );
+        // 关键非回归：`!` 的阶乘语义不能被动过
+        let (out, err) = run_line("5!", &mut st);
+        assert!(!err && out.contains("120"), "阶乘被破坏: {out}");
     }
 
     /// 统计函数：**两种参数形态**都测（列表 / 表达式+范围），期望值全部可手算。

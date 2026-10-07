@@ -307,5 +307,6 @@
   "{0} 不是已知单位（单字母单位不收，可写 meter/second/gram）": "{0} is not a known unit (single-letter units are not accepted; use meter/second/gram)",
   "用法: /unit 单位名|off（如 /unit km）": "usage: /unit <name>|off (e.g. /unit km)",
   "无法解析该单位的系数": "cannot parse the conversion factor for that unit",
-  "单位名|off（结果按该单位显示；如 /unit km）": "unit name|off (show results in that unit; e.g. /unit km)"
+  "单位名|off（结果按该单位显示；如 /unit km）": "unit name|off (show results in that unit; e.g. /unit km)",
+  "不等式里没有自变量（如 x）": "the inequality has no variable (e.g. x)"
 }

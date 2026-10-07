@@ -40,6 +40,17 @@ pub const PHYS_CONSTANTS: &[(&str, &str, &str)] = &[
 /// **只收多字母单位**：单字母（`m`/`s`/`g`/`A`/`K`…）与变量命名空间冲突，
 /// 刻意排除（可写 `meter`/`second`/`gram`）。`KB` 也不收 —— 它是玻尔兹曼常量。
 /// 用法：`3 km` / `3km` / `500 m` 在解析期就折成 SI（`3 km` → `3*1000` → `3000`）。
+/// 比较运算符 → 编码（与 `solver_ineq` 的常量一致）
+pub fn classify_op(op: &str) -> (&'static str, u8) {
+    match op {
+        "<" => ("<", crate::solver_ineq::OP_LT),
+        "<=" | "=<" | "≤" => ("<=", crate::solver_ineq::OP_LE),
+        ">" => (">", crate::solver_ineq::OP_GT),
+        ">=" | "=>" | "≥" => (">=", crate::solver_ineq::OP_GE),
+        _ => ("!=", crate::solver_ineq::OP_NE),
+    }
+}
+
 pub const PHYS_UNITS: &[(&str, &str)] = &[
     // 长度（SI 基本单位：米）
     ("meter", "1"),
@@ -197,6 +208,7 @@ pub const FUNCTIONS: &[&str] = &[
     "percentile",
     "corr",
     "list",
+    "ineq",
 ];
 
 /// 需要两个参数的函数（其余函数都是单参；`log` 有专门的报错文案，单独处理）
@@ -394,11 +406,46 @@ impl Parser {
         }
     }
 
+    /// 识别比较运算符：返回 (运算符原文, 字符数)。注意 **两字符优先**（`<=` 不能被当成 `<`）
+    fn peek_comparison_op(&self) -> Option<(&'static str, usize)> {
+        let c0 = *self.input.get(self.pos)?;
+        let c1 = self.input.get(self.pos + 1).copied();
+        match (c0, c1) {
+            ('<', Some('=')) | ('<', Some('=')) => Some(("<=", 2)),
+            ('=', Some('=')) => None, // `==` 不认（保持既有语义）
+            ('=', Some('<')) => Some(("=<", 2)),
+            ('>', Some('=')) => Some((">=", 2)),
+            ('=', Some('>')) => Some(("=>", 2)),
+            ('!', Some('=')) => Some(("!=", 2)),
+            ('<', _) => Some(("<", 1)),
+            ('>', _) => Some((">", 1)),
+            ('≤', _) => Some(("≤", 1)),
+            ('≥', _) => Some(("≥", 1)),
+            ('≠', _) => Some(("≠", 1)),
+            _ => None,
+        }
+    }
+
     /// 解析等式或表达式
     /// 先解析左边表达式，若紧跟 = 则解析右边并返回 Equation
     pub fn parse_equation(&mut self) -> Result<Expr, String> {
         let left = self.parse_expression()?;
         self.skip_whitespace();
+        // 比较运算符 → 脱糖成 Function("ineq", [左边, 右边, 运算符编码])。
+        // **不新增 Expr 变体**：`Expr` 在 14 个文件里被穷尽匹配，加变体会牵动一大片；
+        // 复用 Function（与统计函数、`[...]` 列表同一手法）零波及。
+        // 运算符两种写法都收：>= 与 =>、<= 与 =<（用户要求），另有 != 与 Unicode ≠。
+        if let Some((op, len)) = self.peek_comparison_op() {
+            let (_, code) = classify_op(op);
+            for _ in 0..len {
+                self.next();
+            }
+            let right = self.parse_expression()?;
+            return Ok(Expr::Function(
+                "ineq".to_string(),
+                vec![left, right, Expr::Number(Number::from_int(code as i64))],
+            ));
+        }
         if self.peek() == Some('=') {
             self.next(); // 跳过 '='
             let right = self.parse_expression()?;
@@ -483,7 +530,8 @@ impl Parser {
         // 后缀阶乘 !（紧贴操作数，优先级高于幂：2^3! = 2^(3!)）
         // 使用内部函数名 "fact"，白名单不含该名，用户无法直接输入 fact(...)
         self.skip_whitespace();
-        while self.peek() == Some('!') {
+        // 注意前瞻： 后面若跟 ，那是**不等号** （用户要求的不等写法），不是阶乘
+        while self.peek() == Some('!') && self.input.get(self.pos + 1) != Some(&'=') {
             self.next();
             base = Expr::Function("fact".to_string(), vec![base]);
         }
@@ -2330,6 +2378,9 @@ pub enum EvalResult {
     Equation(Box<Expr>, Box<Expr>),
     /// 方程组（需要求解）
     System(Vec<(Box<Expr>, Box<Expr>)>),
+    /// 不等式（组）：每项是 (移项成 `f op 0` 后的 f, 运算符编码)。
+    /// 由 `< <= > >= !=` 脱糖而来（见 `parse_equation` 里的 `ineq` 函数）。
+    Inequality(Vec<(Expr, u8)>),
     /// 多项式拟合输入：坐标（含顶点标记）+ 可选解析式模板
     Fit(Box<crate::solver_fit::FitInput>),
     /// 三角形求解输入：空白分隔的赋值（`a=3 b=4 c=5`、`A=30 b=5 C=60`、`hA=4 a=3 b=4`）
@@ -2633,6 +2684,34 @@ pub fn parse_primefac(input: &str, evaluator: &mut Evaluator) -> Result<Option<N
     Ok(Some(Number::from_bigint(n)))
 }
 
+/// 把若干 `ineq(左, 右, 运算符编码)` 调用组装成 `EvalResult::Inequality`：
+/// 左-右 移项成多项式 `f`，并取出运算符与自变量。
+fn ineq_result(items: Vec<(String, Vec<Expr>)>) -> Result<EvalResult, String> {
+    let mut out: Vec<(Expr, u8)> = Vec::new();
+    for (_, mut args) in items {
+        if args.len() != 3 {
+            return Err("不等式的内部表示异常（应为 3 个参数）".to_string());
+        }
+        let op = args.pop().expect("已判长度");
+        let right = args.pop().expect("已判长度");
+        let left = args.pop().expect("已判长度");
+        let code = match &op {
+            Expr::Number(n) => n
+                .as_rational()
+                .map(|r| r.to_integer().to_u8())
+                .flatten()
+                .unwrap_or(0),
+            _ => return Err("不等式的运算符编码异常".to_string()),
+        };
+        // 移项：f = 左 - 右
+        out.push((
+            Expr::Binary(Box::new(left), BinOp::Sub, Box::new(right)),
+            code,
+        ));
+    }
+    Ok(EvalResult::Inequality(out))
+}
+
 /// 解析并求值顶层输入
 pub fn parse_and_eval(input: &str, evaluator: &mut Evaluator) -> Result<EvalResult, String> {
     let mut parser = Parser::new(input);
@@ -2715,7 +2794,24 @@ pub fn parse_and_eval(input: &str, evaluator: &mut Evaluator) -> Result<EvalResu
     };
 
     match expr {
+        // 不等式（组）：元素是脱糖出的 `ineq(f, 0, op)` 调用
+        Expr::Function(name, args) if name == "ineq" => {
+            return crate::parser::ineq_result(vec![(name, args)]);
+        }
         Expr::System(eqs) => {
+            if eqs
+                .iter()
+                .all(|e| matches!(e, Expr::Function(n, _) if n == "ineq"))
+            {
+                let items: Vec<(String, Vec<Expr>)> = eqs
+                    .into_iter()
+                    .map(|e| match e {
+                        Expr::Function(n, a) => (n, a),
+                        _ => unreachable!(),
+                    })
+                    .collect();
+                return crate::parser::ineq_result(items);
+            }
             let mut pairs = Vec::new();
             for eq in eqs {
                 match eq {
