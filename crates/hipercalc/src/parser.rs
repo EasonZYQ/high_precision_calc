@@ -209,6 +209,11 @@ pub const FUNCTIONS: &[&str] = &[
     "corr",
     "list",
     "ineq",
+    "det",
+    "inv",
+    "trace",
+    "transpose",
+    "rank",
 ];
 
 /// 需要两个参数的函数（其余函数都是单参；`log` 有专门的报错文案，单独处理）
@@ -1332,6 +1337,11 @@ impl Evaluator {
             Expr::Binary(left, op, right) => {
                 let l = self.eval_node(left, substs)?;
                 let r = self.eval_node(right, substs)?;
+                // 矩阵预检：`Number::add/mul` 的签名没有 `Result`，非法组合必须在这里拦下，
+                // 否则会走到 core 的不变式断言（那是 debug 断言，Release 下会给出错答案）。
+                if l.is_matrix() || r.is_matrix() {
+                    check_matrix_op(&l, op, &r)?;
+                }
                 match op {
                     BinOp::Add => Ok(l.add(&r)),
                     BinOp::Sub => Ok(l.sub(&r)),
@@ -1402,6 +1412,33 @@ impl Evaluator {
     }
 
     fn eval_function(&self, name: &str, args: &[Number]) -> Result<Number, String> {
+        // ── 矩阵：构造与线性代数 ───────────────────────────────────────────
+        // `[a, b, c]`（元素全标量）⇒ **行向量**（1×n）。这与字面量的写法一致；
+        // `[[..], [..]]`（元素是单行）⇒ 组装成矩阵。
+        if name == "list" {
+            if args.iter().all(|a| !a.is_matrix()) {
+                return Number::from_matrix(vec![args.to_vec()]);
+            }
+            let mut rows: Vec<Vec<Number>> = Vec::new();
+            for a in args {
+                match a {
+                    Number::Matrix(m) if m.len() == 1 => rows.push(m[0].clone()),
+                    _ => return Err("矩阵字面量里每层只能是标量，或单行的 [..]".to_string()),
+                }
+            }
+            return Number::from_matrix(rows);
+        }
+        if let Some(m) = args.first().and_then(|a| a.as_matrix()) {
+            use hipercalc_core::matrix as mx;
+            return match name {
+                "det" => mx::det(m),
+                "inv" => mx::inv(m),
+                "trace" => mx::trace(m),
+                "transpose" => Ok(Number::Matrix(Box::new(mx::transpose(m)))),
+                "rank" => Ok(Number::from_int(mx::rank(m) as i64)),
+                _ => Err(format!("函数 {name} 不支持矩阵参数")),
+            };
+        }
         // 高等数学函数是**解析期**由 `calculus::expand_calculus` 就地展开的，正常流程到不了这里。
         // 这条拦截是兜底：万一将来新增了绕过重写的解析路径，也要给出明确提示而不是"未知函数"。
         if crate::calculus::is_calculus_name(name) {
@@ -1411,7 +1448,7 @@ impl Evaluator {
         if name == "log" && args.len() != 2 {
             return Err("log 需要两个参数: log(底数, 真数)".to_string());
         }
-        if name != "log" {
+        if name != "log" && name != "list" {
             let want = if TWO_ARG_FUNCTIONS.contains(&name) {
                 2
             } else {
@@ -2683,6 +2720,25 @@ pub fn parse_primefac(input: &str, evaluator: &mut Evaluator) -> Result<Option<N
         return Err(NEED_INT.to_string());
     }
     Ok(Some(Number::from_bigint(n)))
+}
+
+/// 矩阵与标量组合的合法性预检（`+ - *` 的矩阵语义只允许这几种组合）。
+/// 除法对矩阵一律拒绝，提示改用 `inv(A)*B`。
+fn check_matrix_op(l: &Number, op: &BinOp, r: &Number) -> Result<(), String> {
+    let (lm, rm) = (l.as_matrix(), r.as_matrix());
+    match op {
+        BinOp::Add | BinOp::Sub => match (lm, rm) {
+            (Some(a), Some(b)) if a.len() == b.len() && a[0].len() == b[0].len() => Ok(()),
+            (Some(_), Some(_)) => Err("矩阵加减要求两边同形".to_string()),
+            _ => Err("矩阵不能与标量相加减（不做广播）".to_string()),
+        },
+        BinOp::Mul => match (lm, rm) {
+            (Some(a), Some(b)) if a[0].len() == b.len() => Ok(()),
+            (Some(_), Some(_)) => Err("矩阵乘法要求左矩阵的列数等于右矩阵的行数".to_string()),
+            _ => Ok(()), // 数 × 矩阵 / 矩阵 × 数
+        },
+        BinOp::Div => Err("矩阵不支持除法（可用 inv(A)*B）".to_string()),
+    }
 }
 
 /// 把若干 `ineq(左, 右, 运算符编码)` 调用组装成 `EvalResult::Inequality`：

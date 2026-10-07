@@ -466,6 +466,15 @@ impl Number {
 
     /// 幂运算
     pub fn pow(&self, exponent: &Number) -> Result<Number, String> {
+        // 矩阵的幂：指数必须是非负整数（方阵），走 matrix 模块
+        if self.is_matrix() {
+            let e = exponent
+                .as_rational()
+                .and_then(|r| r.to_integer().to_u32())
+                .ok_or_else(|| "矩阵的幂需要非负整数指数".to_string())?;
+            return crate::matrix::int_pow(self, e);
+        }
+
         // 复数底数或指数：只支持整数指数（快速幂，精确）；非整数指数暂不支持
         if self.is_complex() || exponent.is_complex() {
             // 指数不是「有理整数」时走复数幂的**主值**：z^w = exp(w·ln z)

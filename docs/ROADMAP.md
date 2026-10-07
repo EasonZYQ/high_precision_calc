@@ -170,91 +170,27 @@
 **已知边界**：只支持**多项式**（分式/根式不等式如 `1/x<2` 会明确报错，不会给错答案）；
 `!` 后面跟 `=` 才是不等号，`5!` 仍是阶乘（专门加了非回归断言）。
 
-## 8. 矩阵与线性代数
+## 8. 矩阵与线性代数　✅ 已完成（阶段 1；变量/ans 也打通）
 
-**成本最高**：要引入矩阵值类型与字面量语法。
+**架构（用户按"效果优先"选定）：矩阵是 `Number` 的第四个变体 ⇒ 一等值。**
+`/let` 变量、`ans`、显示、持久化**全部自动可用**（它们本来就只认 `Number`）。
+- 元素仍是 `Number` ⇒ **精确矩阵、复数矩阵自动成立**（整数矩阵的 `det` 给精确值）
+- 矩阵的元素不能是矩阵（`from_matrix` 保证）
+- 只有**合法组合**在 core 实现；非法组合（数+矩阵、行列不匹配）由求值器预检报错
+  （因为 `Number::add/mul` 的签名没有 `Result`）
+- 消元取"第一个非零主元"而非最大主元：精确算术下只需避免零主元，顺带绕开 `Number` 没有 `Ord`
 
-- **可复用**：线性方程组的高斯消元（`solver_linear.rs` 已有）
-- **建议先做**：`det`、矩阵乘法、转置、秩；逆矩阵与特征值往后放。
-- **要改**：新类型（`Value::Matrix`）、字面量解析（`[[1,2],[3,4]]`）、各求值分支的"非标量"处理、  
-  显示层、`EvalResult` 新增变体。**几乎所有层都会被牵动**。
-- **成本**：高。**风险**：高——建议单独一个里程碑，不要和其它项混做。
+**接口盘点（动手前做的，很值）**：`[...]` 嵌套脱糖**天然**给出矩阵字面量；
+现有线性代数用的就是 `Vec<Vec<Number>>`；`Number` 的算子足够写 LU；
+而给 `Number` 加变体只波及 **17 个文件的 21 处穷尽匹配**（比"146 处引用"给人的印象小得多）。
 
----
+**实测**
+`[[1,2],[3,4]]` → `[[1, 2], [3, 4]]`；`[1,2,3]` → 行向量；
+`det` → `-2`、`det([[1,2],[2,4]])` → `0`、`trace` → `5`、`rank` → `1`/`2`；
+`[[1,2],[3,4]]*[[1],[1]]` → `[[3], [7]]`；`^2` → `[[7, 10], [15, 22]]`；`^0` → 单位阵；
+`inv([[1,2],[3,4]])` → `[[-2, 1], [3/2, -1/2]]`；`/let A = [[..]]` 后 `det(A)` → `-2` ✓
 
-## clippy 清理的最终状态（本次）
-
-- **core 侧 0 告警** ✓；**app 侧 150 → 10** ✓
-  - `cargo clippy --fix` 一趟清掉 86 条机器可修复项（`collapsible_if` 68 等），
-    18 文件净减 86 行，**178 项测试验证语义未变**。
-  - 余下用**带理由的 crate 级豁免**处理 3 类判断项（写在 `lib.rs` 顶部并逐条注明）：
-    `needless_range_loop`（22 条，全在线性代数/数值代码 —— 索引循环比迭代器链更贴近公式）、
-    `type_complexity`（6 条）、`too_many_arguments`（1 条，`state::save` 的固有形状）。
-  - 还剩 **10 条纯外观项**（空行、下划线分组、`sort_by_key` 等），建议下次一批清完。
-- **CI 已升级为拦 correctness**：
-  `cargo clippy --workspace --all-targets -- -D clippy::correctness`
-  —— 这条命令的**退出码验证过是 0**（不是拿告警计数当判据；这点之前判断错过一次）。
-
-## 已登记但未做的技术债
-
-1. **左括号自动配对**　✅ 已解决（这次**用诊断而不是推理**找到根因）
-
-   - `(`：按键处理器记下字符 → `Cmd::Complete` → `complete()` 给候选 `()` → `update()` 插入并把光标放进括号内。
-   - `)`：**不走补全通路** —— 用行快照自行判断：下一个字符是 `)` 就 `Move` 越过，否则 `Insert`。
-   - **两个根因（都靠实测日志定位；前两次"凭推理"的改动都错了）**：
-     1. `completion_edit` 里"候选以 `)` 结尾 ⇒ 光标停在它前面"这条规则**没有限定多字符候选**，
-        于是**用户手打的单个 `)`** 也命中 ⇒ 光标不前进 ⇒ 之后每个字符都插进括号里 ⇒ 整行错位。
-        修正：`len > 1 && elected.ends_with(')')`（已补回归测试）。
-     2. **`)(` 相邻括号**：`)` 若也走补全，补全循环的 `next_cmd` 会读走紧随其后的 `(`，
-        而循环内**不会再调 `complete()`** ⇒ 那个 `(` 被直接吞掉 —— 这正是"偏偏 `)(` 失败"的原因。
-        修正：把 `)` 移出补全通路。
-   - **按键处理器拿不到行内容**（rustyline 只给事件与上下文）⇒ 借 `Hinter::hint`（每次刷新都会走）
-     在 `LINE_SNAPSHOT` 里存一份 (整行, 光标) 快照给 `)` 用；锁中毒静默跳过。
-   - **验证**：vhs 在真实终端录屏 + 抽帧核对 —— `(1+2) = 3`、`(x-2)(x+3)+2x=12` → `x = 3, x = -6` ✓
-
-2. **clippy 的 2 条 error（疑似精度隐患）**：  
-   `crates/hipercalc-core/src/bigfloat.rs:236` 与 `:347` 的 `clippy::approx_constant`（近似常量，涉及 `LOG2_10`）。  
-   若那里用截断常量做范围归约，偏差会渗进 exp/ln 的结果 ⇒ **优先级应高于其余 11 条风格告警**。  
-   （CI 的 clippy 目前是**非阻塞**阶段一，等于是个收集器；这两条要先查。）
-3. **非 Windows 的计算中中断**　✅ 已解决（选**手写裸 FFI**，不加依赖）
-
-   非 Windows 分支原本是空实现。现在装 `SIGINT` 处理器，与 Windows 分支对称（只在**计算中**置 `CANCEL`）。
-   - **为什么手写 `extern "C"` 而不是引 `libc`**：项目现有的两处 FFI（`cancel.rs` 的 Win32、
-     `i18n.rs` 的 `GetUserDefaultUILanguage`）都是手写声明、不用任何 FFI crate ⇒ 保持一致且维持零依赖；
-     代价只是多写两行声明，二进制大小**恒为 0**（`extern` 块不生成代码）。
-   - **为什么 `signal()` 而不是 `sigaction()`**：后者要手写 struct 布局、FFI 面大得多，
-     而这里只需要"置一个 `AtomicBool`"（异步信号安全）。glibc/BSD 的 `signal()` 是持久绑定。
-   - **空闲时为什么不处理**：那时 rustyline 处于 raw 模式，终端不产生 `SIGINT`（`^C` 由它读走转 `Interrupted`）。
-   - **验证方式**：本机（Windows）只能验证不破坏编译；`cargo check --target x86_64-unknown-linux-gnu`
-     被本机沙箱挡住（进程管道错误）⇒ **真实编译验证交给 CI 的三平台构建 + 6 目标交叉编译**。
-
-4. **复数非整数次幂**　✅ 已解决：`complex.rs` **早就实现了** `exp`/`ln`/`sqrt`/`arg`
-   （`ln(z) = ln|z| + i·arg z` 走 `atan2`），缺的只是接线 —— `Number::pow` 对非整数指数直接报错、
-   且没有 `ComplexNum::pow`。补上 `ComplexNum::pow(w) = exp(w·ln z)`（**主值**，ln 取主支 ⇒ 辐角 ∈ (−π, π]）
-   并在 `Number::pow` 里接线（**整数指数继续走精确快路，行为完全不变**）。
-   实测：`i^i = 0.20787957635076190855`（= e^(−π/2)）、`2^i = 0.76923890136397212658 + 0.63896127631363480115i`
-   （= cos(ln2)+i·sin(ln2)）、`(1+i)^0.5` 正确；`(1+i)^2 = 2i`、`i^4 = 1`、`(-8)^(1/3) = -2` **仍精确**。
-   **顺带发现一处不一致（未改）**：`sqr(-4) = 2i`（走复数路径 ✓）但 `(-4)^0.5` 报
-   "负数的偶次根在实数范围内无定义" —— 两者是不同的代码路径，建议后续统一。
-
----
-
-## English summary
-
-Ordered by value-to-cost; do **one item per commit** (the repo's usual rhythm).
-
-1. **User-defined functions** `f(x) = …` — highest value. Hard constraint first: function names are validated  
-   against the whitelist **at parse time** (`parser.rs:656`), so `f(3)` is rejected before evaluation; the check  
-   must be relaxed so unknown names reach the evaluator.
-2. **Number bases & bitwise ops** — pure addition, lowest risk (`and/or/xor/not/shl/shr` as functions;  
-   `hex/bin/oct` must be a **display mode**, since `Number` has no string type).
-3. **LaTeX output mode** — MathIO is already close; add a `DisplayMode::Latex` branch (no external LaTeX crate).
-4. **Special functions** — Γ / erf / fib / double factorial / Catalan / ζ, one commit each.
-5. **Statistics** — `mean/median/var/stddev/percentile/corr`; biggest design choice is the argument shape.
-6. **Units & physical constants** — start with function-style conversion; a real quantity type is a separate topic.
-7. **Inequalities** — root finding already exists; needs a solution-set type and rendering.
-8. **Matrices & linear algebra** — highest cost; touches nearly every layer; needs its own milestone.
-
+**阶段 2/3（未做）**：特征值（需特征多项式，符号行列式）、`A\b` 解线性方程组（可复用 `solver_linear`）。
 
 ## 9. 完整量纲系统（原第 6 项的第四方案，**排在最后**）
 
