@@ -214,6 +214,8 @@ pub const FUNCTIONS: &[&str] = &[
     "trace",
     "transpose",
     "rank",
+    "eigen",
+    "linsolve",
 ];
 
 /// 需要两个参数的函数（其余函数都是单参；`log` 有专门的报错文案，单独处理）
@@ -1428,6 +1430,36 @@ impl Evaluator {
             }
             return Number::from_matrix(rows);
         }
+        // 特征值：core 给特征多项式系数，这里用**现成的多项式求根**解它
+        if name == "eigen" {
+            let m = args
+                .first()
+                .and_then(|a| a.as_matrix())
+                .ok_or_else(|| "eigen 需要矩阵参数".to_string())?;
+            let coeffs = hipercalc_core::matrix::char_poly_coeffs(m)?;
+            let sols = crate::solver_poly::solve_poly_full(&coeffs)?;
+            let mut vals: Vec<Number> = Vec::new();
+            for s in sols {
+                match s {
+                    crate::solver_poly::PolySolution::Real(n) => vals.push(n),
+                    crate::solver_poly::PolySolution::Complex(re, im) => vals.push(
+                        Number::from_complex(hipercalc_core::complex::ComplexNum::new(re, im)),
+                    ),
+                }
+            }
+            // 特征值按行向量返回（复数特征值也能表示）
+            return Number::from_matrix(vec![vals]);
+        }
+        // 解方程组 A x = b
+        if name == "linsolve" {
+            if args.len() != 2 {
+                return Err("linsolve 用法: linsolve(A, b)".to_string());
+            }
+            let (Some(a), Some(b)) = (args[0].as_matrix(), args[1].as_matrix()) else {
+                return Err("linsolve 的两个参数都要是矩阵（b 可写 [..] 行向量）".to_string());
+            };
+            return hipercalc_core::matrix::solve(a, b);
+        }
         if let Some(m) = args.first().and_then(|a| a.as_matrix()) {
             use hipercalc_core::matrix as mx;
             return match name {
@@ -1436,6 +1468,7 @@ impl Evaluator {
                 "trace" => mx::trace(m),
                 "transpose" => Ok(Number::Matrix(Box::new(mx::transpose(m)))),
                 "rank" => Ok(Number::from_int(mx::rank(m) as i64)),
+                "eigen" | "linsolve" => unreachable!("上面已单独处理"),
                 _ => Err(format!("函数 {name} 不支持矩阵参数")),
             };
         }

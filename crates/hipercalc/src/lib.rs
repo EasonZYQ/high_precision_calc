@@ -197,6 +197,18 @@ const FUNCTIONS_META: &[FnMeta] = &[
         sig: "([[..]])",
     },
     FnMeta {
+        name: "eigen",
+        min: 1,
+        max: 1,
+        sig: "([[..]])（2×2 / 3×3）",
+    },
+    FnMeta {
+        name: "linsolve",
+        min: 2,
+        max: 2,
+        sig: "(A, b)（解 Ax=b）",
+    },
+    FnMeta {
         name: "ineq",
         min: 3,
         max: 3,
@@ -4104,6 +4116,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   zeta(s)  黎曼 ζ：偶数点给精确闭式（zeta(2) = pi^2/6）；奇数点暂无闭式，报错提示
   单位     3 km、2 mile、500 meter（解析期折成 SI）；/unit km 让结果按该单位显示、/unit off 关闭
   物理常量 C0/LIGHT_SPEED、KB/BOLTZMANN、NA/AVOGADRO、HPL/PLANCK、ME、MP…（CODATA 2022，只读：不能用作变量名）
+  linsolve(A, b) 解 Ax=b；eigen([[..]]) 特征值（2×2/3×3，复数也给）
   矩阵     [[1,2],[3,4]]（也是变量/ans 可存的值）；det/inv/trace/transpose/rank、*（矩阵乘）、^（整数次幂）
   矩陣     [[1,2],[3,4]]（也是變數/ans 可存的值）；det/inv/trace/transpose/rank、*（矩陣乘）、^（整數次幂）
   不等式   x^2>4 / x<=2 / x!=2（>= 与 =>、<= 与 =< 都收）；不等式组用逗号：x>1, x<3, x!=2
@@ -4681,6 +4694,37 @@ mod cli_tests {
         // 随后  →  ✓（矩阵是一等值，变量/ans 本来就只存 ）。
         let (out, err) = run_line("det([[1,2],[3,4]])", &mut st);
         assert!(!err && out.contains("-2"), "行列式失败: {out}");
+    }
+
+    /// 矩阵阶段 2/3：解线性方程组、特征值；以及访问器统一（非标量一律 None）。
+    #[test]
+    fn matrix_linsolve_and_eigen() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        for (input, want) in [
+            // x+y=3, x-y=1 ⇒ x=2, y=1
+            ("linsolve([[1,1],[1,-1]], [3,1])", "[[2], [1]]"),
+            // 上三角形矩阵的特征值就是对角线 ⇒ 精确 1,2,3
+            ("eigen([[1,1,1],[0,2,1],[0,0,3]])", "[[1, 2, 3]]"),
+            // 对角矩阵
+            ("eigen([[2,0],[0,3]])", "[[2, 3]]"),
+            // λ² - 2λ - 3 = 0 ⇒ 3, -1
+            ("eigen([[1,2],[2,1]])", "[[-1, 3]]"),
+            // 旋转矩阵：特征值是 ±i（复数也能给出）
+            ("eigen([[0,-1],[1,0]])", "[[i, -i]]"),
+        ] {
+            let (out, err) = run_line(input, &mut st);
+            assert!(!err, "{input} 报错: {out}");
+            assert!(out.contains(want), "{input} → {out}；期望含 {want}");
+        }
+        // 奇异矩阵 / 非方阵 / 过大的特征值问题：都要明确报错
+        for bad in [
+            "linsolve([[1,2],[2,4]], [1,2])",
+            "eigen([[1,2,3],[4,5,6]])",
+            "eigen([[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]])",
+        ] {
+            let (out, err) = run_line(bad, &mut st);
+            assert!(err || !out.contains("[["), "{bad} 不该给出结果: {out}");
+        }
     }
 
     /// 不等式：多项式不等式、不等式组（求交）、!= 排除点；期望值全部可手算核对。

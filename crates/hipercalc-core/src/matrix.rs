@@ -229,6 +229,85 @@ pub fn inv(m: &Mat) -> Result<Number, String> {
     Ok(Number::Matrix(Box::new(out)))
 }
 
+/// 解线性方程组 `A x = b`（Gauss-Jordan）。`b` 可以是行向量或列向量，按顺序取值。
+/// 无解 / 无穷多解都给明确错误（不做"给一个特解"这种含糊处理）。
+pub fn solve(a: &Mat, b: &Mat) -> Result<Number, String> {
+    let n = rows(a);
+    if n != cols(a) {
+        return Err("解方程组要求系数矩阵是方阵".to_string());
+    }
+    let rhs: Vec<Number> = b.iter().flatten().cloned().collect();
+    if rhs.len() != n {
+        return Err(format!("右端向量长度应为 {n}"));
+    }
+    // 增广矩阵
+    let mut m: Mat = a
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let mut row = r.clone();
+            row.push(rhs[i].clone());
+            row
+        })
+        .collect();
+    for col in 0..n {
+        let Some(p) = (col..n).find(|&r| !m[r][col].is_zero()) else {
+            return Err("方程组无唯一解（系数矩阵奇异）".to_string());
+        };
+        m.swap(p, col);
+        let pivot = m[col][col].clone();
+        for c in col..=n {
+            m[col][c] = m[col][c].div(&pivot);
+        }
+        for r in 0..n {
+            if r == col {
+                continue;
+            }
+            let factor = m[r][col].clone();
+            if factor.is_zero() {
+                continue;
+            }
+            for c in col..=n {
+                m[r][c] = m[r][c].sub(&factor.mul(&m[col][c]));
+            }
+        }
+    }
+    Ok(Number::Matrix(Box::new(
+        m.iter().map(|r| vec![r[n].clone()]).collect(),
+    )))
+}
+
+/// 特征多项式的系数（**升幂**：`[c0, c1, …]` 表示 `c0 + c1·λ + …`）。
+/// 只做 2×2 与 3×3（闭式），更大的留待将来。
+/// 求根放在上层（core 不依赖应用层的多项式求根）。
+pub fn char_poly_coeffs(m: &Mat) -> Result<Vec<Number>, String> {
+    let n = rows(m);
+    if n != cols(m) {
+        return Err("只有方阵才有特征多项式".to_string());
+    }
+    let tr = trace(m)?;
+    let d = det(m)?;
+    match n {
+        // λ² - tr·λ + det
+        2 => Ok(vec![d, tr.neg(), Number::from_int(1)]),
+        // λ³ - tr·λ² + m2·λ - det，其中 m2 = 所有主子式之和
+        3 => {
+            let mut m2 = Number::from_int(0);
+            for i in 0..3 {
+                for j in (i + 1)..3 {
+                    // 划去第 i、j 行与列后剩下的一阶主子式，即 2×2 子式
+                    let k = 3 - i - j; // 剩下的那个下标
+                    let minor = m[i][i].mul(&m[j][j]).sub(&m[i][j].mul(&m[j][i]));
+                    let _ = k;
+                    m2 = m2.add(&minor);
+                }
+            }
+            Ok(vec![d.neg(), m2, tr.neg(), Number::from_int(1)])
+        }
+        _ => Err(format!("特征值目前只支持 2×2 与 3×3（当前 {n}×{n}）")),
+    }
+}
+
 /// 秩（行阶梯化，数非零行）
 pub fn rank(m: &Mat) -> usize {
     let mut a = m.to_vec();

@@ -82,6 +82,41 @@ impl Number {
         Ok(Number::Matrix(Box::new(rows)))
     }
 
+    // ── 标量访问器约定 ────────────────────────────────────────────────
+    //
+    // 本类型有四种形态：Exact / Approx / Complex / Matrix。访问器遵循**一条约定**：
+    //
+    //   - 取"标量属性"的（`as_rational` / `as_integer` / `as_pi_multiple`…）：
+    //     **不是该形态就返回 `None`**，绝不猜、绝不降级；
+    //   - 取布尔谓词的（`is_zero` / `is_negative`…）：非标量按**最保守值**处理
+    //     （如矩阵一律 `is_zero() == false`），因为"矩阵是不是零"本身没有意义，
+    //     真正该问的是调用方——所有用户可见入口都已先拦截矩阵。
+    //
+    // `ExactExpr` 上有一套同名的访问器（用于符号精确值内部），签名与语义保持一致；
+    // 加新变体时两处都要按这条约定回答一次。
+    //
+    /// 取出整数（要求是**标量**且恰为整数）。
+    ///
+    /// 与 `ExactExpr::as_integer` 同名同义；`Number` 层原先缺这个（写调用方时踩过）。
+    pub fn as_integer(&self) -> Option<BigInt> {
+        if self.is_matrix() || self.is_complex() {
+            return None;
+        }
+        self.as_rational()
+            .filter(|r| r.is_integer())
+            .map(|r| r.to_integer())
+    }
+
+    /// 是否为**精确**值（`Exact` 变体；复数看实部虚部是否都精确，矩阵看元素）
+    pub fn is_exact(&self) -> bool {
+        match self {
+            Number::Exact(_) => true,
+            Number::Complex(z) => z.re.is_exact() && z.im.is_exact(),
+            Number::Matrix(m) => m.iter().flatten().all(|x| x.is_exact()),
+            Number::Approx(_) => false,
+        }
+    }
+
     /// 是否为复数（实部虚部都在 Complex 变体里）
     pub fn is_complex(&self) -> bool {
         matches!(self, Number::Complex(_))
