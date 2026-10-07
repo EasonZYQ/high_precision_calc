@@ -12,8 +12,6 @@ pub enum ExactTerm {
     Rational(BigRational),
     /// 系数 * sqrt(被开方数), 如 3*sqrt(2)
     Sqrt(BigRational, BigInt),
-    /// 系数 * pi
-    Pi(BigRational),
     /// 系数 * e
     E(BigRational),
     /// 系数 * π^k（k 是有理数），如 Γ(1/2) = π^(1/2)、ζ(2) 的闭式里的 π²
@@ -869,7 +867,7 @@ impl ExactExpr {
                     let r = BigFloat::from_int(rad).sqrt(pr);
                     BigFloat::mul(&c, &r, pr)
                 }
-                ExactTerm::Pi(coeff) => {
+                ExactTerm::PiPow(coeff, k) if k.is_one() => {
                     let c = BigFloat::from_big_rational(coeff);
                     let pi = BigFloat::pi(pr);
                     BigFloat::mul(&c, &pi, pr)
@@ -926,7 +924,9 @@ impl ExactExpr {
                     ExactTerm::Rational(r) => ExactTerm::Rational(-r),
                     ExactTerm::Sqrt(c, r) => ExactTerm::Sqrt(-c, r.clone()),
                     ExactTerm::PiPow(c, k) => ExactTerm::PiPow(-c, k.clone()),
-                    ExactTerm::Pi(c) => ExactTerm::PiPow(-c, BigRational::one()),
+                    ExactTerm::PiPow(c, k) if k.is_one() => {
+                        ExactTerm::PiPow(-c, BigRational::one())
+                    }
                     ExactTerm::E(c) => ExactTerm::E(-c),
                 })
                 .collect(),
@@ -977,7 +977,7 @@ impl ExactExpr {
             return None;
         }
         match &self.terms[0] {
-            ExactTerm::Pi(r) => Some(r.clone()),
+            ExactTerm::PiPow(r, k) if k.is_one() => Some(r.clone()),
             _ => None,
         }
     }
@@ -1073,9 +1073,10 @@ impl ExactExpr {
                             c * &BigRational::from_integer(other.denominator.clone()),
                             k.clone(),
                         ),
-                        ExactTerm::Pi(c) => {
-                            ExactTerm::PiPow(c * &BigRational::from_integer(other.denominator.clone()), BigRational::one())
-                        }
+                        ExactTerm::PiPow(c, k) if k.is_one() => ExactTerm::PiPow(
+                            c * &BigRational::from_integer(other.denominator.clone()),
+                            BigRational::one(),
+                        ),
                         ExactTerm::E(c) => {
                             ExactTerm::E(c * &BigRational::from_integer(other.denominator.clone()))
                         }
@@ -1096,7 +1097,9 @@ impl ExactExpr {
                     ExactTerm::Rational(r) => ExactTerm::Rational(r * &recip),
                     ExactTerm::Sqrt(c, rad) => ExactTerm::Sqrt(c * &recip, rad.clone()),
                     ExactTerm::PiPow(c, k) => ExactTerm::PiPow(c * &recip, k.clone()),
-                    ExactTerm::Pi(c) => ExactTerm::PiPow(c * &recip, BigRational::one()),
+                    ExactTerm::PiPow(c, k) if k.is_one() => {
+                        ExactTerm::PiPow(c * &recip, BigRational::one())
+                    }
                     ExactTerm::E(c) => ExactTerm::E(c * &recip),
                 };
                 merge_term(&mut terms, scaled);
@@ -1180,7 +1183,9 @@ impl ExactExpr {
                                 ExactTerm::Rational(r) => ExactTerm::Rational(r * &recip),
                                 ExactTerm::Sqrt(c, r) => ExactTerm::Sqrt(c * &recip, r.clone()),
                                 ExactTerm::PiPow(c, k) => ExactTerm::PiPow(c * &recip, k.clone()),
-                                ExactTerm::Pi(c) => ExactTerm::PiPow(c * &recip, BigRational::one()),
+                                ExactTerm::PiPow(c, k) if k.is_one() => {
+                                    ExactTerm::PiPow(c * &recip, BigRational::one())
+                                }
                                 ExactTerm::E(c) => ExactTerm::E(c * &recip),
                             };
                             merge_term(&mut result_terms, scaled);
@@ -1207,7 +1212,7 @@ fn scale_term(term: &ExactTerm, factor: &BigInt) -> ExactTerm {
         ExactTerm::Rational(r) => ExactTerm::Rational(r * &f),
         ExactTerm::Sqrt(c, rad) => ExactTerm::Sqrt(c * &f, rad.clone()),
         ExactTerm::PiPow(c, k) => ExactTerm::PiPow(c * &f, k.clone()),
-        ExactTerm::Pi(c) => ExactTerm::PiPow(c * &f, BigRational::one()),
+        ExactTerm::PiPow(c, k) if k.is_one() => ExactTerm::PiPow(c * &f, BigRational::one()),
         ExactTerm::E(c) => ExactTerm::E(c * &f),
     }
 }
@@ -1220,7 +1225,7 @@ fn scale_term_rational(term: &ExactTerm, factor: &BigRational) -> ExactTerm {
         ExactTerm::Rational(r) => ExactTerm::Rational(r * factor),
         ExactTerm::Sqrt(c, rad) => ExactTerm::Sqrt(c * factor, rad.clone()),
         ExactTerm::PiPow(c, k) => ExactTerm::PiPow(c * factor, k.clone()),
-        ExactTerm::Pi(c) => ExactTerm::PiPow(c * factor, BigRational::one()),
+        ExactTerm::PiPow(c, k) if k.is_one() => ExactTerm::PiPow(c * factor, BigRational::one()),
         ExactTerm::E(c) => ExactTerm::E(c * factor),
     }
 }
@@ -1262,12 +1267,17 @@ fn merge_term(terms: &mut Vec<ExactTerm>, new_term: ExactTerm) {
             }
             terms.push(new_term);
         }
-        ExactTerm::Pi(new_c) => {
+        ExactTerm::PiPow(new_c, k) if k.is_one() => {
             for t in terms.iter_mut() {
-                if let ExactTerm::Pi(existing_c) = t {
-                    *existing_c = std::mem::replace(existing_c, BigRational::zero()) + new_c;
-                    return;
+                // 只与「同为 π^1」的项合并（k 不为 1 时不参与）
+                let ExactTerm::PiPow(existing_c, kk) = t else {
+                    continue;
+                };
+                if !kk.is_one() {
+                    continue;
                 }
+                *existing_c = std::mem::replace(existing_c, BigRational::zero()) + new_c;
+                return;
             }
             terms.push(new_term);
         }
@@ -1292,8 +1302,12 @@ fn mul_terms(t1: &ExactTerm, t2: &ExactTerm) -> Option<ExactTerm> {
         (ExactTerm::Sqrt(c, rad), ExactTerm::Rational(r)) => {
             Some(ExactTerm::Sqrt(c * r, rad.clone()))
         }
-        (ExactTerm::Rational(r), ExactTerm::PiPow(c, BigRational::one())) => Some(ExactTerm::PiPow(r * c, BigRational::one())),
-        (ExactTerm::PiPow(c, BigRational::one()), ExactTerm::Rational(r)) => Some(ExactTerm::PiPow(r * c, BigRational::one())),
+        (ExactTerm::Rational(r), ExactTerm::PiPow(c, BigRational::one())) => {
+            Some(ExactTerm::PiPow(r * c, BigRational::one()))
+        }
+        (ExactTerm::PiPow(c, BigRational::one()), ExactTerm::Rational(r)) => {
+            Some(ExactTerm::PiPow(r * c, BigRational::one()))
+        }
         (ExactTerm::Rational(r), ExactTerm::E(c)) => Some(ExactTerm::E(r * c)),
         (ExactTerm::E(c), ExactTerm::Rational(r)) => Some(ExactTerm::E(r * c)),
         (ExactTerm::Sqrt(c1, r1), ExactTerm::Sqrt(c2, r2)) => {
@@ -1312,10 +1326,12 @@ fn mul_terms(t1: &ExactTerm, t2: &ExactTerm) -> Option<ExactTerm> {
                 Some(ExactTerm::PiPow(c1 * c2, k))
             }
         }
-        (ExactTerm::PiPow(c1, k1), ExactTerm::Pi(c2)) => {
+        // 注：以下两条已被上面的 (PiPow, PiPow) 完全覆盖（k=1 是其特例）；
+        // 保留为带守卫的形式而非删除，是为了避免整块删除带来的风险。
+        (ExactTerm::PiPow(c1, k1), ExactTerm::PiPow(c2, k2)) if k2.is_one() && !c2.is_zero() => {
             Some(ExactTerm::PiPow(c1 * c2, k1 + BigRational::one()))
         }
-        (ExactTerm::Pi(c1), ExactTerm::PiPow(c2, k2)) => {
+        (ExactTerm::PiPow(c1, k1), ExactTerm::PiPow(c2, k2)) if k1.is_one() && !c1.is_zero() => {
             Some(ExactTerm::PiPow(c1 * c2, k2 + BigRational::one()))
         }
         (ExactTerm::Rational(r), ExactTerm::PiPow(c, k)) => {
@@ -1334,7 +1350,7 @@ fn is_term_zero(term: &ExactTerm) -> bool {
         ExactTerm::Rational(r) => r.is_zero(),
         ExactTerm::Sqrt(c, _) => c.is_zero(),
         ExactTerm::PiPow(c, _) => c.is_zero(),
-        ExactTerm::Pi(c) => c.is_zero(),
+        ExactTerm::PiPow(c, k) if k.is_one() => c.is_zero(),
         ExactTerm::E(c) => c.is_zero(),
     }
 }
@@ -1431,7 +1447,7 @@ fn simplify_expr(expr: &mut ExactExpr) {
             ExactTerm::Sqrt(c, _) => {
                 nums.push(c.numer().abs());
             }
-            ExactTerm::Pi(c) | ExactTerm::E(c) => {
+            ExactTerm::E(c) => {
                 nums.push(c.numer().abs());
             }
             ExactTerm::PiPow(c, _) => {
@@ -1461,7 +1477,7 @@ fn simplify_expr(expr: &mut ExactExpr) {
                 ExactTerm::Sqrt(c, _) => {
                     *c = BigRational::new(c.numer() / &gcd, c.denom().clone());
                 }
-                ExactTerm::Pi(c) => {
+                ExactTerm::PiPow(c, k) if k.is_one() => {
                     *c = BigRational::new(c.numer() / &gcd, c.denom().clone());
                 }
                 ExactTerm::PiPow(c, _) => {
