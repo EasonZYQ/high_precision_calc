@@ -80,20 +80,14 @@ where
         let (x, y) = (a.to_complex(), b.to_complex());
         return cx(&x, &y);
     }
+    // 回退用的精度**在这里取一次**（两个分支共用）——"回退时用多少位"看这一行就知道
+    let pr = bigfloat::precision();
     match (a, b) {
         (Number::Exact(x), Number::Exact(y)) => match exact(x, y) {
             Some(r) => Number::Exact(r),
-            None => Number::Approx(approx(
-                &x.to_bigfloat(),
-                &y.to_bigfloat(),
-                bigfloat::precision(),
-            )),
+            None => Number::Approx(approx(&x.to_bigfloat(), &y.to_bigfloat(), pr)),
         },
-        _ => Number::Approx(approx(
-            &a.to_approx(),
-            &b.to_approx(),
-            bigfloat::precision(),
-        )),
+        _ => Number::Approx(approx(&a.to_approx(), &b.to_approx(), pr)),
     }
 }
 
@@ -862,6 +856,9 @@ impl Number {
 impl ExactExpr {
     /// 转换为 BigFloat
     pub fn to_bigfloat(&self) -> BigFloat {
+        // 精度取一次（原来散在本函数 5 处）：本函数是"符号精确值 → 数值"的唯一出口，
+        // 用哪个精度应当一眼可见。
+        let pr = bigfloat::precision();
         let mut result = BigFloat::from_u64(0);
 
         for term in &self.terms {
@@ -869,22 +866,21 @@ impl ExactExpr {
                 ExactTerm::Rational(r) => BigFloat::from_big_rational(r),
                 ExactTerm::Sqrt(coeff, rad) => {
                     let c = BigFloat::from_big_rational(coeff);
-                    let r = BigFloat::from_int(rad).sqrt(bigfloat::precision());
-                    BigFloat::mul(&c, &r, bigfloat::precision())
+                    let r = BigFloat::from_int(rad).sqrt(pr);
+                    BigFloat::mul(&c, &r, pr)
                 }
                 ExactTerm::Pi(coeff) => {
                     let c = BigFloat::from_big_rational(coeff);
-                    let pi = BigFloat::pi(bigfloat::precision());
-                    BigFloat::mul(&c, &pi, bigfloat::precision())
+                    let pi = BigFloat::pi(pr);
+                    BigFloat::mul(&c, &pi, pr)
                 }
                 ExactTerm::E(coeff) => {
                     let c = BigFloat::from_big_rational(coeff);
-                    let e = BigFloat::e(bigfloat::precision());
-                    BigFloat::mul(&c, &e, bigfloat::precision())
+                    let e = BigFloat::e(pr);
+                    BigFloat::mul(&c, &e, pr)
                 }
                 ExactTerm::PiPow(coeff, k) => {
                     // c · π^k：k 拆成「整数部分 + 0/半」，整数部分连乘、半次开方
-                    let pr = bigfloat::precision();
                     let c = BigFloat::from_big_rational(coeff);
                     let pi = BigFloat::pi(pr);
                     let int_part = k.numer() / k.denom();
@@ -900,12 +896,12 @@ impl ExactExpr {
                     BigFloat::mul(&c, &pw, pr)
                 }
             };
-            result = BigFloat::add(&result, &term_float, bigfloat::precision());
+            result = BigFloat::add(&result, &term_float, pr);
         }
 
         if self.denominator != BigInt::one() {
             let den = BigFloat::from_int(&self.denominator);
-            result = BigFloat::div(&result, &den, bigfloat::precision());
+            result = BigFloat::div(&result, &den, pr);
         }
 
         result
