@@ -73,15 +73,28 @@ pub enum Number {
 /// 新增第 5 种形态时只需改这里一处，而且这里的 `match` 是穷尽的 ⇒ **编译器会强制回答**。
 ///
 /// 语义与重构前**逐分支一致**（纯搬运，不改行为）：先矩阵、再复数、再精确、最后回退。
-fn binary_op<M, C, E, A>(a: &Number, b: &Number, mat: M, cx: C, exact: E, approx: A) -> Number
+fn binary_op<M, C, Q, E, A>(
+    a: &Number,
+    b: &Number,
+    mat: M,
+    cx: C,
+    qt: Q,
+    exact: E,
+    approx: A,
+) -> Number
 where
     M: FnOnce(&Number, &Number) -> Number,
     C: FnOnce(&crate::complex::ComplexNum, &crate::complex::ComplexNum) -> Number,
+    Q: FnOnce(&Number, &Number) -> Number,
     E: FnOnce(&ExactExpr, &ExactExpr) -> Option<ExactExpr>,
     A: FnOnce(&BigFloat, &BigFloat, usize) -> BigFloat,
 {
     if a.is_matrix() || b.is_matrix() {
+        // 矩阵优先：量纲值对矩阵而言是标量（`2 km * [[1,2]]` 走矩阵的数乘）
         return mat(a, b);
+    }
+    if a.is_quantity() || b.is_quantity() {
+        return qt(a, b);
     }
     if a.is_complex() || b.is_complex() {
         let (x, y) = (a.to_complex(), b.to_complex());
@@ -462,6 +475,7 @@ impl Number {
             other,
             |a, b| crate::matrix::binary_add(a, b),
             |x, y| Number::from_complex(x.add(y)),
+            |a, b| crate::quantity::binary(a, b, crate::quantity::Op::Add),
             |x, y| x.add_exact(y),
             |x, y, p| BigFloat::add(x, y, p),
         )
@@ -486,6 +500,7 @@ impl Number {
             other,
             |a, b| crate::matrix::binary_mul(a, b),
             |x, y| Number::from_complex(x.mul(y)),
+            |a, b| crate::quantity::binary(a, b, crate::quantity::Op::Mul),
             |x, y| x.mul_exact(y),
             |x, y, p| BigFloat::mul(x, y, p),
         )
@@ -501,6 +516,10 @@ impl Number {
     /// 硬塞进助手只会把两处兜底藏进闭包、更难读 ⇒ 保留原样，并在助手里也能看出
     /// 其它运算的形态顺序（矩阵→复数→精确→回退）与这里一致。
     pub fn div(&self, other: &Number) -> Number {
+        // 量纲：与 add/mul 同一规则（乘除让指数相减）——`div` 是有意例外，故在此手动分发
+        if self.is_quantity() || other.is_quantity() {
+            return crate::quantity::binary(self, other, crate::quantity::Op::Div);
+        }
         if self.is_complex() || other.is_complex() {
             let (a, b) = (self.to_complex(), other.to_complex());
             return match a.div(&b) {
@@ -567,6 +586,14 @@ impl Number {
                 .and_then(|r| r.to_integer().to_u32())
                 .ok_or_else(|| "矩阵的幂需要非负整数指数".to_string())?;
             return crate::matrix::int_pow(self, e);
+        }
+        // 量纲值：整数次幂让量纲指数乘 n（`(2 m)^2 = 4 m^2`）
+        if self.is_quantity() {
+            let e = exponent
+                .as_rational()
+                .and_then(|r| r.to_integer().to_u32())
+                .ok_or_else(|| "带量纲的值只用整数次幂".to_string())?;
+            return self.int_pow(e);
         }
 
         // 复数底数或指数：只支持整数指数（快速幂，精确）；非整数指数暂不支持

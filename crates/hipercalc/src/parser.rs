@@ -725,14 +725,18 @@ impl Parser {
                 }
                 if self.pos > start {
                     let word: String = self.input[start..self.pos].iter().collect();
-                    if let Some(factor) = PHYS_UNITS
-                        .iter()
-                        .find(|(u, _, _)| *u == word)
-                        .map(|(_, f, _)| *f)
-                    {
+                    if let Some((_, factor, dim)) = PHYS_UNITS.iter().find(|(u, _, _)| *u == word) {
                         let mut fp = Parser::new(factor);
                         let f = fp.parse_number()?;
-                        return Ok(Expr::Binary(Box::new(num), BinOp::Mul, Box::new(f)));
+                        // 单位后缀 ⇒ **构造带量纲的值**（第 9 项起不再"折成 SI 就丢掉单位"）。
+                        // 脱糖成内部函数 `qty(数值, 系数, 7 个量纲指数)` —— 与统计/列表/ineq 同一手法：
+                        // 不动 AST，复用既有的 Function 通路。
+                        let mut qargs = vec![num, f];
+                        qargs.extend(
+                            dim.iter()
+                                .map(|e| Expr::Number(Number::from_int(*e as i64))),
+                        );
+                        return Ok(Expr::Function("qty".to_string(), qargs));
                     }
                 }
                 // 不是单位 ⇒ 回退，交给原有的隐式乘法（`3 x` 仍是 3·x，语义不变）
@@ -1362,7 +1366,7 @@ impl Evaluator {
                 let r = self.eval_node(right, substs)?;
                 // 矩阵预检：`Number::add/mul` 的签名没有 `Result`，非法组合必须在这里拦下，
                 // 否则会走到 core 的不变式断言（那是 debug 断言，Release 下会给出错答案）。
-                if l.is_matrix() || r.is_matrix() {
+                if l.is_matrix() || r.is_matrix() || l.is_quantity() || r.is_quantity() {
                     check_matrix_op(&l, op, &r)?;
                 }
                 match op {
@@ -1435,6 +1439,33 @@ impl Evaluator {
     }
 
     fn eval_function(&self, name: &str, args: &[Number]) -> Result<Number, String> {
+        // ── 量纲：构造 + 与标量函数的边界 ─────────────────────────────────
+        // `qty(数值, 系数, 7 个量纲指数)` —— 由单位后缀脱糖而来（`3 km`、`2 mile`）
+        if name == "qty" {
+            if args.len() != 9 {
+                return Err("单位构造的内部表示异常（应为 9 个参数）".to_string());
+            }
+            let value = args[0].mul(&args[1]);
+            let mut dim = [0i8; 7];
+            for i in 0..7 {
+                dim[i] = args[2 + i]
+                    .as_integer()
+                    .and_then(|v| num_traits::ToPrimitive::to_i8(&v))
+                    .unwrap_or(0);
+            }
+            return Ok(Number::Quantity(Box::new(
+                hipercalc_core::quantity::Quantity::new(value, dim),
+            )));
+        }
+        // 带量纲的值不能进普通标量函数（`sin(3 km)`）；无量纲的量先拆成普通标量再算
+        if args.iter().any(|a| {
+            a.as_quantity()
+                .is_some_and(|q| hipercalc_core::quantity::has_dimension(&q.dim))
+        }) {
+            return Err(format!("函数 {name} 不接受带量纲的值"));
+        }
+        let args: Vec<Number> = args.iter().map(|a| a.strip_dimensionless()).collect();
+        let args = args.as_slice();
         // ── 矩阵：构造与线性代数 ───────────────────────────────────────────
         // `[a, b, c]`（元素全标量）⇒ **行向量**（1×n）。这与字面量的写法一致；
         // `[[..], [..]]`（元素是单行）⇒ 组装成矩阵。
@@ -2782,6 +2813,29 @@ pub fn parse_primefac(input: &str, evaluator: &mut Evaluator) -> Result<Option<N
 /// 矩阵与标量组合的合法性预检（`+ - *` 的矩阵语义只允许这几种组合）。
 /// 除法对矩阵一律拒绝，提示改用 `inv(A)*B`。
 fn check_matrix_op(l: &Number, op: &BinOp, r: &Number) -> Result<(), String> {
+    // 量纲值：加减**必须同量纲**（`3 km + 2 s` 拒绝）；与无量纲数相加减也拒绝（避免"3 km + 2"含糊）
+    if l.is_quantity() || r.is_quantity() {
+        use hipercalc_core::quantity as qy;
+        return match (l.as_quantity(), r.as_quantity()) {
+            (Some(x), Some(y)) => match op {
+                BinOp::Add | BinOp::Sub if !qy::same(&x.dim, &y.dim) => Err(format!(
+                    "量纲不同，不能相加减：{} 与 {}",
+                    qy::render(&x.dim),
+                    qy::render(&y.dim)
+                )),
+                _ => Ok(()),
+            },
+            // 一边是量、一边是普通数：**只有加减**才拒绝（`3 km + 2` 含糊）；
+            // 乘除是合法的（`2 km * 3`、`60 / 2 second`），量纲不变或按规则演化。
+            (Some(_), None) | (None, Some(_)) => match op {
+                BinOp::Add | BinOp::Sub => {
+                    Err("带量纲的值不能与无量纲的数相加减（乘除则可以）".to_string())
+                }
+                _ => Ok(()),
+            },
+            (None, None) => Ok(()), // 不会发生（调用点只在至少一侧为量纲值时才进来）
+        };
+    }
     let (lm, rm) = (l.as_matrix(), r.as_matrix());
     match op {
         BinOp::Add | BinOp::Sub => match (lm, rm) {
@@ -3157,15 +3211,48 @@ mod func_tests {
         assert!(eval_lineio("isprime(1.5)").is_err());
     }
 
+    /// 量纲系统（第 9 项）：单位后缀构造量、乘除让量纲演化、**加减必须同量纲**。
+    #[test]
+    fn quantities() {
+        for (input, want) in [
+            ("3 km", "3000 m"),
+            ("3 km + 500 meter", "3500 m"),
+            ("3 km - 1 km", "2000 m"),
+            ("2 km * 3", "6000 m"),
+            ("3 km / 2 second", "1500 m/s"),
+            ("2 second * 3 km", "6000 m*s"),
+            ("(2 km)^2", "4000000 m^2"),
+            ("1 km / 1 mile", "0.621371"),
+        ] {
+            let got = eval_lineio(input).unwrap_or_else(|e| panic!("{input} 报错: {e}"));
+            assert!(got.contains(want), "{input} → {got}；期望含 {want}");
+        }
+        // **量纲不匹配必须报错** —— 这正是量纲系统存在的理由
+        for bad in [
+            "3 km + 2 second",
+            "3 km - 2 second",
+            "sin(3 km)",
+            "3 km + 2",
+        ] {
+            let got = eval_lineio(bad);
+            assert!(
+                got.as_ref().map(|s| !s.contains(" m")).unwrap_or(true),
+                "{bad} 不该给出带量纲的结果: {got:?}"
+            );
+        }
+    }
+
     #[test]
     fn complex_syntax_and_dispatch() {
         // 单位后缀：解析期折成 SI（精确有理数相除/相乘）
         for (input, want) in [
-            ("3 km", "3000"),
-            ("3km", "3000"),        // 连写也可以
-            ("2 mile", "3218.688"), // 2 × 1609.344（精确）
-            ("3 km + 500 meter", "3500"),
-            ("2 hour * 60", "432000"),
+            // 第 9 项起单位后缀构造**带量纲的值**（不再"折成 SI 就丢掉单位"），
+            // 所以这里期望的结果带 SI 单位后缀（行为变更是有意为之）。
+            ("3 km", "3000 m"),
+            ("3km", "3000 m"),        // 连写也可以
+            ("2 mile", "3218.688 m"), // 2 × 1609.344（精确）
+            ("3 km + 500 meter", "3500 m"),
+            ("2 hour * 60", "432000 s"), // 2·3600·60；数乘不改变量纲
         ] {
             let got = eval_lineio(input).unwrap();
             assert_eq!(got, want, "{input} → {got}，期望 {want}");

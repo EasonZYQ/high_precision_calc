@@ -139,6 +139,43 @@ pub fn render(d: &Dim) -> String {
     }
 }
 
+/// 量纲值的二元运算规则（由 `Number` 的运算经 `binary_op` 分发到这里）。
+///
+/// - `Add`/`Sub`：**要求量纲相同**（上层预检已保证；这里只做保守兜底）
+/// - `Mul`/`Div`：指数相加/相减；其中一边是**普通标量**时量纲不变（标量视作无量纲）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Op {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+/// 量纲值与（可能是标量的）另一值的运算
+pub fn binary(
+    a: &crate::number::Number,
+    b: &crate::number::Number,
+    op: Op,
+) -> crate::number::Number {
+    use crate::number::Number;
+    let (qa, qb) = (a.as_quantity(), b.as_quantity());
+    let mk = |v: Number, d: Dim| Number::Quantity(Box::new(Quantity::new(v, d)));
+    match (qa, qb) {
+        // 量 ± 量：量纲须相同（预检保证）
+        (Some(x), Some(y)) => match op {
+            Op::Add => mk(x.value.add(&y.value), x.dim),
+            Op::Sub => mk(x.value.sub(&y.value), x.dim),
+            Op::Mul => mk(x.value.mul(&y.value), combine(&x.dim, &y.dim, 1)),
+            Op::Div => mk(x.value.div(&y.value), combine(&x.dim, &y.dim, -1)),
+        },
+        // 量 × 标量 / 量 ÷ 标量：量纲不变（标量视作无量纲）
+        (Some(x), None) => mk(x.value.mul(b), x.dim),
+        // 标量 × 量：量纲不变
+        (None, Some(y)) => mk(a.mul(&y.value), y.dim),
+        (None, None) => unreachable!("binary 只应在至少一侧为量纲值时调用"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
