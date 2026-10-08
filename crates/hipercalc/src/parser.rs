@@ -51,53 +51,72 @@ pub fn classify_op(op: &str) -> (&'static str, u8) {
     }
 }
 
-pub const PHYS_UNITS: &[(&str, &str)] = &[
-    // 长度（SI 基本单位：米）
-    ("meter", "1"),
-    ("metre", "1"),
-    ("km", "1000"),
-    ("cm", "0.01"),
-    ("mm", "0.001"),
-    ("um", "0.000001"),
-    ("nm", "0.000000001"),
-    ("inch", "0.0254"),
-    ("foot", "0.3048"),
-    ("feet", "0.3048"),
-    ("yard", "0.9144"),
-    ("mile", "1609.344"),
-    ("nmi", "1852"),
-    // 时间（秒）
-    ("second", "1"),
-    ("sec", "1"),
-    ("ms", "0.001"),
-    ("us", "0.000001"),
-    ("ns", "0.000000001"),
-    ("minute", "60"),
-    ("min", "60"),
-    ("hour", "3600"),
-    ("day", "86400"),
-    ("week", "604800"),
-    // 质量（SI 基本单位：千克）
-    ("gram", "0.001"),
-    ("kg", "1"),
-    ("mg", "0.000001"),
-    ("tonne", "1000"),
-    ("pound", "0.45359237"),
-    ("oz", "0.028349523125"),
-    // 体积 / 面积
-    ("liter", "0.001"),
-    ("litre", "0.001"),
-    ("ml", "0.000001"),
-    ("hectare", "10000"),
-    ("acre", "4046.8564224"),
-    // 速度 / 能量 / 压强（折到 m/s、J、Pa）
-    ("kph", "0.2777777777777777777777777777777777777777"),
-    ("mph", "0.44704"),
-    ("knot", "0.5144444444444444444444444444444444444444"),
-    ("cal", "4.184"),
-    ("eV", "0.0000000000000000001602176634"),
-    ("bar", "100000"),
-    ("atm", "101325"),
+/// 单位表：`(单位名, 折成 SI 的系数, 量纲)`。
+///
+/// **只收多字母单位**：单字母（`m`/`s`/`g`/`A`/`K`…）与变量命名空间冲突，刻意排除
+/// （可写 `meter`/`second`/`gram`）。`KB` 也不收 —— 它是玻尔兹曼常量。
+/// 量纲顺序固定为 m, kg, s, A, K, mol, cd（见 `hipercalc_core::quantity`）。
+/// 第 9 项起，`3 km` 不再只是"折成 3000"，而是**带量纲的值**（`3000` 配 `L`）。
+pub const PHYS_UNITS: &[(&str, &str, hipercalc_core::quantity::Dim)] = &[
+    // 长度 L
+    ("meter", "1", hipercalc_core::quantity::LEN),
+    ("metre", "1", hipercalc_core::quantity::LEN),
+    ("km", "1000", hipercalc_core::quantity::LEN),
+    ("cm", "0.01", hipercalc_core::quantity::LEN),
+    ("mm", "0.001", hipercalc_core::quantity::LEN),
+    ("um", "0.000001", hipercalc_core::quantity::LEN),
+    ("nm", "0.000000001", hipercalc_core::quantity::LEN),
+    ("inch", "0.0254", hipercalc_core::quantity::LEN),
+    ("foot", "0.3048", hipercalc_core::quantity::LEN),
+    ("feet", "0.3048", hipercalc_core::quantity::LEN),
+    ("yard", "0.9144", hipercalc_core::quantity::LEN),
+    ("mile", "1609.344", hipercalc_core::quantity::LEN),
+    ("nmi", "1852", hipercalc_core::quantity::LEN),
+    // 时间 T
+    ("second", "1", hipercalc_core::quantity::TIME),
+    ("sec", "1", hipercalc_core::quantity::TIME),
+    ("ms", "0.001", hipercalc_core::quantity::TIME),
+    ("us", "0.000001", hipercalc_core::quantity::TIME),
+    ("ns", "0.000000001", hipercalc_core::quantity::TIME),
+    ("minute", "60", hipercalc_core::quantity::TIME),
+    ("min", "60", hipercalc_core::quantity::TIME),
+    ("hour", "3600", hipercalc_core::quantity::TIME),
+    ("day", "86400", hipercalc_core::quantity::TIME),
+    ("week", "604800", hipercalc_core::quantity::TIME),
+    // 质量 M
+    ("gram", "0.001", hipercalc_core::quantity::MASS),
+    ("kg", "1", hipercalc_core::quantity::MASS),
+    ("mg", "0.000001", hipercalc_core::quantity::MASS),
+    ("tonne", "1000", hipercalc_core::quantity::MASS),
+    ("pound", "0.45359237", hipercalc_core::quantity::MASS),
+    ("oz", "0.028349523125", hipercalc_core::quantity::MASS),
+    // 体积 L³ / 面积 L²
+    ("liter", "0.001", hipercalc_core::quantity::VOLUME),
+    ("litre", "0.001", hipercalc_core::quantity::VOLUME),
+    ("ml", "0.000001", hipercalc_core::quantity::VOLUME),
+    ("hectare", "10000", hipercalc_core::quantity::AREA),
+    ("acre", "4046.8564224", hipercalc_core::quantity::AREA),
+    // 速度 L/T
+    (
+        "kph",
+        "0.2777777777777777777777777777777777777777",
+        hipercalc_core::quantity::SPEED,
+    ),
+    ("mph", "0.44704", hipercalc_core::quantity::SPEED),
+    (
+        "knot",
+        "0.5144444444444444444444444444444444444444",
+        hipercalc_core::quantity::SPEED,
+    ),
+    // 能量 M·L²/T² / 压强 M/(L·T²)
+    ("cal", "4.184", hipercalc_core::quantity::ENERGY),
+    (
+        "eV",
+        "0.0000000000000000001602176634",
+        hipercalc_core::quantity::ENERGY,
+    ),
+    ("bar", "100000", hipercalc_core::quantity::PRESSURE),
+    ("atm", "101325", hipercalc_core::quantity::PRESSURE),
 ];
 
 /// 取某个单位的 SI 系数（供 `/unit` 指令使用）。
@@ -106,8 +125,8 @@ pub const PHYS_UNITS: &[(&str, &str)] = &[
 pub fn unit_factor(name: &str) -> Option<Number> {
     let text = PHYS_UNITS
         .iter()
-        .find(|(u, _)| *u == name)
-        .map(|(_, f)| *f)?;
+        .find(|(u, _, _)| *u == name)
+        .map(|(_, f, _)| *f)?;
     let mut p = Parser::new(text);
     match p.parse_number() {
         Ok(Expr::Number(n)) => Some(n),
@@ -706,8 +725,10 @@ impl Parser {
                 }
                 if self.pos > start {
                     let word: String = self.input[start..self.pos].iter().collect();
-                    if let Some(factor) =
-                        PHYS_UNITS.iter().find(|(u, _)| *u == word).map(|(_, f)| *f)
+                    if let Some(factor) = PHYS_UNITS
+                        .iter()
+                        .find(|(u, _, _)| *u == word)
+                        .map(|(_, f, _)| *f)
                     {
                         let mut fp = Parser::new(factor);
                         let f = fp.parse_number()?;
