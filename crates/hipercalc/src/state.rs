@@ -68,6 +68,9 @@ pub fn encode_var(v: &Number) -> String {
         Number::Approx(b) => format!("A:{}:{}", b.value, b.precision),
         // 矩阵走 `M:[[1, 2], [3, 4]]` —— 这正是可重新解析的字面量形式
         Number::Matrix(_) => format!("M:{}", display::format_mathio(v)),
+        // 量纲值走符号形式（`3000 m`）；注意：SI 基本单位是单字母，重新解析时
+        // 不会当成单位（单字母单位刻意不收）—— 即量纲变量不保证往返，已在此注明。
+        Number::Quantity(_) => format!("E:{}", display::format_mathio(v)),
         // 复数一律走符号形式（`E:1 + 2i`），加载时重新解析即可精确还原
         Number::Complex(_) => format!("E:{}", display::format_mathio(v)),
     }
@@ -80,7 +83,9 @@ pub fn encode_var(v: &Number) -> String {
 /// 注意与 `encode_var` 的区别：后者是状态文件的内部格式（`E:`/`A:` 前缀），不能直接喂给求值器。
 pub fn encode_var_for_script(v: &Number) -> String {
     match v {
-        Number::Exact(_) | Number::Complex(_) | Number::Matrix(_) => display::format_mathio(v),
+        Number::Exact(_) | Number::Complex(_) | Number::Matrix(_) | Number::Quantity(_) => {
+            display::format_mathio(v)
+        }
         Number::Approx(b) => {
             let neg = b.value.is_negative();
             let digits = b.value.abs().to_string();

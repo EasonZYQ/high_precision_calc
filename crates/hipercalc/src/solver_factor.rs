@@ -1371,7 +1371,8 @@ fn find_linear_factor(p: &Poly, vars: &[char]) -> Option<(Poly, usize)> {
 
 fn rational_of_number(n: &Number) -> Option<BigRational> {
     match n {
-        Number::Matrix(_) => None, // 矩阵不是标量
+        Number::Matrix(_) => None,   // 矩阵不是标量
+        Number::Quantity(_) => None, // 量纲值不是标量
         Number::Exact(expr) => expr
             .as_rational()
             .or_else(|| expr.as_integer().map(BigRational::from_integer)),

@@ -143,6 +143,7 @@ fn extract_degrees(angle: &Number) -> Option<BigInt> {
     }
     match angle {
         Number::Matrix(_) => None,
+        Number::Quantity(_) => None,
         Number::Exact(expr) => expr.as_integer(),
         Number::Approx(_) | Number::Complex(_) => None,
     }
@@ -571,6 +572,7 @@ fn is_exact_sqrt_ratio(num: &Number, rad: u64, den: u64) -> Option<()> {
     }
     match num {
         Number::Matrix(_) => None,
+        Number::Quantity(_) => None,
         Number::Complex(_) => None,
         Number::Exact(expr) => {
             // 形式1: denom=den, coeff=1, rad=rad → sqrt(rad)/den

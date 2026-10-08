@@ -41,6 +41,15 @@ pub enum Number {
     Approx(BigFloat),
     /// 复数 `re + im·i`（实部虚部各自是 `Exact` 或 `Approx`，因此精确/近似统一处理）
     Complex(Box<crate::complex::ComplexNum>),
+    /// 带量纲的量（如 `3 km`、`9.8 m/s^2`）。
+    ///
+    /// 设计约定（与 `quantity` 模块的说明一致）：
+    /// - `value` 是折成 **SI** 之后的数值部分，`dim` 是量纲向量；
+    /// - `+`/`−` 要求量纲**完全相同**（否则报错）—— 该检查在求值器预检里
+    ///   （`Number::add` 签名没有 `Result`），与矩阵的组合检查同一做法；
+    /// - `×`/`÷` 让指数相加/相减，`^n` 让指数乘 n；
+    /// - 无量纲的量在**显示时**与标量同形（`3000` 不写单位），带量纲才写 `m/s`。
+    Quantity(Box<crate::quantity::Quantity>),
     /// 矩阵（行主序）。元素仍是 `Number` ⇒ **复数矩阵、精确矩阵自动成立**
     /// （元素的精确/近似由元素自己决定，与标量同一套规则）。
     ///
@@ -90,6 +99,27 @@ where
 }
 
 impl Number {
+    /// 是否为带量纲的量
+    pub fn is_quantity(&self) -> bool {
+        matches!(self, Number::Quantity(_))
+    }
+
+    /// 取出量纲值（非量纲值返回 None）
+    pub fn as_quantity(&self) -> Option<&crate::quantity::Quantity> {
+        match self {
+            Number::Quantity(q) => Some(q),
+            _ => None,
+        }
+    }
+
+    /// 无量纲的量 —— 拆成普通标量；带量纲则原样返回（供"只在无量时才允许"的场合用）
+    pub fn strip_dimensionless(&self) -> Number {
+        match self {
+            Number::Quantity(q) if crate::quantity::is_dimensionless(&q.dim) => q.value.clone(),
+            _ => self.clone(),
+        }
+    }
+
     /// 是否为矩阵
     pub fn is_matrix(&self) -> bool {
         matches!(self, Number::Matrix(_))
@@ -135,7 +165,7 @@ impl Number {
     ///
     /// 与 `ExactExpr::as_integer` 同名同义；`Number` 层原先缺这个（写调用方时踩过）。
     pub fn as_integer(&self) -> Option<BigInt> {
-        if self.is_matrix() || self.is_complex() {
+        if self.is_matrix() || self.is_quantity() || self.is_complex() {
             return None;
         }
         self.as_rational()
@@ -146,6 +176,7 @@ impl Number {
     /// 是否为**精确**值（`Exact` 变体；复数看实部虚部是否都精确，矩阵看元素）
     pub fn is_exact(&self) -> bool {
         match self {
+            Number::Quantity(q) => q.value.is_exact(),
             Number::Exact(_) => true,
             Number::Complex(z) => z.re.is_exact() && z.im.is_exact(),
             Number::Matrix(m) => m.iter().flatten().all(|x| x.is_exact()),
@@ -232,6 +263,10 @@ impl Number {
             return BigFloat::from_u64(0);
         }
         match self {
+            Number::Quantity(_) => {
+                debug_assert!(false, "量纲值不应走到 to_approx（有入口漏拦截）");
+                BigFloat::from_u64(0)
+            }
             Number::Matrix(_) => BigFloat::from_u64(0),
             Number::Approx(f) => f.clone(),
             Number::Exact(expr) => expr.to_bigfloat(),
@@ -250,6 +285,7 @@ impl Number {
             return false; // 矩阵"不是零"这个判断本身没意义，一律按"非零"处理，由调用方拦截
         }
         match self {
+            Number::Quantity(_) => false,
             Number::Matrix(_) => false,
             Number::Exact(expr) => expr.is_zero(),
             Number::Approx(f) => f.is_zero(),
@@ -263,6 +299,7 @@ impl Number {
             return false;
         }
         match self {
+            Number::Quantity(_) => false,
             Number::Matrix(_) => false,
             // 复数没有全序，不参与"负数"判定（开方/取模等都由 parser 先行分流）
             Number::Complex(_) => false,
@@ -288,6 +325,10 @@ impl Number {
         }
 
         match self {
+            Number::Quantity(q) => Number::Quantity(Box::new(crate::quantity::Quantity::new(
+                q.value.neg(),
+                q.dim,
+            ))),
             Number::Matrix(_) => self.clone(),
             Number::Exact(expr) => Number::Exact(expr.neg()),
             Number::Approx(f) => Number::Approx(f.neg()),
@@ -317,6 +358,10 @@ impl Number {
             return self.clone();
         }
         match self {
+            Number::Quantity(q) => Number::Quantity(Box::new(crate::quantity::Quantity::new(
+                q.value.floor(),
+                q.dim,
+            ))),
             Number::Matrix(_) => self.clone(),
             Number::Exact(e) => {
                 if let Some(r) = e.as_rational() {
@@ -339,6 +384,10 @@ impl Number {
             return self.clone();
         }
         match self {
+            Number::Quantity(q) => Number::Quantity(Box::new(crate::quantity::Quantity::new(
+                q.value.ceil(),
+                q.dim,
+            ))),
             Number::Matrix(_) => self.clone(),
             Number::Exact(e) => {
                 if let Some(r) = e.as_rational() {
@@ -380,10 +429,11 @@ impl Number {
     /// 有理数检测（用于特殊角度匹配）
     pub fn as_rational(&self) -> Option<BigRational> {
         // 矩阵不是标量 ⇒ 统一返回 None（"非标量一律 None"是本文件的约定）
-        if self.is_matrix() {
+        if self.is_matrix() || self.is_quantity() {
             return None;
         }
         match self {
+            Number::Quantity(_) => None,
             Number::Matrix(_) => None,
             Number::Exact(expr) => expr.as_rational(),
             Number::Approx(_) => None,
@@ -393,10 +443,11 @@ impl Number {
 
     /// 检测是否为 pi 的有理数倍（用于弧度模式 trig）
     pub fn as_pi_multiple(&self) -> Option<BigRational> {
-        if self.is_matrix() {
+        if self.is_matrix() || self.is_quantity() {
             return None;
         }
         match self {
+            Number::Quantity(_) => None,
             Number::Matrix(_) => None,
             Number::Exact(expr) => expr.as_pi_multiple(),
             Number::Approx(_) => None,
@@ -671,6 +722,13 @@ impl Number {
         if self.is_matrix() {
             return crate::matrix::int_pow(self, exp);
         }
+        if let Number::Quantity(q) = self {
+            let v = q.value.int_pow(exp)?;
+            return Ok(Number::Quantity(Box::new(crate::quantity::Quantity::new(
+                v,
+                crate::quantity::pow(&q.dim, exp as i32),
+            ))));
+        }
 
         if exp == 0 {
             return Ok(Number::from_int(1));
@@ -680,6 +738,8 @@ impl Number {
         }
 
         match self {
+            // 量纲值的幂已在函数开头提前处理；此处仅为穷尽匹配
+            Number::Quantity(_) => Ok(self.clone()),
             Number::Matrix(_) => crate::matrix::int_pow(self, exp),
             Number::Complex(z) => Ok(Number::Complex(Box::new(z.int_pow(exp)?))),
             Number::Exact(expr) => {
@@ -784,6 +844,21 @@ impl Number {
             debug_assert!(false, "矩阵不应走到 sqrt（有入口漏了拦截）");
             return self.clone();
         }
+        if let Number::Quantity(q) = self {
+            // 量纲的每个指数都是偶数才开得出来（√(m²) = m）；否则保守原样，由上层拦
+            if q.dim.iter().all(|e| e % 2 == 0) {
+                let half = crate::quantity::pow(&q.dim, 0);
+                let mut hd = half;
+                for i in 0..7 {
+                    hd[i] = (q.dim[i] / 2) as i8;
+                }
+                return Number::Quantity(Box::new(crate::quantity::Quantity::new(
+                    q.value.sqrt(),
+                    hd,
+                )));
+            }
+            return self.clone();
+        }
 
         if let Number::Complex(z) = self {
             // 复数的平方根（parser 的 sqr/sqrt 分支也会直接走这条路）
@@ -796,6 +871,7 @@ impl Number {
             };
         }
         match self {
+            Number::Quantity(_) => self.clone(), // 同上：上面已提前处理
             Number::Matrix(_) => self.clone(),
             Number::Exact(expr) => {
                 // 检查是否为完全平方数

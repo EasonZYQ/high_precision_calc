@@ -11,6 +11,8 @@ use hipercalc_core::trig::AngleMode;
 /// 判定结果前缀：有限小数/精确符号表达 → "="；无限小数（近似/循环小数/无理）→ "≈"
 pub fn result_prefix(n: &Number, mode: DisplayMode) -> &'static str {
     match n {
+        // 量纲值：按数值部分的精度给前缀（量纲不改变"是否精确"）
+        Number::Quantity(q) => result_prefix(&q.value, mode),
         // 矩阵：元素都是精确值时才给 `=`（近似元素按 ≈）
         Number::Matrix(m) => {
             if m.iter().flatten().all(|x| result_prefix(x, mode) == "=") {

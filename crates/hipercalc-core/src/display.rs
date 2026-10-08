@@ -35,6 +35,7 @@ fn format_mathio_raw(num: &Number) -> String {
             if s == "-0" { "0".to_string() } else { s }
         }
         Number::Complex(z) => format_complex(z, &format_mathio_raw),
+        Number::Quantity(q) => format_quantity(q, &format_mathio_raw),
         Number::Matrix(m) => crate::matrix::render(m, &format_mathio_raw),
     }
 }
@@ -77,6 +78,17 @@ fn format_complex(z: &crate::complex::ComplexNum, part: &dyn Fn(&Number) -> Stri
 }
 
 /// 线性显示模式（lineio）：一律使用小数
+/// 量纲值渲染：**无量纲时与标量同形**（`3000` 不写单位）；带量纲时后缀 SI 化简后的单位。
+/// 数值部分走调用方给的 raw 格式化器（避免重复套单位/缩放）。
+fn format_quantity(q: &crate::quantity::Quantity, fmt: &dyn Fn(&Number) -> String) -> String {
+    let v = fmt(&q.value);
+    if crate::quantity::is_dimensionless(&q.dim) {
+        v
+    } else {
+        format!("{v} {}", crate::quantity::render(&q.dim))
+    }
+}
+
 /// 结果单位（`/unit km`）：`(标签, 折成 SI 的系数)`。
 ///
 /// 与数制开关同层：**只影响显示**，不动数值本身。做法是把结果**除以**系数再格式化，
@@ -177,6 +189,9 @@ fn format_lineio_raw(num: &Number) -> String {
     }
     if let Number::Complex(z) = num {
         return format_complex(z, &format_lineio_raw);
+    }
+    if let Number::Quantity(q) = num {
+        return format_quantity(q, &format_lineio_raw);
     }
     if let Some(s) = format_radix(num) {
         return s;

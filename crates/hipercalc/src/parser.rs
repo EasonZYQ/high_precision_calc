@@ -2405,6 +2405,9 @@ pub(crate) fn radians_to_degrees(result: Number) -> Number {
     match result {
         // 上面已提前返回复数
         Number::Complex(_) => unreachable!("radians_to_degrees 已在入口处理复数"),
+        // 量纲值：角度换算只对三角结果有意义，量纲值原样透传
+        Number::Matrix(m) => Number::Matrix(m),
+        Number::Quantity(q) => Number::Quantity(q),
         Number::Matrix(m) => Number::Matrix(m), // 矩阵原样透传（角度制只作用于三角标量结果）
         Number::Exact(expr) => {
             // 精确值转换：Pi(coeff) → Rational(coeff * 180)

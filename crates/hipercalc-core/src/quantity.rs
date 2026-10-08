@@ -28,6 +28,23 @@
 //! 所以这条检查不能省。因为 `Number::add` 的签名没有 `Result`，
 //! 该检查与矩阵的组合检查一样，放在**求值器的预检**里。
 
+/// 带量纲的量：`value` 是**折成 SI 之后的数值部分**，`dim` 是量纲。
+///
+/// 例如 `3 km` 表示为 `Quantity { value: 3000, dim: LEN }`。
+/// 放在 core 里与 `Number` 同层：`Number::Quantity` 只是它的一个包装，
+/// 于是"量纲跟着值走"这点在类型上就成立了。
+#[derive(Debug, Clone)]
+pub struct Quantity {
+    pub value: crate::number::Number,
+    pub dim: Dim,
+}
+
+impl Quantity {
+    pub fn new(value: crate::number::Number, dim: Dim) -> Self {
+        Quantity { value, dim }
+    }
+}
+
 /// SI 基本量纲的指数向量，顺序固定为：**m, kg, s, A, K, mol, cd**
 pub type Dim = [i8; 7];
 
