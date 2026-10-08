@@ -4114,7 +4114,9 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   进制     /base dec|hex|oct|bin 切换结果数制（仅整数）；输入可写 0xFF / 0o17 / 0b1010
   zeta(s)  黎曼 ζ：偶数点给精确闭式（zeta(2) = pi^2/6）；奇数点与非整数走 Euler-Maclaurin 数值（zeta(3) ≈ 1.2020569032）
   zeta(s)  黎曼 ζ：偶数点给精确闭式（zeta(2) = pi^2/6）；奇数点暂无闭式，报错提示
-  单位     3 km、2 mile、500 meter（解析期折成 SI）；/unit km 让结果按该单位显示、/unit off 关闭
+  单位     3 km、2 mile、500 meter 是**带量纲的值**：3 km / 2 second = 1500 m/s、
+            (2 km)^2 = 4000000 m^2、1 km / 1 mile ≈ 0.621371；
+            量纲不同的加减会报错（3 km + 2 second）；/unit km 只管无量标量（量纲值自带单位）
   物理常量 C0/LIGHT_SPEED、KB/BOLTZMANN、NA/AVOGADRO、HPL/PLANCK、ME、MP…（CODATA 2022，只读：不能用作变量名）
   linsolve(A, b) 解 Ax=b；eigen([[..]]) 特征值（2×2/3×3，复数也给）
   矩阵     [[1,2],[3,4]]（也是变量/ans 可存的值）；det/inv/trace/transpose/rank、*（矩阵乘）、^（整数次幂）

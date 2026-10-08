@@ -48,6 +48,7 @@ x = 3, x = -6
 | `Tab` | complete functions / commands / constants / variables; a function becomes `name()` with the **cursor placed inside the brackets**. Single-letter tokens get no candidates (so `xy` still means x·y) |
 | Cursor inside a function call | the parameters **still to write** are shown in dim text to the right; too many turn red. Hints are display-only and never inserted |
 | Cursor on a bracket | that bracket and its **partner are bolded**; a surplus `)` is always red, an unclosed `(` turns red when the cursor is not to its right (Enter is never blocked) |
+| Units & dimensions | `3 km`, `2 mile` are **dimensioned values**: `3 km / 2 second = 1500 m/s`, `(2 km)^2 = 4000000 m^2`, `1 km / 1 mile ~= 0.621371`; adding mismatched dimensions is **rejected** (`3 km + 2 second`), while `*` and `/` follow dimensional algebra |
 | `Ctrl+C` | **when idle**: quit; **while computing**: interrupt the current computation (high-degree root finding, numeric integration…) — **supported on all platforms** (Windows via `SetConsoleCtrlHandler`, Linux / macOS / BSD via `SIGINT`; both hand-written FFI, no extra dependency) |
 | `Ctrl+L` / `Ctrl+R` | clear screen / reverse-search history |
 | Full-width punctuation from an IME | `。` `（` `）` `，` `＝` `＋` `－` `×` `÷` and full-width digits are **converted automatically** |

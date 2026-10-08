@@ -102,6 +102,11 @@ pub fn set_unit(u: Option<(String, BigRational)>) {
 }
 
 fn unit_scaled(num: &Number) -> (Number, String) {
+    // 量纲值**自带单位**（如 `3000 m`）⇒ 不再套 `/unit`，否则单位会重复作用
+    // （`/unit km` 下 `3000 m` 会被除成 `3 m km` —— 那是错的）
+    if num.is_quantity() {
+        return (num.clone(), String::new());
+    }
     let g = match crate::settings::UNIT.lock() {
         Ok(g) => g,
         Err(_) => return (num.clone(), String::new()),
