@@ -31,10 +31,10 @@ pub const OP_NE: u8 = 4;
 
 /// 区间端点：`(值, 是否闭)；值为 None 表示无穷`
 #[derive(Clone, Debug)]
-struct Bound(Option<BigRational>, bool);
+pub struct Bound(Option<BigRational>, bool);
 
 /// 一个区间 `[lo, hi]`（端点各带开闭）
-type Interval = (Bound, Bound);
+pub type Interval = (Bound, Bound);
 
 /// 比较两个有理数
 fn cmp(a: &BigRational, b: &BigRational) -> std::cmp::Ordering {

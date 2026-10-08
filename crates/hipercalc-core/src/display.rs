@@ -231,7 +231,6 @@ fn format_exact_expr(expr: &ExactExpr) -> String {
         ExactTerm::Rational(r) => r.is_zero(),
         ExactTerm::Sqrt(c, _) => c.is_zero(),
         ExactTerm::PiPow(c, _) => c.is_zero(),
-        ExactTerm::PiPow(c, k) if k.is_one() => c.is_zero(),
         ExactTerm::E(c) => c.is_zero(),
     });
     if all_zero {
@@ -493,7 +492,6 @@ fn is_term_zero(term: &ExactTerm) -> bool {
         ExactTerm::Rational(r) => r.is_zero(),
         ExactTerm::Sqrt(c, _) => c.is_zero(),
         ExactTerm::PiPow(c, _) => c.is_zero(),
-        ExactTerm::PiPow(c, k) if k.is_one() => c.is_zero(),
         ExactTerm::E(c) => c.is_zero(),
     }
 }
