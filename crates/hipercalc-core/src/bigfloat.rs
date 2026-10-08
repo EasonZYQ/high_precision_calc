@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 
 use crate::settings::{
     DISPLAY_DIGITS as DISPLAY_DIGITS_RT, GROUP_DIGITS, PRECISION as PRECISION_RT, SCI_ALLOWED,

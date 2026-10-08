@@ -4,8 +4,7 @@ use crate::settings::{LATEX, RESULT_BASE};
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 
 /// 数学显示模式（mathio）：尽可能使用符号表示
 pub fn format_mathio(num: &Number) -> String {

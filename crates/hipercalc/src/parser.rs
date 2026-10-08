@@ -72,6 +72,13 @@ pub const PHYS_UNITS: &[(&str, &str, hipercalc_core::quantity::Dim)] = &[
     ("yard", "0.9144", hipercalc_core::quantity::LEN),
     ("mile", "1609.344", hipercalc_core::quantity::LEN),
     ("nmi", "1852", hipercalc_core::quantity::LEN),
+    // 单字母与常用缩写（用户要求：`m`/`s`/`g` 这些必须能用）
+    ("m", "1", hipercalc_core::quantity::LEN),
+    ("s", "1", hipercalc_core::quantity::TIME),
+    ("g", "0.001", hipercalc_core::quantity::MASS),
+    ("l", "0.001", hipercalc_core::quantity::VOLUME),
+    ("h", "3600", hipercalc_core::quantity::TIME), // 小时（比"亨利"常用得多）
+    ("t", "1000", hipercalc_core::quantity::MASS), // 吨
     // 时间 T
     ("second", "1", hipercalc_core::quantity::TIME),
     ("sec", "1", hipercalc_core::quantity::TIME),
@@ -117,7 +124,29 @@ pub const PHYS_UNITS: &[(&str, &str, hipercalc_core::quantity::Dim)] = &[
     ),
     ("bar", "100000", hipercalc_core::quantity::PRESSURE),
     ("atm", "101325", hipercalc_core::quantity::PRESSURE),
+    // 单字母 SI 导出单位
+    ("a", "1", [0, 0, 0, 1, 0, 0, 0]),    // 安培 A
+    ("k", "1", [0, 0, 0, 0, 1, 0, 0]),    // 开尔文 K
+    ("n", "1", [1, 1, -2, 0, 0, 0, 0]),   // 牛顿 N
+    ("j", "1", [2, 1, -2, 0, 0, 0, 0]),   // 焦耳 J
+    ("w", "1", [2, 1, -3, 0, 0, 0, 0]),   // 瓦特 W
+    ("c", "1", [0, 0, 1, 1, 0, 0, 0]),    // 库仑 C
+    ("v", "1", [2, 1, -3, -1, 0, 0, 0]),  // 伏特 V
+    ("pa", "1", [-1, 1, -2, 0, 0, 0, 0]), // 帕斯卡 Pa
+    ("hz", "1", [0, 0, -1, 0, 0, 0, 0]),  // 赫兹 Hz
 ];
+
+/// 单位名查找（**大小写不敏感**）：`km` / `KM` / `Km` 等价。
+/// 单字母单位与变量**不冲突**：单位后缀只在**数字之后**才被识别（`3 m` 是 3 米，
+/// 而裸 `m` 仍是变量）—— 这是把单字母单位加回来的前提。
+pub fn find_unit(
+    word: &str,
+) -> Option<(&'static str, &'static str, hipercalc_core::quantity::Dim)> {
+    PHYS_UNITS
+        .iter()
+        .find(|(u, _, _)| u.eq_ignore_ascii_case(word))
+        .map(|(u, f, d)| (*u, *f, *d))
+}
 
 /// 取某个单位的 SI 系数（供 `/unit` 指令使用）。
 ///
@@ -725,12 +754,34 @@ impl Parser {
                 }
                 if self.pos > start {
                     let word: String = self.input[start..self.pos].iter().collect();
-                    if let Some((_, factor, dim)) = PHYS_UNITS.iter().find(|(u, _, _)| *u == word) {
+                    if let Some((_, factor, dim)) = find_unit(&word) {
                         let mut fp = Parser::new(factor);
-                        let f = fp.parse_number()?;
-                        // 单位后缀 ⇒ **构造带量纲的值**（第 9 项起不再"折成 SI 就丢掉单位"）。
-                        // 脱糖成内部函数 `qty(数值, 系数, 7 个量纲指数)` —— 与统计/列表/ineq 同一手法：
-                        // 不动 AST，复用既有的 Function 通路。
+                        let mut f = fp.parse_number()?;
+                        let mut dim = dim;
+                        // ★ `^n` 属于**单位**：`3 km^2` = 3×(1000 m)² = 3e6 m²（**不是** (3 km)²）。
+                        // 所以把指数折进**系数与量纲**并消费掉它，外层便不再把它当作"对结果求幂"。
+                        self.skip_whitespace();
+                        if self.peek() == Some('^') {
+                            let save = self.pos;
+                            self.next();
+                            match self.parse_number() {
+                                Ok(Expr::Number(nv)) => {
+                                    let k = nv.as_rational().and_then(|r| {
+                                        num_traits::ToPrimitive::to_i32(&r.to_integer())
+                                    });
+                                    match k {
+                                        Some(k) => {
+                                            // 幂是独立的 Expr 变体（不在 BinOp 里）
+                                            f = Expr::Pow(Box::new(f), Box::new(Expr::Number(nv)));
+                                            dim = hipercalc_core::quantity::pow(&dim, k);
+                                        }
+                                        None => self.pos = save, // 非整数幂 ⇒ 回退给外层
+                                    }
+                                }
+                                _ => self.pos = save,
+                            }
+                        }
+                        // 单位后缀 ⇒ 构造带量纲的值：脱糖成 `qty(数值, 系数, 7 个量纲指数)`
                         let mut qargs = vec![num, f];
                         qargs.extend(
                             dim.iter()
@@ -3223,6 +3274,16 @@ mod func_tests {
             ("2 second * 3 km", "6000 m*s"),
             ("(2 km)^2", "4000000 m^2"),
             ("1 km / 1 mile", "0.621371"),
+            // ★ 单位里的 `^n` 属于**单位**（不是对整个值求幂）：3 km² = 3×(1000 m)² = 3e6 m²
+            ("3 km^2", "3000000 m^2"),
+            ("3 meter^2", "3 m^2"),
+            ("2 km^3", "2000000000 m^3"),
+            // ★ 单字母单位与大小写不敏感（用户要求）
+            ("3 m", "3 m"),
+            ("3 M", "3 m"),
+            ("3 S", "3 s"),
+            ("3 KM", "3000 m"),
+            ("3 g", "0.003 kg"),
         ] {
             let got = eval_lineio(input).unwrap_or_else(|e| panic!("{input} 报错: {e}"));
             assert!(got.contains(want), "{input} → {got}；期望含 {want}");

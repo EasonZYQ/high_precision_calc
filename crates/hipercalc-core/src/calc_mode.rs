@@ -13,7 +13,7 @@
 //! （`NEWTON_ABS_LIMIT`），否则 `2^x=8` 这类方程会回到卡死状态。
 
 use crate::settings::{DEEP, QUIET, TIMING};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 /// 计算模式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
