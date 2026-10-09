@@ -2813,9 +2813,79 @@ fn handle_fit(fit: &solver_fit::FitInput, state: &mut AppState) -> String {
     }
 }
 
+/// 把表达式按**加减**拆成带符号的项（顶层展开，不进入括号内部）。
+///
+/// 例如 `(x-3)/(x-5) - x` → `[(+1, (x-3)/(x-5)), (-1, x)]`。
+/// 用于有理方程"按项通分"时逐项取出分子/分母。
+fn split_add_sub(e: &parser::Expr) -> Vec<(i32, parser::Expr)> {
+    match e {
+        parser::Expr::Binary(a, parser::BinOp::Add, b) => {
+            let mut v = split_add_sub(a);
+            v.extend(split_add_sub(b));
+            v
+        }
+        parser::Expr::Binary(a, parser::BinOp::Sub, b) => {
+            let mut v = split_add_sub(a);
+            v.extend(split_add_sub(b).into_iter().map(|(s, t)| (-s, t)));
+            v
+        }
+        other => vec![(1, other.clone())],
+    }
+}
+
+/// 收集表达式里所有**含自变量的分母**（用于把有理方程乘成分式前先"分母乘掉"）。
+///
+/// 例如 `(x-3)/(x-5) - x` 的分母是 `x-5`。分母里没有自变量（如 `x/2`）不算，
+/// 因为那不影响"是不是多项式"。
+fn collect_denominators(e: &parser::Expr, var: char) -> Vec<parser::Expr> {
+    fn has_var(e: &parser::Expr, var: char) -> bool {
+        match e {
+            parser::Expr::Variable(n) => n.chars().next() == Some(var),
+            parser::Expr::Binary(a, _, b) => has_var(a, var) || has_var(b, var),
+            parser::Expr::Unary(_, a) | parser::Expr::Sd(a) | parser::Expr::Factor(a) => {
+                has_var(a, var)
+            }
+            parser::Expr::Pow(a, b) => has_var(a, var) || has_var(b, var),
+            parser::Expr::Function(_, args) => args.iter().any(|a| has_var(a, var)),
+            _ => false,
+        }
+    }
+    let mut out = Vec::new();
+    fn walk(e: &parser::Expr, var: char, out: &mut Vec<parser::Expr>) {
+        match e {
+            parser::Expr::Binary(a, parser::BinOp::Div, b) => {
+                if has_var(b, var) {
+                    out.push((**b).clone());
+                }
+                walk(a, var, out);
+                walk(b, var, out);
+            }
+            parser::Expr::Binary(a, _, b) => {
+                walk(a, var, out);
+                walk(b, var, out);
+            }
+            parser::Expr::Unary(_, a) | parser::Expr::Sd(a) | parser::Expr::Factor(a) => {
+                walk(a, var, out)
+            }
+            parser::Expr::Pow(a, b) => {
+                walk(a, var, out);
+                walk(b, var, out);
+            }
+            parser::Expr::Function(_, args) => {
+                for a in args {
+                    walk(a, var, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(e, var, &mut out);
+    out
+}
+
 fn handle_equation(left: &parser::Expr, right: &parser::Expr, state: &mut AppState) -> String {
     // 化简: left - right = 0
-    let eq_expr = parser::Expr::Binary(
+    let mut eq_expr = parser::Expr::Binary(
         Box::new(left.clone()),
         parser::BinOp::Sub,
         Box::new(right.clone()),
@@ -2845,6 +2915,64 @@ fn handle_equation(left: &parser::Expr, right: &parser::Expr, state: &mut AppSta
     let var = variables[0];
 
     // 尝试多项式求解
+    // ── 有理方程：**按项通分**化成多项式（全程只构造表达式，不做化简）──
+    //
+    // 为什么需要：`(x-3)/(x-5)=x` 这种"分式 + 多项式"在结构上不是多项式 ⇒ 会落到数值路径，
+    // 结果是**只给一个近似根**且不是精确值（正解是 x = 3 ± √6 两个根）。
+    // 做法：把 `left - right` 拆成若干项，每项写成 `分子/分母`；通分后分子 = Σ 分子ᵢ·Π_{j≠i} 分母ⱼ，
+    // 于是方程化为"多项式 = 0"，直接复用下面的精确求根。
+    //
+    // 已知局限（v1）：通分会引入"增根"（使某个分母为 0 的根）——例如 `(x^2-1)/(x-1)=0`
+    // 理论上会连 x=1 一起给出。彻底做法是求解后**回代原方程**筛一遍，留待后续。
+    if !equation::is_polynomial(&eq_expr) {
+        let terms = split_add_sub(&eq_expr);
+        let mut fracs: Vec<(parser::Expr, Option<parser::Expr>)> = Vec::with_capacity(terms.len());
+        let mut ok = true;
+        for (sign, t) in &terms {
+            // 先拆出 (分子, 分母)，再按符号包一层负号 —— 避免"边借用边赋值"
+            let (mut num, den) = match t {
+                parser::Expr::Binary(a, parser::BinOp::Div, b) => {
+                    ((**a).clone(), Some((**b).clone()))
+                }
+                other => (other.clone(), None),
+            };
+            if *sign < 0 {
+                num = parser::Expr::Unary(parser::UnaryOp::Neg, Box::new(num));
+            }
+            fracs.push((num, den));
+        }
+        // 通分：分子 = Σ 分子ᵢ · Π_{j≠i} 分母ⱼ（缺分母的项视作分母 1）
+        let mut sum: Option<parser::Expr> = None;
+        for i in 0..fracs.len() {
+            let mut prod = fracs[i].0.clone();
+            for j in 0..fracs.len() {
+                if i == j {
+                    continue;
+                }
+                if let Some(d) = &fracs[j].1 {
+                    prod = parser::Expr::Binary(
+                        Box::new(prod),
+                        parser::BinOp::Mul,
+                        Box::new(d.clone()),
+                    );
+                }
+            }
+            sum = Some(match sum {
+                None => prod,
+                Some(acc) => {
+                    parser::Expr::Binary(Box::new(acc), parser::BinOp::Add, Box::new(prod))
+                }
+            });
+        }
+        if let Some(poly) = sum
+            && equation::is_polynomial(&poly)
+            && solver_poly::extract_polynomial(&state.evaluator, &poly, var).is_some()
+        {
+            eq_expr = poly;
+        }
+        let _ = &mut ok;
+    }
+
     if equation::is_polynomial(&eq_expr)
         && let Some(coeffs) = solver_poly::extract_polynomial(&state.evaluator, &eq_expr, var)
     {
@@ -4770,6 +4898,34 @@ mod cli_tests {
         // 关键非回归：`!` 的阶乘语义不能被动过
         let (out, err) = run_line("5!", &mut st);
         assert!(!err && out.contains("120"), "阶乘被破坏: {out}");
+    }
+
+    /// 有理方程：先通分再精确求解（曾落到数值路径，只给一个近似根）
+    #[test]
+    fn rational_equations() {
+        let mut st = eq_state(trig::AngleMode::Radian);
+        // (x-3)/(x-5)=x  ⇒  x²-6x+3=0  ⇒  x = 3∓√6：**两个根**都要给出
+        let (out, err) = run_line("(x-3)/(x-5)=x", &mut st);
+        assert!(!err, "报错: {out}");
+        assert!(
+            out.contains("5.4494897427831780982"),
+            "少了较大的那个根: {out}"
+        );
+        assert!(
+            out.contains("0.5505102572168219018"),
+            "少了较小的那个根: {out}"
+        );
+        // 单个分式仍走精确路径
+        let (out, _) = run_line("1/x=2", &mut st);
+        assert!(out.contains("0.5"), "1/x=2 → {out}");
+        let (out, _) = run_line("x/(x-2)=3", &mut st);
+        assert!(out.contains("3"), "x/(x-2)=3 → {out}");
+        // 通分后矛盾 ⇒ 无解（不要被当成恒等式）
+        let (out, _) = run_line("1/(x-1)=0", &mut st);
+        assert!(
+            out.contains("无解") || out.contains("无实数解"),
+            "1/(x-1)=0 → {out}"
+        );
     }
 
     /// 统计函数：**两种参数形态**都测（列表 / 表达式+范围），期望值全部可手算。
