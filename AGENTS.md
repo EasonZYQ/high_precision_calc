@@ -43,13 +43,9 @@ crates/hipercalc/        parser / equation / primefac / solver_* / solve_aux / c
   拆成不同 crate 会直接编译不过；`calc_mode` / `cancel` 被四层共用，必须沉在 core。
 - 二进制名必须保持 `hipercalc`（CI 冒烟与 release 产物名都按它引用）；**不要改包名**。
 
-## 路线图
+## 文档
 
-待做功能的清单（含每项的现有基础 / 要改的接口 / 成本 / 风险）见 [docs/ROADMAP.md](docs/ROADMAP.md)，
-其中登记的技术债**已全部清完**（左括号自动配对、复数非整数次幂、非 Windows 的计算中中断、clippy）——clippy 仅剩 10 条纯外观项（core 侧 0 条；CI 已把 correctness 类设为阻塞）。
-
-## 构建与验证
-
+功能手册（只讲功能与用法，供人类阅读）：[docs/DOC.zh-CN.md](docs/DOC.zh-CN.md)（中文）· [docs/DOC.en.md](docs/DOC.en.md)（English）。
 ```powershell
 cargo build
 cargo run            # 交互式 REPL（rustyline）
