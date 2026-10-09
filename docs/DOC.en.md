@@ -100,7 +100,7 @@ Built-in constants: `pi`, `e`, `tau` (2π), `phi` (golden ratio), `i` (imaginary
 
 ## 6. Functions
 
-- **Trigonometry**: `sin` `cos` `tan` `cot` `sec` `csc`; inverse: `asin` `acos` `atan` `acot` …
+- **Trigonometry**: `sin` `cos` `tan` `cot` `sec` `csc`; inverse: `arcsin` `arccos` `arctan` `arccot` … (`asin`/`acos`/`atan` also work)
 - **Angle unit**: `/mode deg` or `/mode rad`.
 - **Exact values at special angles**: `sin(pi/6)`, `cos(60°)`, `tan(pi/4)` return exact results, not decimals.
 - **Logs and exponentials**: `ln`, `log(base, x)`, `log2`, `log10`, `exp`, `sqrt`, `cbrt`, `nroot(x, n)`.

@@ -692,6 +692,9 @@ const FULLWIDTH_MAP: &[(char, &str)] = &[
 
 /// 在 `FUNCTIONS_META` 里查函数元数据
 fn fn_meta(name: &str) -> Option<&'static FnMeta> {
+    // 反三角别名（asin 等）在解析期会被规范化成 arcsin；这里再兜一层，
+    // 保证任何入口（补全、提示、高亮）拿别名来查也能命中。
+    let name = parser::canonical_fn_name(name);
     FUNCTIONS_META.iter().find(|m| m.name == name)
 }
 
@@ -1235,6 +1238,28 @@ struct ArgHint {
     text: String,
 }
 
+/// 剥掉字符串里的 ANSI 颜色序列（用于让提示保持"无色"）
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // ESC [ ... 字母 形式：跳过到终止字母
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for d in chars.by_ref() {
+                    if d.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 impl Hint for ArgHint {
     fn display(&self) -> &str {
         &self.text
@@ -1350,8 +1375,9 @@ impl Hinter for CalcHelper {
         // 只在**光标位于行尾**时显示：rustyline 的 hint 只能追加在整行末尾，
         // 光标停在行中间时它会跑到最右边、看起来像行尾的垃圾（用户反馈过）。
         // 行尾正是正常打字的位置，此时提示就贴在手边。
-        if pos == line.len()
-            && let Some((name, _open, argc)) = enclosing_function_call(line, pos)
+        // 光标在函数括号内就显示参数提示。**不再要求光标在行尾** —— 括号自动配对会把光标
+        // 放进括号中间，那时若不给提示，用户刚打完 `(` 提示就消失了（用户反馈）。
+        if let Some((name, _open, argc)) = enclosing_function_call(line, pos)
             && let Some(m) = fn_meta(&name)
         {
             let (kind, text) = if argc > m.max {
@@ -1408,7 +1434,10 @@ impl Highlighter for CalcHelper {
             // 只有"参数过多"要醒目；其余一律**不上色** —— 与计时行同一种灰（终端默认前景）。
             // 之前 Incomplete 用 operator（黄），用户反馈看起来像警告色；dimmed 在部分终端也会偏黄。
             HintKind::TooMany => hint.color(self.colors.error).bold().to_string().into(),
-            HintKind::Incomplete | HintKind::Normal => hint.into(),
+            // 参数提示/签名提示**保持无色**（用终端默认前景色）：
+            // 提示文本里可能内嵌了颜色码（签名表里带的），这里统一剥掉，
+            // 于是不会出现"白底/白字"式的刺眼提示（用户反馈）。
+            HintKind::Incomplete | HintKind::Normal => strip_ansi(hint).into(),
         }
     }
 }

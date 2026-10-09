@@ -105,7 +105,7 @@
 
 ## 6. 函数一览
 
-- **三角**：`sin` `cos` `tan` `cot` `sec` `csc`；反三角 `asin` `acos` `atan` `acot` 等。
+- **三角**：`sin` `cos` `tan` `cot` `sec` `csc`；反三角 `arcsin` `arccos` `arctan` `arccot` 等（也可写作 `asin` `acos` `atan`，两种写法等价）。
 - **角度制 / 弧度制**：`/mode deg` 或 `/mode rad` 切换。
 - **特殊角的精确值**：`sin(pi/6)`、`cos(60°)`、`tan(pi/4)` 会直接给精确结果，而不是小数。
 - **对数与指数**：`ln`、`log(底数, 真数)`、`log2`、`log10`、`exp`、`sqrt`、`cbrt`、`nroot(x, n)`。

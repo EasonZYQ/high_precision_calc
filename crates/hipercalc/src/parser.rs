@@ -40,6 +40,22 @@ pub const PHYS_CONSTANTS: &[(&str, &str, &str)] = &[
 /// **只收多字母单位**：单字母（`m`/`s`/`g`/`A`/`K`…）与变量命名空间冲突，
 /// 刻意排除（可写 `meter`/`second`/`gram`）。`KB` 也不收 —— 它是玻尔兹曼常量。
 /// 用法：`3 km` / `3km` / `500 m` 在解析期就折成 SI（`3 km` → `3*1000` → `3000`）。
+/// 函数别名规范化：`asin` ⇒ `arcsin`（反三角两种写法等价）
+pub fn canonical_fn_name(name: &str) -> &str {
+    match name {
+        "asin" => "arcsin",
+        "acos" => "arccos",
+        "atan" => "arctan",
+        "acot" => "arccot",
+        "asec" => "arcsec",
+        "acsc" => "arccsc",
+        "asinh" => "arcsinh",
+        "acosh" => "arccosh",
+        "atanh" => "arctanh",
+        other => other,
+    }
+}
+
 /// 比较运算符 → 编码（与 `solver_ineq` 的常量一致）
 pub fn classify_op(op: &str) -> (&'static str, u8) {
     match op {
@@ -969,7 +985,9 @@ impl Parser {
 
         // 检查是否是函数调用
         if self.peek() == Some('(') {
-            let func_name = ident.clone();
+            // 反三角支持 asin / arcsin 两种写法（用户要求）：这里统一成 arc* 规范名，
+            // 于是参数提示、分派、高亮只需认识一种名字。
+            let func_name = canonical_fn_name(&ident).to_string();
             self.next(); // 跳过 '('
 
             // 解析逗号分隔的参数列表（目前仅 log 用两参，其余函数单参）
@@ -3277,6 +3295,9 @@ mod func_tests {
             ("3 km^2", "3000000 m^2"),
             ("3 meter^2", "3 m^2"),
             ("2 km^3", "2000000000 m^3"),
+            // ★ 反三角两种写法等价（asin = arcsin）
+            ("asin(0.5)", "0.52359877559829887308"),
+            ("atan(1)", "0.78539816339744830962"),
             // ★ 单字母单位与大小写不敏感（用户要求）
             ("3 m", "3 m"),
             ("3 M", "3 m"),
