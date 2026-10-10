@@ -5484,4 +5484,23 @@ mod cli_tests {
         assert!(inline_hint("xyz").is_none());
         assert!(inline_hint("").is_none());
     }
+
+    #[test]
+    fn hints_are_colourless() {
+        // 用户要求：参数/签名提示保持终端默认前景色 ⇒ `highlight_hint` 统一剥掉内嵌 ANSI。
+        // 这里直接守住 `strip_ansi`：签名表里哪天带上颜色码，提示就不会再"发白"。
+        let colored = format!(
+            "\x1b[1;33m{0}\x1b[0m",
+            "\x1b[97m(小写=边, 大写=角, hX=高)\x1b[0m"
+        );
+        assert_eq!(strip_ansi(&colored), "(小写=边, 大写=角, hX=高)");
+        assert_eq!(strip_ansi("plain"), "plain");
+        assert_eq!(strip_ansi(""), "");
+        // 真实签名提示里不该出现 ESC
+        for line in ["triangle", "log", "/mode"] {
+            if let Some(h) = inline_hint(line) {
+                assert!(!h.contains('\u{1b}'), "{line} 的提示带颜色码: {h:?}");
+            }
+        }
+    }
 }
