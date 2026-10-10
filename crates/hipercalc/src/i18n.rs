@@ -573,6 +573,23 @@ mod tests {
     }
 
     #[test]
+    fn function_argument_hints_are_translated() {
+        // 函数括号内的渐进提示（`Hinter::hint` 的 A 路径）由 `remaining_args_hint` 拼出，
+        // 必须再过一遍 `t()`——否则英/繁界面里 `triangle(` / `int(` 的参数提示会冒中文。
+        let sig = crate::fn_meta("triangle").unwrap().sig;
+        let hint = crate::remaining_args_hint(sig, 0);
+        with_lang(Lang::En, || {
+            let out = t(&hint);
+            assert!(!has_cjk(&out), "参数提示未翻译: {out:?}");
+            assert!(out.contains("altitude"), "{out:?}");
+        });
+        with_lang(Lang::ZhTw, || {
+            let out = t(&hint);
+            assert!(out.contains("小寫=邊"), "{out:?}");
+        });
+    }
+
+    #[test]
     fn chinese_mode_is_passthrough() {
         let line = "x = 90 + k·180，k 为整数";
         assert_eq!(with_lang(Lang::ZhCn, || t(line)), line);

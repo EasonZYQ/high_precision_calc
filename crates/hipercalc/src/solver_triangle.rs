@@ -1,7 +1,9 @@
 //! 三角形求解（输入边 / 角 / 高，输出全部量）
 //!
-//! 直接在 REPL 里键入**空白分隔的赋值**：`a=3 b=4 c=5`、`A=30 b=5 C=60`、`hA=4 a=3 b=4`。
-//! 记号固定：边 `a,b,c`；角 `A,B,C`（`A` 对边 `a`）；高 `hA,hB,hC`（`hA` 为 BC 边上的高）。
+//! 输入形如 `triangle(a=3 b=4 c=5)`、`triangle(A=30 b=5 C=60)`、`triangle(hA=4 a=3 b=4)`。
+//! 记号：**小写字母是边，大写字母是角**（`a` 与 `A` 是同一个顶点）；`h` + 大写字母是该边上的高
+//! （`hA` 为 `a` 边上的高）。字母不限于 `a,b,c`：`triangle(x=3 y=4 z=5)` 与 `triangle(a=3 b=4 c=5)`
+//! 等价，顶点按输入里**首次出现的顺序**排定，不足三个时按拉丁字母顺序补齐（`x=1 y=2` → 第三顶点 `z`）。
 //! 角度单位跟随当前 `/mode deg|rad`。
 //!
 //! 三条设计约定：
@@ -29,54 +31,166 @@ use hipercalc_core::trig::{self, AngleMode};
 
 /* ---------------- 记号 ---------------- */
 
-/// 三角形的一个"零件"：下标 0/1/2 分别对应 a-A / b-B / c-C
+/// 三角形的一个"零件"：下标 0/1/2 分别是第 0/1/2 个顶点 —— 边是对边、角是顶角、高是对边上的高
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriPart {
-    /// 边（0=a, 1=b, 2=c）
+    /// 边（第 i 个顶点所对的边）
     Side(u8),
-    /// 角（0=A, 1=B, 2=C），A 对边 a
+    /// 角（第 i 个顶点处的角）
     Angle(u8),
-    /// 高（0=hA, 1=hB, 2=hC），hA 为 BC 边（即 a 边）上的高
+    /// 高（第 i 个顶点所对的边上的高）
     Height(u8),
 }
 
+/// 记号的角色：小写字母 = 边、大写字母 = 角、`h`/`H` + 字母 = 高
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriRole {
+    Side,
+    Angle,
+    Height,
+}
+
+/// 拉丁小写字母表（补齐顶点字母时按它顺延）
+const LATIN: [char; 26] = [
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's',
+    't', 'u', 'v', 'w', 'x', 'y', 'z',
+];
+
+/// 字母的"小写规范形"；无大小写区分（汉字、数字…）或大小写映射不是单字符（如 `ß`）时返回 `None`
+fn lower_form(c: char) -> Option<char> {
+    let mut lo = c.to_lowercase();
+    let l = lo.next()?;
+    if lo.next().is_some() {
+        return None;
+    }
+    let mut up = c.to_uppercase();
+    let u = up.next()?;
+    if up.next().is_some() || u == l {
+        return None;
+    }
+    Some(l)
+}
+
+/// 是否写成大写形式（`A` 是、`a` 不是）
+fn is_upper_form(c: char) -> bool {
+    matches!(c.to_uppercase().next(), Some(u) if u == c)
+}
+
+/// 三角形顶点的字母标注。
+///
+/// `verts[i]` 是第 i 个顶点的字母，边 / 角 / 高都由它派生：
+/// 顶点 `verts[i]`、对角 `uppercase(verts[i])`、高 `h + uppercase(verts[i])`。
+/// 经典记号 `a,b,c / A,B,C / hA,hB,hC` 只是 `verts = [a, b, c]` 的特例。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Alphabet {
+    verts: [char; 3],
+}
+
+impl Alphabet {
+    /// 由输入里出现过的顶点字母（`lower_form` 规范形，按出现顺序）构造字母表。
+    /// 三个以上不同字母直接报错；不足三个时从最后一个字母往后顺延补齐（跳过已用过的）。
+    pub fn from_letters(letters: &[char]) -> Result<Self, String> {
+        let mut verts: Vec<char> = Vec::new();
+        for &c in letters {
+            if !verts.contains(&c) {
+                verts.push(c);
+            }
+        }
+        if verts.len() > 3 {
+            return Err(format!(
+                "三角形只有三个顶点，但出现了 {0} 个不同的字母: {1}",
+                verts.len(),
+                verts.iter().collect::<String>()
+            ));
+        }
+        while verts.len() < 3 {
+            let start = verts
+                .last()
+                .and_then(|last| LATIN.iter().position(|c| c == last))
+                .map_or(0, |i| (i + 1) % LATIN.len());
+            let picked = (0..LATIN.len())
+                .map(|k| LATIN[(start + k) % LATIN.len()])
+                .find(|c| !verts.contains(c));
+            let Some(c) = picked else {
+                return Err("三角形只有三个顶点，但出现了多个不同的字母".to_string());
+            };
+            verts.push(c);
+        }
+        Ok(Alphabet {
+            verts: [verts[0], verts[1], verts[2]],
+        })
+    }
+
+    /// 顶点字母（小写规范形）→ 下标
+    pub fn index_of(&self, vert: char) -> Option<usize> {
+        self.verts.iter().position(|c| *c == vert)
+    }
+
+    /// 第 i 条边的名字（= 第 i 个顶点的字母）
+    pub fn side_label(&self, i: usize) -> String {
+        self.verts[i].to_string()
+    }
+
+    /// 第 i 个角的名字（= 顶点字母的大写）
+    pub fn angle_label(&self, i: usize) -> String {
+        self.verts[i].to_uppercase().collect()
+    }
+
+    /// 第 i 条高的名字（`h` + 顶点大写字母）
+    pub fn height_label(&self, i: usize) -> String {
+        format!("h{0}", self.angle_label(i))
+    }
+}
+
 impl TriPart {
-    /// 显示名（错误提示用）
-    pub fn name(self) -> &'static str {
+    /// 下标（0/1/2）
+    pub fn index(self) -> usize {
         match self {
-            TriPart::Side(0) => "a",
-            TriPart::Side(1) => "b",
-            TriPart::Side(_) => "c",
-            TriPart::Angle(0) => "A",
-            TriPart::Angle(1) => "B",
-            TriPart::Angle(_) => "C",
-            TriPart::Height(0) => "hA",
-            TriPart::Height(1) => "hB",
-            TriPart::Height(_) => "hC",
+            TriPart::Side(i) | TriPart::Angle(i) | TriPart::Height(i) => i as usize,
+        }
+    }
+
+    /// 显示名（错误提示用）
+    pub fn name(self, alpha: &Alphabet) -> String {
+        let i = self.index();
+        match self {
+            TriPart::Side(_) => alpha.side_label(i),
+            TriPart::Angle(_) => alpha.angle_label(i),
+            TriPart::Height(_) => alpha.height_label(i),
         }
     }
 }
 
-/// 记号名 → 零件（**大小写敏感**；只认这 9 个名字）
-pub fn tri_part_from_name(name: &str) -> Option<TriPart> {
-    Some(match name {
-        "a" => TriPart::Side(0),
-        "b" => TriPart::Side(1),
-        "c" => TriPart::Side(2),
-        "A" => TriPart::Angle(0),
-        "B" => TriPart::Angle(1),
-        "C" => TriPart::Angle(2),
-        "hA" => TriPart::Height(0),
-        "hB" => TriPart::Height(1),
-        "hC" => TriPart::Height(2),
-        _ => return None,
-    })
+/// 记号名 → (角色, 顶点字母的小写规范形)。
+///
+/// - 单字母：小写 = 边、大写 = 角（`a` 与 `A` 是同一顶点的边与角）；
+/// - `h`/`H` + 单字母 = 该顶点所对边上的高（`hA` 是 `a` 边上的高）。
+///
+/// 字母不限 ASCII：`α/Α`、`β/Β` 这类有大小写区分的字母同样可用；汉字等无大小写区分的记号报错。
+pub fn parse_part_name(name: &str) -> Result<(TriRole, char), String> {
+    let chars: Vec<char> = name.chars().collect();
+    let (fixed, letter) = match chars.as_slice() {
+        [c] => (None, *c),
+        ['h' | 'H', c] => (Some(TriRole::Height), *c),
+        _ => return Err(format!("未知的三角形记号: {0}", name)),
+    };
+    let Some(vert) = lower_form(letter) else {
+        return Err(format!("未知的三角形记号: {0}", name));
+    };
+    let role = match fixed {
+        Some(r) => r,
+        None if is_upper_form(letter) => TriRole::Angle,
+        None => TriRole::Side,
+    };
+    Ok((role, vert))
 }
 
 /// 一行三角形输入（解析期不求值，保留 `pi`/分数等精确形式）
 #[derive(Debug, Clone)]
 pub struct TriangleInput {
     pub parts: Vec<(TriPart, Expr)>,
+    /// 顶点字母（由用户写下的记号决定）
+    pub alphabet: Alphabet,
 }
 
 /* ---------------- 结果 ---------------- */
@@ -84,6 +198,8 @@ pub struct TriangleInput {
 /// 求解结果（角度内部为弧度）
 #[derive(Debug, Clone)]
 pub struct TriangleSolution {
+    /// 输出标签用的顶点字母
+    pub alphabet: Alphabet,
     pub a: Number,
     pub b: Number,
     pub c: Number,
@@ -247,6 +363,7 @@ pub fn solve_triangle(
     ev: &Evaluator,
 ) -> Result<Vec<TriangleSolution>, String> {
     let mode = ev.angle_mode;
+    let alpha = input.alphabet;
 
     // 1) 求值 + 规范化
     let mut known = Known::new();
@@ -264,17 +381,20 @@ pub fn solve_triangle(
         match part {
             TriPart::Side(_) => {
                 if norm.is_zero() || norm.is_negative() {
-                    return Err(format!("边长必须为正数: {0}", part.name()));
+                    return Err(format!("边长必须为正数: {0}", part.name(&alpha)));
                 }
             }
             TriPart::Height(_) => {
                 if norm.is_zero() || norm.is_negative() {
-                    return Err(format!("高必须为正数: {0}", part.name()));
+                    return Err(format!("高必须为正数: {0}", part.name(&alpha)));
                 }
             }
             TriPart::Angle(_) => {
                 if !(is_gt(&norm, &num0()) && is_gt(&num_pi(), &norm)) {
-                    return Err(format!("角度必须在 (0, 180°) 范围内: {0}", part.name()));
+                    return Err(format!(
+                        "角度必须在 (0, 180°) 范围内: {0}",
+                        part.name(&alpha)
+                    ));
                 }
             }
         }
@@ -287,7 +407,7 @@ pub fn solve_triangle(
         match slot {
             Some(prev) => {
                 if !number_eq(prev, &norm) {
-                    return Err(format!("三角形某个量被重复赋值: {0}", part.name()));
+                    return Err(format!("三角形某个量被重复赋值: {0}", part.name(&alpha)));
                 }
                 continue;
             }
@@ -306,13 +426,13 @@ pub fn solve_triangle(
 
     // 一个长度都没有 ⇒ 形状或许已定，但大小不定
     if known.side_count() == 0 {
-        return Err(underdetermined_message(&known));
+        return Err(underdetermined_message(&known, &alpha));
     }
 
     // 3) 解析解优先，数值兜底
     let vals_list = match solve_analytic(&known) {
         Some(r) => r?,
-        None => solve_numeric(&known, &givens)?,
+        None => solve_numeric(&known, &givens, &alpha)?,
     };
 
     // 4) 回代校验所有已知量，再把已知值原样写回
@@ -320,7 +440,7 @@ pub fn solve_triangle(
     for mut vals in vals_list {
         verify_givens(&givens, &vals)?;
         write_back_givens(&mut vals, &givens);
-        out.push(to_solution(&vals, &givens)?);
+        out.push(to_solution(&vals, &givens, &alpha)?);
     }
     Ok(out)
 }
@@ -403,7 +523,7 @@ fn reduce_heights(k: &mut Known) {
 }
 
 /// "信息不足"的提示；形状已能确定时补一句，便于用户知道还差什么
-fn underdetermined_message(k: &Known) -> String {
+fn underdetermined_message(k: &Known, alpha: &Alphabet) -> String {
     let all_angles = k.angle.iter().all(|a| a.is_some());
     let all_heights = k.height.iter().all(|h| h.is_some());
     if all_heights {
@@ -411,9 +531,17 @@ fn underdetermined_message(k: &Known) -> String {
         // a : b : c = 1/hA : 1/hB : 1/hC = hB·hC : hA·hC : hA·hB
         let vals = [h[1].mul(&h[2]), h[0].mul(&h[2]), h[0].mul(&h[1])];
         if let Some(ratio) = ratio_string(&vals) {
-            return format!(
-                "已知信息不足，无法确定三角形（形状已确定 a : b : c = {0}，仅缺一个长度）",
+            // 比例标签用用户写下的字母：`x : y : z = 6 : 4 : 3`
+            let shape = format!(
+                "{0} : {1} : {2} = {3}",
+                alpha.side_label(0),
+                alpha.side_label(1),
+                alpha.side_label(2),
                 ratio
+            );
+            return format!(
+                "已知信息不足，无法确定三角形（形状已确定 {0}，仅缺一个长度）",
+                shape
             );
         }
         return "已知信息不足，无法确定三角形（形状已确定，仅缺一个长度）".to_string();
@@ -863,12 +991,16 @@ fn solve3(mut a: [[BigFloat; 3]; 3], mut b: [BigFloat; 3]) -> Option<[BigFloat; 
 }
 
 /// 数值兜底：多起点 Gauss-Newton（法方程 `JᵀJ Δ = −Jᵀ r`）
-fn solve_numeric(k: &Known, givens: &[(TriPart, Number)]) -> Result<Vec<TriVals>, String> {
+fn solve_numeric(
+    k: &Known,
+    givens: &[(TriPart, Number)],
+    alpha: &Alphabet,
+) -> Result<Vec<TriVals>, String> {
     let prec = bigfloat::precision();
     let pi = BigFloat::pi(prec);
     let bfs: Vec<(TriPart, BigFloat)> = givens.iter().map(|(p, v)| (*p, v.to_approx())).collect();
     if bfs.len() < 3 {
-        return Err(underdetermined_message(k));
+        return Err(underdetermined_message(k, alpha));
     }
     // 步长：角度用绝对步长，尺度用相对步长
     let h_step =
@@ -993,7 +1125,7 @@ fn solve_numeric(k: &Known, givens: &[(TriPart, Number)]) -> Result<Vec<TriVals>
 
     if solutions.is_empty() {
         if rank_deficient {
-            return Err(underdetermined_message(k));
+            return Err(underdetermined_message(k, alpha));
         }
         return Err("三角形求解未收敛".to_string());
     }
@@ -1118,7 +1250,11 @@ fn write_back_givens(vals: &mut TriVals, givens: &[(TriPart, Number)]) {
 
 /// 由三边/三角/面积派生出全部输出量（全走 `Number` 精确运算）；
 /// 已知量原样写回，保证 `a=3` 显示 `3` 而不是解出来的近似值
-fn to_solution(vals: &TriVals, givens: &[(TriPart, Number)]) -> Result<TriangleSolution, String> {
+fn to_solution(
+    vals: &TriVals,
+    givens: &[(TriPart, Number)],
+    alpha: &Alphabet,
+) -> Result<TriangleSolution, String> {
     let mut sides = vals.sides.clone();
     let mut angles = vals.angles.clone();
     let mut height_override: [Option<Number>; 3] = [None, None, None];
@@ -1151,6 +1287,7 @@ fn to_solution(vals: &TriVals, givens: &[(TriPart, Number)]) -> Result<TriangleS
         None => num2().mul(&vals.area).div(side),
     };
     Ok(TriangleSolution {
+        alphabet: *alpha,
         a: a.clone(),
         b: b.clone(),
         c: c.clone(),
@@ -1192,24 +1329,25 @@ pub fn format_triangle_solution(
     mode: DisplayMode,
     angle_mode: AngleMode,
 ) -> Vec<String> {
+    let alpha = &sol.alphabet;
     let da = from_radians(&sol.angle_a, angle_mode);
     let db = from_radians(&sol.angle_b, angle_mode);
     let dc = from_radians(&sol.angle_c, angle_mode);
     vec![
         join_line(&[
-            entry("a", &sol.a, mode),
-            entry("b", &sol.b, mode),
-            entry("c", &sol.c, mode),
+            entry(&alpha.side_label(0), &sol.a, mode),
+            entry(&alpha.side_label(1), &sol.b, mode),
+            entry(&alpha.side_label(2), &sol.c, mode),
         ]),
         join_line(&[
-            entry("A", &da, mode),
-            entry("B", &db, mode),
-            entry("C", &dc, mode),
+            entry(&alpha.angle_label(0), &da, mode),
+            entry(&alpha.angle_label(1), &db, mode),
+            entry(&alpha.angle_label(2), &dc, mode),
         ]),
         join_line(&[
-            entry("hA", &sol.ha, mode),
-            entry("hB", &sol.hb, mode),
-            entry("hC", &sol.hc, mode),
+            entry(&alpha.height_label(0), &sol.ha, mode),
+            entry(&alpha.height_label(1), &sol.hb, mode),
+            entry(&alpha.height_label(2), &sol.hc, mode),
         ]),
         join_line(&[
             entry("面积", &sol.area, mode),
@@ -1387,6 +1525,124 @@ mod tests {
         assert!(err("a=-3 b=4 c=5").contains("边长必须为正数"));
         assert!(err("A=200 b=1 c=2").contains("角度必须在"));
         assert!(err("a=3 b=4").contains("已知信息不足"));
+    }
+
+    #[test]
+    fn arbitrary_letters_behave_like_abc() {
+        // 3-4-5：字母换成 x/y/z，数值与经典记号一字不差，只是标签跟着用户写
+        let lines = deg("x=3 y=4 z=5");
+        assert_eq!(line_starting(&lines, "x "), "x = 3, y = 4, z = 5");
+        assert!(line_starting(&lines, "X ").contains("Z = 90"), "{lines:?}");
+        assert_eq!(line_starting(&lines, "hX "), "hX = 4, hY = 3, hZ = 12 / 5");
+        assert_eq!(line_starting(&lines, "面积 "), "面积 = 6, 周长 = 12");
+        assert_eq!(
+            line_starting(&lines, "外接圆半径 "),
+            "外接圆半径 = 5 / 2, 内切圆半径 = 1"
+        );
+    }
+
+    #[test]
+    fn greek_letters_are_supported() {
+        let lines = deg("α=3 β=4 γ=5");
+        assert_eq!(line_starting(&lines, "α "), "α = 3, β = 4, γ = 5");
+        assert!(line_starting(&lines, "Α ").contains("Γ = 90"), "{lines:?}");
+        assert_eq!(line_starting(&lines, "hΑ "), "hΑ = 4, hΒ = 3, hΓ = 12 / 5");
+    }
+
+    #[test]
+    fn sides_and_angles_can_use_any_letters() {
+        // 大写 = 该顶点处的角：`M=30` 是 `m` 边的对角 ⇒ SSA 两解
+        let lines = deg("m=4 n=5 M=30");
+        assert!(lines.iter().any(|l| l == "解 1:"), "{lines:?}");
+        assert!(lines.iter().any(|l| l == "解 2:"), "{lines:?}");
+        assert!(line_starting(&lines, "M ").contains("M = 30"), "{lines:?}");
+        assert!(
+            line_starting(&lines, "m ").starts_with("m = 4, n = 5, o"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn missing_vertex_letters_are_filled_in_order() {
+        // 只写了顶点 x：补齐成 x,y,z（从最后一个字母往后顺延）
+        let lines = deg("hX=3 x=3 X=30");
+        assert!(
+            line_starting(&lines, "x ").starts_with("x = 3, y ≈"),
+            "{lines:?}"
+        );
+        assert!(line_starting(&lines, "X ").contains("X = 30"), "{lines:?}");
+        // 补齐后的第三顶点拿得到名字，高也用它的字母
+        assert!(
+            line_starting(&lines, "hX ").starts_with("hX = 3"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn alphabet_is_built_from_input_letters() {
+        let al = Alphabet::from_letters(&['x', 'y', 'z']).unwrap();
+        assert_eq!(al.side_label(0), "x");
+        assert_eq!(al.angle_label(0), "X");
+        assert_eq!(al.height_label(0), "hX");
+        assert_eq!(al.side_label(2), "z");
+        assert_eq!(al.index_of('y'), Some(1));
+        assert_eq!(al.index_of('w'), None);
+        // 补齐：从最后一个字母顺延，回绕到 a
+        assert_eq!(
+            Alphabet::from_letters(&['x', 'y']).unwrap().side_label(2),
+            "z"
+        );
+        assert_eq!(
+            Alphabet::from_letters(&['p', 'q']).unwrap().side_label(2),
+            "r"
+        );
+        assert_eq!(
+            Alphabet::from_letters(&['y', 'z']).unwrap().side_label(2),
+            "a"
+        );
+        assert_eq!(Alphabet::from_letters(&['m']).unwrap().side_label(1), "n");
+        // 同一个顶点的边与角只算一个顶点
+        assert_eq!(
+            Alphabet::from_letters(&['a', 'a', 'b'])
+                .unwrap()
+                .side_label(2),
+            "c"
+        );
+        // 四个不同字母 ⇒ 报错
+        assert!(Alphabet::from_letters(&['a', 'b', 'c', 'd']).is_err());
+        // 希腊字母同样可用
+        let g = Alphabet::from_letters(&['α', 'β']).unwrap();
+        assert_eq!(g.side_label(0), "α");
+        assert_eq!(g.angle_label(0), "Α");
+        assert_eq!(g.height_label(0), "hΑ");
+    }
+
+    #[test]
+    fn part_names_are_parsed_by_case() {
+        assert_eq!(parse_part_name("a").unwrap(), (TriRole::Side, 'a'));
+        assert_eq!(parse_part_name("A").unwrap(), (TriRole::Angle, 'a'));
+        assert_eq!(parse_part_name("hA").unwrap(), (TriRole::Height, 'a'));
+        assert_eq!(parse_part_name("Hy").unwrap(), (TriRole::Height, 'y'));
+        assert_eq!(parse_part_name("Z").unwrap(), (TriRole::Angle, 'z'));
+        assert_eq!(parse_part_name("α").unwrap(), (TriRole::Side, 'α'));
+        for bad in ["sinA", "点", "", "ab", "a1"] {
+            assert!(parse_part_name(bad).is_err(), "{bad} 应当报错");
+        }
+    }
+
+    #[test]
+    fn error_messages_use_the_users_letters() {
+        let e = err("w=1 v=1 u=3");
+        assert!(e.contains("三角不等式"), "{e}");
+        let e = err("x=3 y=4 z=5 X=30");
+        assert!(e.contains("矛盾"), "{e}");
+        let e = err("x=-3 y=4 z=5");
+        assert!(e.contains("边长必须为正数: x"), "{e}");
+        let e = err("P=200 q=1 r=2");
+        assert!(e.contains("角度必须在") && e.contains(": P"), "{e}");
+        // 形状已定但缺长度：比例标签用用户的字母
+        let e = err("hX=2 hY=3 hZ=4");
+        assert!(e.contains("x : y : z = 6 : 4 : 3"), "{e}");
     }
 
     #[test]

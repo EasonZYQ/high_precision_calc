@@ -652,12 +652,12 @@ const FUNCTIONS_META: &[FnMeta] = &[
         max: 4,
         sig: "(f, k, a, b)",
     },
-    // 命名参数特例：不做元数校验（a/b/c/A/B/C 任意组合，可逗号可空白）
+    // 命名参数特例：不做元数校验（边/角/高任意组合，字母任意；可逗号可空白）
     FnMeta {
         name: "triangle",
         min: 0,
         max: usize::MAX,
-        sig: "(a, b, c, A, B, C)",
+        sig: "(小写=边, 大写=角, hX=高)",
     },
 ];
 
@@ -1391,6 +1391,9 @@ impl Hinter for CalcHelper {
             } else {
                 (HintKind::Normal, remaining_args_hint(m.sig, argc))
             };
+            // 签名可能含中文（`int`/`sum`/`triangle` 等），**必须过 `i18n::t`**，
+            // 否则英/繁界面里括号内的参数提示会冒中文（B 路径的 `inline_hint` 早就翻了）。
+            let text = i18n::t(&text);
             self.hint_kind.set(kind);
             return Some(ArgHint {
                 text: format!("  {}", text),
@@ -2862,56 +2865,6 @@ fn split_add_sub(e: &parser::Expr) -> Vec<(i32, parser::Expr)> {
     }
 }
 
-/// 收集表达式里所有**含自变量的分母**（用于把有理方程乘成分式前先"分母乘掉"）。
-///
-/// 例如 `(x-3)/(x-5) - x` 的分母是 `x-5`。分母里没有自变量（如 `x/2`）不算，
-/// 因为那不影响"是不是多项式"。
-fn collect_denominators(e: &parser::Expr, var: char) -> Vec<parser::Expr> {
-    fn has_var(e: &parser::Expr, var: char) -> bool {
-        match e {
-            parser::Expr::Variable(n) => n.chars().next() == Some(var),
-            parser::Expr::Binary(a, _, b) => has_var(a, var) || has_var(b, var),
-            parser::Expr::Unary(_, a) | parser::Expr::Sd(a) | parser::Expr::Factor(a) => {
-                has_var(a, var)
-            }
-            parser::Expr::Pow(a, b) => has_var(a, var) || has_var(b, var),
-            parser::Expr::Function(_, args) => args.iter().any(|a| has_var(a, var)),
-            _ => false,
-        }
-    }
-    let mut out = Vec::new();
-    fn walk(e: &parser::Expr, var: char, out: &mut Vec<parser::Expr>) {
-        match e {
-            parser::Expr::Binary(a, parser::BinOp::Div, b) => {
-                if has_var(b, var) {
-                    out.push((**b).clone());
-                }
-                walk(a, var, out);
-                walk(b, var, out);
-            }
-            parser::Expr::Binary(a, _, b) => {
-                walk(a, var, out);
-                walk(b, var, out);
-            }
-            parser::Expr::Unary(_, a) | parser::Expr::Sd(a) | parser::Expr::Factor(a) => {
-                walk(a, var, out)
-            }
-            parser::Expr::Pow(a, b) => {
-                walk(a, var, out);
-                walk(b, var, out);
-            }
-            parser::Expr::Function(_, args) => {
-                for a in args {
-                    walk(a, var, out);
-                }
-            }
-            _ => {}
-        }
-    }
-    walk(e, var, &mut out);
-    out
-}
-
 fn handle_equation(left: &parser::Expr, right: &parser::Expr, state: &mut AppState) -> String {
     // 化简: left - right = 0
     let mut eq_expr = parser::Expr::Binary(
@@ -4091,7 +4044,7 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   fac(x^2-4)         因式分解（factor 等價）；整數入參做質因數分解；MathIO 實數域、LineIO 有理數域
   primefac(12)       質因數分解：12 = 2^2 * 3（負數寫成 -12 = -2^2 * 3）
   sd(1/3)            顯示轉換：MathIO 轉小數、LineIO 轉符號
-  triangle(a=3 b=4 c=5)  三角形求解：邊/角/高 → 全部量（可逗號分隔；只能最外層）
+  triangle(a=3 b=4 c=5)  三角形求解：邊/角/高 → 全部量（字母任意，小寫=邊, 大寫=角, hX=高）
 
 【高等數學】（可參與運算：diff(x^2,x)+1 合法；精確值給 =，數值回退給 ≈）
   diff(f, x)         求導：diff(x^2, x) → 2*x、diff(sin(x), x) → cos(x)（變數須為單個字母）
@@ -4171,7 +4124,7 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   fac(x^2-4)         factor (same as factor); integer arguments get prime factorization; MathIO over the reals, LineIO over the rationals
   primefac(12)       prime factorization: 12 = 2^2 * 3 (negatives: -12 = -2^2 * 3)
   sd(1/3)            display conversion: MathIO -> decimal, LineIO -> symbolic
-  triangle(a=3 b=4 c=5)  triangle solver: sides/angles/heights -> everything (commas OK; outermost only)
+  triangle(a=3 b=4 c=5)  triangle solver: sides/angles/heights -> everything (any letters: lower = side, UPPER = angle, hX = altitude)
 
 [Calculus] (usable inside expressions, e.g. diff(x^2,x)+1; exact gives =, numeric fallback gives ~)
   diff(f, x)         derivative: diff(x^2, x) -> 2*x, diff(sin(x), x) -> cos(x) (single-letter variable)
@@ -4257,7 +4210,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   fac(x^2-4)         因式分解（factor 等价）；整数入参做素因数分解；MathIO 实数域、LineIO 有理数域
   primefac(12)       素因数分解：12 = 2^2 * 3（负数写成 -12 = -2^2 * 3）
   sd(1/3)            显示转换：MathIO 转小数、LineIO 转符号
-  triangle(a=3 b=4 c=5)  三角形求解：边/角/高 → 全部量（可逗号分隔；只能最外层）
+  triangle(a=3 b=4 c=5)  三角形求解：边/角/高 → 全部量（字母任意，小写=边, 大写=角, hX=高）
 
 【高等数学】（可参与运算：diff(x^2,x)+1 合法；精确值给 =，数值回退给 ≈）
   diff(f, x)         求导：diff(x^2, x) → 2*x、diff(sin(x), x) → cos(x)（变量须为单个字母）
@@ -5362,6 +5315,26 @@ mod cli_tests {
         assert_eq!(remaining_args_hint("(base, x)", 1), ", x)");
         assert_eq!(remaining_args_hint("(f, x, a, b)", 2), ", a, b)");
         assert_eq!(sig_params("(f, x, a, b)"), vec!["f", "x", "a", "b"]);
+        // `triangle` 是命名参数特例：提示要说明"小写=边、大写=角、hX=高"这三段。
+        // ⚠️ 这里断言**元数据原文**而不是 `inline_hint` 的结果——后者经 `i18n::t`，会随
+        // 当前界面语言变化，在并行测试里是不稳定的（曾因此 flaky）。
+        let tri_sig = fn_meta("triangle").unwrap().sig;
+        assert_eq!(
+            sig_params(tri_sig),
+            vec!["小写=边", "大写=角", "hX=高"],
+            "{tri_sig}"
+        );
+        // 括号内的渐进提示（Hinter::hint 的 A 路径）末尾补 `)`，词条按**去掉外层括号**的文本存
+        assert_eq!(remaining_args_hint(tri_sig, 0), "小写=边, 大写=角, hX=高)");
+        let key = tri_sig.trim_matches(|c| c == '(' || c == ')');
+        for code in ["en", "zh-TW"] {
+            assert!(
+                crate::language::get(code)
+                    .iter()
+                    .any(|(zh, _)| zh.as_str() == key),
+                "{code} 缺 triangle 的参数提示词条: {key}"
+            );
+        }
     }
 
     #[test]

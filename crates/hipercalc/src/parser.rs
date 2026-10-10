@@ -2687,6 +2687,7 @@ fn parse_fit_template(tail: &str) -> Result<Option<crate::solver_fit::FitTemplat
 ///
 /// 与 `sd` / `fac` 同一约定：**必须是整个表达式的最外层函数**，不能参与其它运算。
 /// 括号内是按空白**或**逗号分隔的 `<记号>=<表达式>`（逗号在括号内，如 `log(2,8)`，不会被当分隔符）。
+/// 记号是任意字母：小写 = 边、大写 = 角、`h` + 字母 = 高（详见 `solver_triangle`）。
 ///
 /// - `Ok(Some(..))`：认领，交给求解阶段；
 /// - `Ok(None)`：这条输入与 `triangle` 无关，继续走常规文法；
@@ -2724,7 +2725,7 @@ pub fn parse_triangle_call(
         return Err(OUTERMOST.to_string());
     }
     let parts = parse_triangle_items(body)?;
-    Ok(Some(crate::solver_triangle::TriangleInput { parts }))
+    Ok(Some(parts))
 }
 
 /// 标识符字符（字母/数字/下划线）
@@ -2793,22 +2794,24 @@ fn split_triangle_items(body: &str) -> Vec<&str> {
     out
 }
 
-/// 解析 `triangle(...)` 括号内的各项 `<记号>=<表达式>`。
+/// 解析 `triangle(...)` 括号内的各项 `<记号>=<表达式>`，同时定出顶点字母表。
 /// 每个右端表达式用独立 `Parser` 解析（支持 `1/2`、`sqrt(2)`、`pi/6`），求值延迟到求解阶段。
-fn parse_triangle_items(
-    body: &str,
-) -> Result<Vec<(crate::solver_triangle::TriPart, Expr)>, String> {
-    let mut parts: Vec<(crate::solver_triangle::TriPart, Expr)> = Vec::new();
+///
+/// 记号是**任意字母**（不限于 `a,b,c`）：小写 = 边、大写 = 角、`h`/`H` + 字母 = 高。
+/// 顶点按**首次出现顺序**排定，故 `triangle(x=3 y=4 z=5)` 与 `triangle(a=3 b=4 c=5)` 完全等价；
+/// 只写了两个顶点时按拉丁字母顺序顺延补齐（`x=… y=…` 补 `z`）。三个以上不同字母直接报错。
+fn parse_triangle_items(body: &str) -> Result<crate::solver_triangle::TriangleInput, String> {
+    use crate::solver_triangle::{Alphabet, TriPart, TriRole, TriangleInput, parse_part_name};
+
+    // 1) 逐项解析出 (角色, 顶点字母, 右端表达式)
+    let mut items: Vec<(TriRole, char, Expr)> = Vec::new();
     for item in split_triangle_items(body) {
         let eq = match item.find('=') {
             Some(i) => i,
             None => return Err(format!("三角形记号格式错误: {0}", item)),
         };
-        let (lhs, rhs) = (&item[..eq], &item[eq + 1..]);
-        let part = match crate::solver_triangle::tri_part_from_name(lhs) {
-            Some(p) => p,
-            None => return Err(format!("未知的三角形记号: {0}", lhs)),
-        };
+        let (lhs, rhs) = (item[..eq].trim(), &item[eq + 1..]);
+        let (role, vert) = parse_part_name(lhs)?;
         if rhs.is_empty() {
             return Err("三角形赋值缺少右端表达式".to_string());
         }
@@ -2818,12 +2821,30 @@ fn parse_triangle_items(
         if p.pos != p.input.len() {
             return Err(format!("位置 {} 处多余的字符", p.pos));
         }
-        parts.push((part, expr));
+        items.push((role, vert, expr));
     }
-    if parts.is_empty() {
+    if items.is_empty() {
         return Err("三角形记号格式错误".to_string());
     }
-    Ok(parts)
+
+    // 2) 顶点字母表（出现三个以上不同字母会在这里报错）
+    let seen: Vec<char> = items.iter().map(|(_, v, _)| *v).collect();
+    let alphabet = Alphabet::from_letters(&seen)?;
+
+    // 3) 字母 → 下标（字母表正是由这些字母构造的 ⇒ 必然命中）
+    let parts = items
+        .into_iter()
+        .map(|(role, vert, expr)| {
+            let i = alphabet.index_of(vert).expect("字母表由输入字母构造") as u8;
+            let part = match role {
+                TriRole::Side => TriPart::Side(i),
+                TriRole::Angle => TriPart::Angle(i),
+                TriRole::Height => TriPart::Height(i),
+            };
+            (part, expr)
+        })
+        .collect();
+    Ok(TriangleInput { parts, alphabet })
 }
 
 /// `primefac(非零整数)` 的入口：与 `sd` / `fac` / `triangle` 同一约定——**只能是整个表达式的最外层函数**。
@@ -3411,26 +3432,31 @@ mod func_tests {
             "triangle(a=1/2 b=sqrt(2) c=1)",
             "triangle( a=3   b=4 )",
             "triangle(a=log(2,8) b=4 c=5)", // 括号内的逗号是函数参数，不是项分隔符
+            // 字母不限 a/b/c：任意字母都行（小写=边、大写=角、h+字母=高）
+            "triangle(x=3 y=4 z=5)",
+            "triangle(m=4 n=5 M=30)",
+            "triangle(hX=4 x=3 y=4)",
+            "triangle(α=3 β=4 γ=5)",
         ] {
             assert!(
                 matches!(parse_triangle_call(good), Ok(Some(_))),
                 "{good} 应被认领"
             );
         }
-        // 绝不能认领：这些在现有文法里有别的含义（合法或另有报错）
+        // 绝不能认领：没有 `triangle` 前缀 ⇒ 交给常规文法（解方程 / 方程组 / 拟合 / 表达式…）
         for bad in [
-            "a=3",           // 合法：解方程
-            "a=3, b=4, c=5", // 合法：解方程组
-            "x=1 y=2",       // 名字不在记号表
-            "h=1 a=2 b=3",   // h 不是合法高度名（只认 hA/hB/hC）
-            "hD=1 a=2 b=3",  // 同上
-            "sinA=0.5 B=30", // sinA 不在记号表
-            "a = 3 b = 4",   // 只支持紧凑写法
-            "(1,2) (3,4)",   // 拟合输入
-            "3+4",           // 普通表达式
-            "",              // 空
-            "a=3 b=",        // RHS 为空
-            "a=3 b=4+",      // 尾随运算符：语法上认领，但解析会报错（见下）
+            "a=3",
+            "a=3, b=4, c=5",
+            "x=1 y=2",
+            "h=1 a=2 b=3",
+            "hD=1 a=2 b=3",
+            "sinA=0.5 B=30",
+            "a = 3 b = 4",
+            "(1,2) (3,4)",
+            "3+4",
+            "",
+            "a=3 b=",
+            "a=3 b=4+",
         ] {
             if bad == "a=3 b=4+" {
                 continue; // 这一条属于"空白区认领后解析报错"，单独验证
@@ -3457,8 +3483,50 @@ mod func_tests {
         assert!(perr("triangle a=3 b=4", &mut ev).contains("需要参数"));
         assert!(perr("triangle(a=3 b=4", &mut ev).contains("右括号"));
         assert!(perr("triangle()", &mut ev).contains("记号格式错误"));
-        assert!(perr("triangle(x=1 a=2)", &mut ev).contains("未知的三角形记号"));
+        assert!(perr("triangle(a=3 b=4 x^2=5)", &mut ev).contains("未知的三角形记号"));
+        assert!(perr("triangle(点=3 面=4)", &mut ev).contains("未知的三角形记号")); // 无大小写区分的字母
+        assert!(perr("triangle(x=1 y=2 z=3 w=4)", &mut ev).contains("三个顶点"));
         assert!(parse_and_eval("triangle(a=3 b=4+)", &mut ev).is_err());
+
+        // 顶点按**首次出现顺序**排定（大写字与小写字是同一个顶点）
+        let tri = parse_triangle_call("triangle(m=4 n=5 M=30)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            tri.parts
+                .iter()
+                .map(|(p, _)| *p)
+                .collect::<Vec<crate::solver_triangle::TriPart>>(),
+            vec![
+                crate::solver_triangle::TriPart::Side(0),
+                crate::solver_triangle::TriPart::Side(1),
+                crate::solver_triangle::TriPart::Angle(0),
+            ]
+        );
+        // 顶点字母不足三个时顺延补齐：x,y → 第三顶点补 z
+        let tri = parse_triangle_call("triangle(x=3 y=4)").unwrap().unwrap();
+        assert_eq!(tri.alphabet.side_label(0), "x");
+        assert_eq!(tri.alphabet.angle_label(0), "X");
+        assert_eq!(tri.alphabet.side_label(1), "y");
+        assert_eq!(tri.alphabet.side_label(2), "z");
+        assert_eq!(tri.alphabet.height_label(2), "hZ");
+        // p,q → r（顺延）；y,z → 回绕到 a
+        assert_eq!(
+            parse_triangle_call("triangle(p=1 q=2)")
+                .unwrap()
+                .unwrap()
+                .alphabet
+                .side_label(2),
+            "r"
+        );
+        assert_eq!(
+            parse_triangle_call("triangle(y=1 z=2)")
+                .unwrap()
+                .unwrap()
+                .alphabet
+                .side_label(2),
+            "a"
+        );
 
         // 认领成功后确实得到三角形变体
         assert!(matches!(

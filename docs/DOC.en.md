@@ -233,8 +233,21 @@ parameter relations when under-determined.
 ## 19. Triangle solving
 
 `triangle(a=3 b=4 c=5)` (or comma separated) returns everything else: three sides, three angles, three altitudes,
-area, perimeter, circumradius and inradius. SSS / SAS / ASA / AAS / SSA are supported, analytically where possible;
-SSA may have two solutions and both are reported.
+area, perimeter, circumradius and inradius.
+
+**Notation**: a lowercase letter is a side, an uppercase letter is an angle, and `h` plus the uppercase letter is the
+altitude on that side (`hA` is the altitude on side `a`). `a` and `A` denote the same vertex, so `triangle(a=3 b=4 c=5)`,
+`triangle(A=30 b=5 C=60)` and `triangle(hA=4 a=3 b=4)` are all valid.
+
+**The letters are not limited to a/b/c**: `triangle(x=3 y=4 z=5)` is exactly equivalent to `triangle(a=3 b=4 c=5)`, and
+the output labels follow your letters (`X ≈ 36.87…`, `hZ = 12/5`). Greek letters work too, e.g. `triangle(α=3 β=4 γ=5)`.
+
+- Vertices are numbered in order of first appearance, so the output order matches your input order.
+- If only two letters appear, the third vertex is filled in: `triangle(x=1 y=2)` uses `z`, `triangle(p=1 q=2)` uses `r`.
+- At most three distinct letters; a fourth is an error.
+
+SSS / SAS / ASA / AAS / SSA are supported, analytically where possible; SSA may have two solutions and both are
+reported. The angle unit follows the current `/mode deg|rad`.
 
 ## 20. Calculus
 
