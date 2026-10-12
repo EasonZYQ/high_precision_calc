@@ -117,6 +117,38 @@ pub fn int_nth_root(n: &BigInt, k: u32) -> BigInt {
     x
 }
 
+/// 大整数对**小除数**取模：逐 limb 用 u128 算，**零分配**。
+///
+/// 为什么需要：`&n % &d` 每次都会新建一个 `BigInt`，而"试除到 10^6"要对 33 万个 `d`
+/// 各做一次 ⇒ 实测 `2^128+1`、`10^40+1` 这类输入光这一项就要 250~300 ms，
+/// 是它们最大的一笔开销（`primefac` 与 `is_prime` 里各有一份这种循环）。
+///
+/// `limbs` 是**低位在前**的 u64 数字（`BigInt::to_u64_digits()` 的顺序，只对非负整数有意义）；
+/// 调用方一次性取好 limbs 后循环复用。约定 `d` 不超过 2^32（实际调用点 ≤ 2·10^5）。
+pub fn rem_small(limbs: &[u64], d: u64) -> u64 {
+    debug_assert!(d > 0 && d < (1u64 << 32), "rem_small 只服务小除数");
+    let dm = d as u128;
+    let mut r: u128 = 0;
+    for &w in limbs.iter().rev() {
+        // r < d ≤ 2^32 ⇒ (r << 64) | w < 2^96，u128 装得下
+        r = ((r << 64) | w as u128) % dm;
+    }
+    r as u64
+}
+
+/// `limbs`（低位在前）在装得进 u128 时取回它的值；装不下返回 `None`。
+///
+/// 试除循环里要判两件事：`d² > 剩余值`、以及"试除因子已经不小于 n"——两者都只可能发生在小值上，
+/// 用这个函数就能避免每次做大数比较（那同样是每次一次分配）。
+pub fn small_value(limbs: &[u64]) -> Option<u128> {
+    match limbs.len() {
+        0 => Some(0),
+        1 => Some(limbs[0] as u128),
+        2 => Some(limbs[0] as u128 | ((limbs[1] as u128) << 64)),
+        _ => None,
+    }
+}
+
 /// 素性判定：小素数试除 + Miller-Rabin。
 /// 不用"试除到 √n"（10^13 就要 3×10^6 次循环、约 3 秒），改用 12 个底的 Miller-Rabin
 /// （对 n < 3.3×10^24 是确定性判定，更大为强概率判定）。
@@ -140,14 +172,20 @@ pub fn is_prime(n: &BigInt) -> bool {
     // 小素数之后的试除上限按工作量折算（位数越大每次取模越贵）
     let words = (n.bits() as usize).div_ceil(64).max(1);
     let max_p = (200_000usize / words).clamp(101, 200_000) as u64;
+    // **取一次 limb，之后全用 u128 取模**：这一步原本是 `&n % &BigInt::from(p)`，
+    // 10 万次下来光分配就要几十毫秒（见 `rem_small` 的说明）
+    // `to_u64_digits` 返回 `(符号, 低位在前的 limb)`；这里只处理非负整数
+    let (_, limbs) = n.to_u64_digits();
+    let n_small = small_value(&limbs);
     let mut p = 101u64;
     while p <= max_p {
-        let pb = BigInt::from(p);
-        if &pb >= n {
-            // 试除因子已经不小 n 本身：n 是素数（否则早被更小的因子判掉了）
+        // "p 已经不小于 n" 只可能发生在 n 装得进 u128 时
+        if let Some(nv) = n_small
+            && (p as u128) >= nv
+        {
             break;
         }
-        if (n % &pb).is_zero() {
+        if rem_small(&limbs, p) == 0 {
             return false;
         }
         p += 2;

@@ -341,7 +341,10 @@ fn factor_bigint(n: &BigInt, out: &mut Vec<BigInt>) -> Result<(), String> {
             return Ok(());
         }
     }
-    // 2) 6k±1 试除（`is_even` 只读最低位 limb，比 `% 2` 少一次分配）
+    // 2) 6k±1 试除 —— **逐 limb 用 u128 取模**（一次取 limb，之后零分配）。
+    //
+    // 旧实现每个 d 都做一次 `&m % &d`（新建一个 BigInt），到 10^6 就是 33 万次分配：
+    // 实测 `2^128+1` / `10^40+1` 这类输入光这一项 250~300 ms，是它们最大的一笔开销。
     while m.is_even() {
         out.push(two.clone());
         m /= &two;
@@ -350,33 +353,44 @@ fn factor_bigint(n: &BigInt, out: &mut Vec<BigInt>) -> Result<(), String> {
         out.push(three.clone());
         m /= &three;
     }
-    let mut d = BigInt::from(1001u32);
-    let mut step = BigInt::from(2u32);
-    let six = BigInt::from(6u32);
-    let trial_max = BigInt::from(TRIAL_MAX);
+    let (_, mut limbs) = m.to_u64_digits();
+    let mut d = 1001u64;
+    let mut step = 2u64;
     loop {
         if m.is_one() {
             return Ok(());
         }
-        if d > trial_max || &d * &d > m {
+        if d > TRIAL_MAX {
             break;
         }
-        while (&m % &d).is_zero() {
-            out.push(d.clone());
-            m /= &d;
+        // `d² > m` 只可能在 m < 10^12（≤ 2 个 limb）时成立 ⇒ 用 u128 比，避免每次做大数比较
+        if let Some(mv) = hipercalc_core::bigint_ext::small_value(&limbs)
+            && (d as u128) * (d as u128) > mv
+        {
+            break;
         }
-        d += &step;
-        step = &six - &step;
+        while hipercalc_core::bigint_ext::rem_small(&limbs, d) == 0 {
+            out.push(BigInt::from(d));
+            m /= BigInt::from(d);
+            (_, limbs) = m.to_u64_digits();
+        }
+        d += step;
+        step = 6 - step;
     }
     if m.is_one() {
         return Ok(());
     }
-    // 3) 先判素（同 u64 路径：素数不该被一路试除掉）
+    // 3) 余下部分装得进 u64 ⇒ 直接交给 u64 路径：它的判素与 Pollard 都在 u64 上算，
+    //    比 BigInt 版便宜一个数量级（`2^64+1` 剥掉 274177 之后剩下的 67280421310721 就走这条）
+    if let Some(v) = m.to_u64() {
+        return split_u64(v, out);
+    }
+    // 4) 先判素（同 u64 路径：素数不该被一路试除掉）
     if hipercalc_core::bigint_ext::is_prime(&m) {
         out.push(m);
         return Ok(());
     }
-    // 4) Pollard's rho
+    // 5) Pollard's rho
     split_bigint(m, out)
 }
 
