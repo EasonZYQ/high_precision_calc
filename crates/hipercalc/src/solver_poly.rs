@@ -27,8 +27,13 @@ pub enum PolySolution {
 const NEWTON_ABS_LIMIT: i64 = 1_000_000;
 
 /// |b| > limit ?
+///
+/// **不能用 `b.value.abs() > limit * 10^b.precision` 这种尾数比较**：`BigFloat` 的
+/// `value` 只是尾数，真实值是 `value / 10^precision`。`round_to` 会在保持数值不变的前提下
+/// 同时改变尾数与精度（`1e-50` 的尾数是 `10^50`、精度 100，也可以是 `10^30`、精度 80），
+/// 所以两个不同精度的数直接比尾数会得出完全相反的结论。用 `magnitude_log10`（已经考虑精度）。
 fn exceeds_abs_limit(b: &BigFloat, limit: i64) -> bool {
-    b.value.abs() > BigInt::from(limit) * BigInt::from(10).pow(b.precision as u32)
+    b.magnitude_log10() > (limit.abs() as f64).log10()
 }
 
 /// 牛顿迭代法求单根
@@ -62,6 +67,11 @@ pub fn newton_solve(
             .into(),
         bigfloat::precision(),
     );
+    // 判据统一用**量级**比较（`magnitude_log10` 已经把 precision 考虑进去）。
+    // 直接比 `value.abs()`（尾数）是错的：BigFloat 的真实值是 value/10^precision，
+    // 两个精度不同的数比尾数会得出完全相反的结论 —— 这正是"f(x)=x 在初值 1 处被判为
+    // 已收敛"的原因（`|fx|` 尾数 0.3、阈值尾数 10^30，1 <= 10^30 成立）。
+    let zero_log = zero_compare.magnitude_log10();
 
     for _ in 0..max_iter {
         // 中断检查：本函数返回 Option，故中断表现为"放弃这个初值"（外层循环另有检查点）
@@ -76,10 +86,17 @@ pub fn newton_solve(
                 _ => return None,
             };
 
-        // 检查与 0 的接近程度
-        if fx.value.abs() <= zero_compare.value.abs()
-            || (fx.value.abs() <= BigInt::from(1) && fx.precision >= 60)
-        {
+        // 检查与 0 的接近程度。
+        //
+        // 这里**只能**用与 0 的绝对距离：曾经还有一条
+        // `|| (fx.value.abs() <= 1 && fx.precision >= 60)` 的宽松分支，它的本意是
+        // "定点尾数只剩个位数、说明已经算到零附近"，但实际上 `f(x) = x` 这类**恒等/线性**
+        // 函数在**任何**初值处都满足 `|f(x)| = |x|`，于是牛顿会"立即收敛"并返回初值本身。
+        // 症状：`solve_aux::collect_all_roots(ev, x, 'x')` 返回 `[0, ±1..±6]`（全是初值、
+        // 没有一个是根），下游 `calculus::integrate::singular_inside` 拿它当"分母的根"，
+        // 把 `int(1/x,x,1,3)` 误判成区间内有奇点而拒绝计算（`[1,2]`、`[2,3]` 恰好躲过）。
+        // 删掉该分支后，`f(x) = x` 会正常走一步牛顿迭代到真正的根 0。
+        if fx.magnitude_log10() <= zero_log {
             return Some(x);
         }
 
@@ -104,12 +121,10 @@ pub fn newton_solve(
 
         // 导数为零 ⇒ 该初值不可用。**必须显式判零**：`BigFloat::div` 内部是 `assert!`，除数为零会
         // 直接把进程 panic 掉（实测 `/mode prec 40` 下 `sin(x)=0` 崩溃）。
-        // 下面那条"导数极小"的判断带 `precision >= 60` 的精度闸门，是按默认精度 80 调的，
-        // 在 prec < 60 时恒不成立，**不能**指望它兜住精确零。
-        if derivative.is_zero()
-            || (derivative.value.abs() <= BigInt::from(1) && derivative.precision >= 60)
-        {
-            return None; // 导数为零
+        // 这里也一律用**量级**判据，不用 `value.abs()`（尾数）——后者忽略 precision，
+        // 在 `round_to` 调整过精度的数上会得出错误结论。
+        if derivative.is_zero() || derivative.magnitude_log10() <= zero_log {
+            return None; // 导数为零（或小到无法做除法）
         }
 
         let correction = BigFloat::div(&fx, &derivative, bigfloat::precision());
@@ -123,18 +138,22 @@ pub fn newton_solve(
         }
 
         // 修正量足够小则收敛
-        if correction.value.abs() <= zero_compare.value.abs() {
+        if correction.magnitude_log10() <= zero_log {
             return Some(x_new);
         }
 
         x = x_new;
     }
 
-    // 迭代未在循环内确认收敛：校验最终残差，避免返回假根
+    // 迭代未在循环内确认收敛：校验最终残差，避免返回假根。
+    //
+    // 判据必须与循环内的收敛判据同量级。旧实现这里写的是 `|f(x)| ≤ 10^(precision/2)`
+    // （默认精度下 = 1e40）—— 那个阈值宽松到几乎等于不做校验：`f(x) = x` 在初值 1 处
+    // 的残差是 1，照样被当成根返回，于是 `collect_all_roots` 把整列初值当成了根。
     match evaluator.evaluate_with_var(f_expr, &var.to_string(), &Number::Approx(x.clone())) {
         Ok(v) if !v.is_complex() => {
             let bf = v.to_approx();
-            if bf.value.abs() <= BigInt::from(10).pow(bigfloat::precision().div_ceil(2) as u32) {
+            if bf.magnitude_log10() <= zero_log {
                 Some(x.rounded(bigfloat::precision()))
             } else {
                 None
@@ -549,13 +568,11 @@ fn dk_iterate(
                 }
             }
             if let Some(delta) = cx_div(&num, &den, prec) {
-                let step_re = delta.re.value.abs();
-                let step_im = delta.im.value.abs();
                 zs[k] = cx_sub(&zk, &delta, prec);
-                if max_step.value.abs() < step_re {
+                if max_step.value.abs() < delta.re.value.abs() {
                     max_step = delta.re.clone();
                 }
-                if max_step.value.abs() < step_im {
+                if max_step.value.abs() < delta.im.value.abs() {
                     max_step = delta.im.clone();
                 }
             }
@@ -589,14 +606,6 @@ fn durand_kerner(coeffs: &[BigFloat]) -> Result<Vec<Cx>, String> {
         .iter()
         .map(|c| BigFloat::div(c, &lead, bigfloat::precision()))
         .collect();
-
-    let tol = BigFloat::div(
-        &BigFloat::from_u64(1),
-        &BigInt::from(10)
-            .pow(bigfloat::precision().div_ceil(2) as u32)
-            .into(),
-        bigfloat::precision(),
-    );
 
     // 初值半径：
     // - 柯西界 R_c = 1 + max|a_i/a_n|（首一化后即 max|norm[i]|）是"所有根都在其内"的
@@ -684,14 +693,26 @@ fn durand_kerner(coeffs: &[BigFloat]) -> Result<Vec<Cx>, String> {
     };
 
     // 两阶段迭代：每轮都是 O(n²) 的复数乘除，成本由 BigInt 位数决定。
-    // 阶段 1 用 40 位低精度快速把根拉到正确位置附近（单轮开销约为全精度的 1/2~1/3）；
-    // 阶段 2 用全精度精化——从 1e-20 的近似出发，牛顿型收敛通常十余轮即达 1e-40。
-    let rough_prec = (bigfloat::precision() / 2).clamp(20, 80);
+    // 阶段 1 用低精度快速把根拉到正确位置附近；阶段 2 用全精度精化。
+    //
+    // 粗阶段的精度按用户精度**相对**取（原来固定 40 位）：`/mode prec 200` 时
+    // 40 位粗收敛与 200 位精化之间的差距过大，精化轮数会明显增加；
+    // 而 `/mode prec 20` 时又几乎等于全精度、失去了"粗"的意义。
+    // 取 `precision/2` 且下限 16：既保留"单轮便宜一半以上"的收益（BigInt 位数减半），
+    // 又保证粗解足够接近真根（DK 是二次收敛，粗解精度每低一位只多约一轮精化）。
+    let rough_prec = (bigfloat::precision() / 2).clamp(16, 60);
     let rough_coeffs: Vec<BigFloat> = norm.iter().map(|c| c.rounded(rough_prec)).collect();
     let rough_tol = BigFloat::div(
         &BigFloat::from_u64(1),
         &BigInt::from(10).pow(rough_prec.div_ceil(2) as u32).into(),
         rough_prec,
+    );
+    let tol = BigFloat::div(
+        &BigFloat::from_u64(1),
+        &BigInt::from(10)
+            .pow(bigfloat::precision().div_ceil(2) as u32)
+            .into(),
+        bigfloat::precision(),
     );
 
     // 先按贴近根模的半径试一次；未收敛则退回柯西界半径重试一次

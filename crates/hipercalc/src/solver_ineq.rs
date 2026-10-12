@@ -104,8 +104,15 @@ pub fn find_var(e: &Expr) -> Option<char> {
 
 /// 求一元多项式不等式 `f op 0` 的解集。`f` 为多项式，`var` 为自变量。
 fn solve_one(ev: &Evaluator, f: &Expr, op: u8, var: char) -> Result<Vec<Interval>, String> {
-    let coeffs = crate::solver_poly::extract_polynomial(ev, f, var)
-        .ok_or_else(|| format!("不等式目前只支持**多项式**（自变量 {var}）：{f:?} 不是多项式"))?;
+    let coeffs = crate::solver_poly::extract_polynomial(ev, f, var).ok_or_else(|| {
+        // 用**渲染后的表达式**报错，不要打印 `Expr` 的 Debug 形式：
+        // 旧实现直接 `{f:?}`，用户看到的是 `Binary(Binary(Number(Exact(ExactExpr { terms: …`
+        // 这种内部结构，完全读不懂。
+        format!(
+            "不等式目前只支持多项式：{} 不是关于 {var} 的多项式（含分式、根式或三角函数的暂不支持）",
+            crate::calculus::render::render_expr(f, crate::parser::DisplayMode::MathIO)
+        )
+    })?;
 
     // 实根（去重后升序）。复根不参与分段。
     let mut roots: Vec<BigRational> = Vec::new();
@@ -256,9 +263,36 @@ fn intersect(a: &Interval, b: &Interval) -> Option<Interval> {
     }
 }
 
-/// 解不等式（组）。`items` 每项是 `(移项后的 f, 运算符)`，全部对同一个 `var`。
-pub fn solve(ev: &Evaluator, items: &[(Expr, u8)], var: char) -> Result<String, String> {
+/// 常数比较（式子里没有自变量）：`2>1`、`0!=0`、`3<5`。
+///
+/// 这类输入会被不等式识别抢先认领，但它们**不是**"求解"问题，而是"这一串比较是否成立"。
+/// 旧实现只报一句"不等式里没有自变量"，用户得不到结论；这里直接求值判定。
+/// 返回 `Ok(true)` 表示全部成立（`恒成立`），`Ok(false)` 表示至少一条不成立。
+pub fn eval_constant_inequality(ev: &Evaluator, items: &[(Expr, u8)]) -> Result<bool, String> {
     if items.is_empty() {
+        return Err("没有可比较的表达式".to_string());
+    }
+    for (f, op) in items {
+        let v = ev.evaluate_with_var(f, "\u{1}", &Number::from_int(0))?;
+        let neg = sign_is_negative(&v).ok_or_else(|| "比较式的值无法定符号".to_string())?;
+        let zero = v.is_zero();
+        let ok = match *op {
+            OP_LT => neg,
+            OP_LE => neg || zero,
+            OP_GT => !neg && !zero,
+            OP_GE => !neg,
+            OP_NE => !zero,
+            _ => return Err("比较运算符异常".to_string()),
+        };
+        if !ok {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// 解不等式（组）。`items` 每项是 `(移项后的 f, 运算符)`，全部对同一个 `var`。
+pub fn solve(ev: &Evaluator, items: &[(Expr, u8)], var: char) -> Result<String, String> {    if items.is_empty() {
         return Err("没有可解的不等式".to_string());
     }
     let mut acc: Option<Vec<Interval>> = None;

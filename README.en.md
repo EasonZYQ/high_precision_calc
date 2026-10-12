@@ -12,11 +12,12 @@
 [简体中文](README.md) · **English**
 
 An **ultra-precision command-line calculator** (a two-crate Rust workspace: `hipercalc` plus the reusable numeric library `hipercalc-core`): 80 decimal digits of internal precision,
-arbitrary-precision decimals plus exact symbolic arithmetic, equation / system solving, polynomial factorization,
-function fitting, triangle solving, prime factorization — and **higher mathematics** (derivative `diff`,
+arbitrary-precision decimals plus exact symbolic arithmetic, equation / system / inequality solving, polynomial factorization,
+function fitting, triangle solving, prime factorization, matrices and linear algebra, statistics, number bases and bitwise
+ops, dimensional quantities with units, special functions (`gamma`/`erf`/`zeta`) and physical constants — and **higher mathematics** (derivative `diff`,
 limit `lim`, integral `int`, Taylor series `taylor`, sums and products `sum`/`prod`, all composable) —
 with a syntax-highlighted REPL (Tab completes a function with the cursor inside the parentheses, bracket pairing,
-in-bracket argument hints, Ctrl+C interrupts (Windows only) or quits, full-width punctuation auto-converted), and a Simplified Chinese / Traditional Chinese / English UI.
+in-bracket argument hints, Ctrl+C interrupts or quits, full-width punctuation auto-converted), and a Simplified Chinese / Traditional Chinese / English UI.
 
 ## Demo
 

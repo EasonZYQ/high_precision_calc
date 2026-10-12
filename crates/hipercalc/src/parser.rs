@@ -81,6 +81,8 @@ pub const PHYS_UNITS: &[(&str, &str, hipercalc_core::quantity::Dim)] = &[
     ("cm", "0.01", hipercalc_core::quantity::LEN),
     ("mm", "0.001", hipercalc_core::quantity::LEN),
     ("um", "0.000001", hipercalc_core::quantity::LEN),
+    ("µm", "0.000001", hipercalc_core::quantity::LEN), // 微米（U+00B5，文档里的写法）
+    ("μm", "0.000001", hipercalc_core::quantity::LEN), // 希腊字母 μ（U+03BC）：两种编码都收
     ("nm", "0.000000001", hipercalc_core::quantity::LEN),
     ("inch", "0.0254", hipercalc_core::quantity::LEN),
     ("foot", "0.3048", hipercalc_core::quantity::LEN),
@@ -100,6 +102,8 @@ pub const PHYS_UNITS: &[(&str, &str, hipercalc_core::quantity::Dim)] = &[
     ("sec", "1", hipercalc_core::quantity::TIME),
     ("ms", "0.001", hipercalc_core::quantity::TIME),
     ("us", "0.000001", hipercalc_core::quantity::TIME),
+    ("µs", "0.000001", hipercalc_core::quantity::TIME), // 微秒（同上：两种 μ 都收）
+    ("μs", "0.000001", hipercalc_core::quantity::TIME),
     ("ns", "0.000000001", hipercalc_core::quantity::TIME),
     ("minute", "60", hipercalc_core::quantity::TIME),
     ("min", "60", hipercalc_core::quantity::TIME),
@@ -158,9 +162,15 @@ pub const PHYS_UNITS: &[(&str, &str, hipercalc_core::quantity::Dim)] = &[
 pub fn find_unit(
     word: &str,
 ) -> Option<(&'static str, &'static str, hipercalc_core::quantity::Dim)> {
+    // 归一化两处：
+    // ① 微的两种写法（U+00B5 MICRO SIGN 与 U+03BC GREEK SMALL LETTER MU）互不相干，
+    //    统一成 U+00B5 —— 否则用户从文档复制的 `µm` 与手打的 `μm` 只有一个能识别；
+    // ② 小写化用 Unicode 版（`to_lowercase`）而非 `eq_ignore_ascii_case`：
+    //    后者对希腊字母无效，`3 Μm`（大写 Mu）会漏掉。
+    let lowered = word.to_lowercase().replace('μ', "µ");
     PHYS_UNITS
         .iter()
-        .find(|(u, _, _)| u.eq_ignore_ascii_case(word))
+        .find(|(u, _, _)| u.to_lowercase().replace('μ', "µ") == lowered)
         .map(|(u, f, d)| (*u, *f, *d))
 }
 
@@ -246,6 +256,7 @@ pub const FUNCTIONS: &[&str] = &[
     "lcm",
     "isprime",
     "nextprime",
+    "prevprime",
     "re",
     "im",
     "conj",
@@ -770,8 +781,7 @@ impl Parser {
                 }
                 if self.pos > start {
                     let word: String = self.input[start..self.pos].iter().collect();
-                    if let Some((_, factor, dim)) = find_unit(&word) {
-                        let mut fp = Parser::new(factor);
+                    if let Some((_, factor, dim)) = find_unit(&word) {                        let mut fp = Parser::new(factor);
                         let mut f = fp.parse_number()?;
                         let mut dim = dim;
                         // ★ `^n` 属于**单位**：`3 km^2` = 3×(1000 m)² = 3e6 m²（**不是** (3 km)²）。
@@ -866,6 +876,15 @@ impl Parser {
         let num_str: String = self.input[start..self.pos].iter().collect();
         if num_str == "." {
             return Err("小数点后缺少数字".to_string());
+        }
+        // 一个数字里出现第二个小数点：`1..2`（被当成 1 * 0.2 = 0.2）、`1.2.3`（被当成 1.2 * 0.3 = 0.36）。
+        // 这类输入几乎只可能是笔误，但旧实现会**静默**按"隐式乘法"接受，给出一个看似正常的结果 ——
+        // 比报错危险得多。这里直接拒绝。
+        // 注意只在"小数点后确实跟着数字"时报错：`1...2` 那种"小数点后没数字"的情形留给下面
+        // 原有的分支报"小数点后缺少数字"，两处文案各自最贴切。
+        if has_dot && self.peek() == Some('.') && self.input.get(self.pos + 1).is_some_and(|c| c.is_ascii_digit())
+        {
+            return Err("一个数字里不能有两个小数点".to_string());
         }
 
         // 科学计数法: <尾数>e[±]<整数指数>，如 1e3、2.5e-2、1.2E+4
@@ -1972,6 +1991,16 @@ impl Evaluator {
                     &n,
                 )))
             }
+            "prevprime" => {
+                let n = as_int(arg, "prevprime 需要整数参数")?;
+                if !hipercalc_core::calc_mode::is_deep() && n > BigInt::from(10u32).pow(24) {
+                    return Err("素性判定参数过大（上限 10^24，/mode deep 可取消限制）".to_string());
+                }
+                // 2 之前没有素数：明确报错，不静默给 2 或 0
+                hipercalc_core::bigint_ext::prev_prime(&n)
+                    .map(Number::from_bigint)
+                    .ok_or_else(|| "prevprime 的参数必须大于 2（2 之前没有素数）".to_string())
+            }
             "sqr" | "sqrt" => {
                 if arg.is_negative() {
                     // 负实数：实数域无定义，但复数域是纯虚数（sqrt(-4) = 2i、sqrt(-2) = sqrt(2)i）
@@ -2908,7 +2937,9 @@ fn check_matrix_op(l: &Number, op: &BinOp, r: &Number) -> Result<(), String> {
         return match (l.as_quantity(), r.as_quantity()) {
             (Some(x), Some(y)) => match op {
                 BinOp::Add | BinOp::Sub if !qy::same(&x.dim, &y.dim) => Err(format!(
-                    "量纲不同，不能相加减：{} 与 {}",
+                    // 占位符必须**带编号**（{0}/{1}）：i18n 词条表按编号建键，
+                    // 写成 `{}` 会让这条在英/繁模式下匹配不到、整句留中文。
+                    "量纲不同，不能相加减：{0} 与 {1}",
                     qy::render(&x.dim),
                     qy::render(&y.dim)
                 )),

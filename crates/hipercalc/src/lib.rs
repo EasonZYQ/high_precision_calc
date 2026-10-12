@@ -60,6 +60,12 @@ use std::io::{IsTerminal, Write};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+/// 工作精度的允许范围（`/mode prec` 与状态文件恢复**共用**这一份）。
+/// 两处各写一遍常量，迟早会一边改一边忘 —— 状态文件是可以手改的，
+/// 恢复时不收敛就能绕过命令行校验。
+pub const MIN_PRECISION: usize = 20;
+pub const MAX_PRECISION: usize = 2000;
+
 /// 全部指令（Tab 补全共用；新增指令时同时改这里与 `handle_command`）
 const COMMANDS: &[&str] = &[
     "/help",
@@ -160,10 +166,13 @@ const FUNCTIONS_META: &[FnMeta] = &[
         sig: "(p, [x1, x2, …])",
     },
     FnMeta {
+        // 两种形态都收：`corr(x, y, k, a, b)`（5 参）与 `corr([xs], [ys])`（2 参）。
+        // 元数据写死 5 参会让手册自己的例子（`corr([1,2,3],[2,4,6])`）在框内提示里
+        // 被标成"参数过多"，而那个输入实际是正确的。
         name: "corr",
-        min: 5,
+        min: 2,
         max: 5,
-        sig: "(x, y, k, a, b)",
+        sig: "(x, y, k, a, b) 或 ([xs], [ys])",
     },
     // 矩阵（参数是 [[..]] 矩阵字面量或矩阵值）
     FnMeta {
@@ -526,6 +535,12 @@ const FUNCTIONS_META: &[FnMeta] = &[
     },
     FnMeta {
         name: "nextprime",
+        min: 1,
+        max: 1,
+        sig: "(n)",
+    },
+    FnMeta {
+        name: "prevprime",
         min: 1,
         max: 1,
         sig: "(n)",
@@ -2529,7 +2544,7 @@ fn handle_mode(parts: &[&str], state: &mut AppState) {
         }
         // /mode prec N：工作精度（小数位数）
         "prec" => match val.as_deref().and_then(|v| v.parse::<usize>().ok()) {
-            Some(n) if (20..=2000).contains(&n) => {
+            Some(n) if (MIN_PRECISION..=MAX_PRECISION).contains(&n) => {
                 bigfloat::set_precision(n);
                 lprint!(
                     "{}",
@@ -2670,7 +2685,7 @@ fn run_line(input: &str, state: &mut AppState) -> (String, bool) {
         }
         Ok(EvalResult::Factor(inner)) => (handle_factor(&inner, state), false),
         Ok(EvalResult::Equation(left, right)) => (handle_equation(&left, &right, state), false),
-        Ok(EvalResult::Inequality(items)) => (handle_inequality(&items, state), false),
+        Ok(EvalResult::Inequality(items)) => handle_inequality(&items, state),
         Ok(EvalResult::System(equations)) => (handle_system(&equations, state), false),
         Ok(EvalResult::Fit(fit)) => (handle_fit(&fit, state), false),
         Ok(EvalResult::Triangle(tri)) => (handle_triangle(&tri, state), false),
@@ -3011,6 +3026,24 @@ fn handle_equation(left: &parser::Expr, right: &parser::Expr, state: &mut AppSta
         }
     }
 
+    // 非多项式方程：先看是不是 `a^指数 = 常数` 这种有闭式解的形状。
+    // 这类方程（`e^x=2`、`2^x=8`、`3^(2x+1)=5`）在数值路径上要跑"几十个初值 × 上百轮牛顿"，
+    // 每次迭代都重新算 exp/ln（实测 e^x=2 约 470 ms）；闭式解只需一次 ln 与一次除法。
+    // 形状不认识或回代校验不过 ⇒ 原样落到下面的通用数值求根，能力不减。
+    if let Some((root, prefix)) = solve_aux::try_exponential_equation(&state.evaluator, &eq_expr, var)
+    {
+        let sol = solver_poly::PolySolution::Real(root);
+        return colorize_result(
+            &format!(
+                "{} {} {}",
+                var,
+                prefix,
+                solver_poly::format_solution(&sol, state.evaluator.display_mode)
+            ),
+            &state.colors,
+        );
+    }
+
     // 非多项式方程：收集所有实根；若构成周期序列则输出通式，否则列出全部根
     let roots = solve_aux::collect_all_roots(&state.evaluator, &eq_expr, var);
     if roots.is_empty() {
@@ -3113,20 +3146,31 @@ fn newton_with_guesses(
 /// 解不等式（组）：交给 `solver_ineq`，输出**区间解集**。
 ///
 /// 输出形如 `x ∈ (-∞, -2) ∪ (2, +∞)` —— 区间记号是通用写法，不需要翻译。
-fn handle_inequality(items: &[(crate::parser::Expr, u8)], state: &mut AppState) -> String {
+///
+/// 返回值第二项是**是否出错**：出错时不能再"只往 stderr 打一行、退出码仍为 0"
+/// —— 那样 `hipercalc -e "1/x>2"` 在脚本里会被当成成功（文档承诺计算错误给退出码 1）。
+fn handle_inequality(items: &[(crate::parser::Expr, u8)], state: &mut AppState) -> (String, bool) {
+    // 没有自变量 ⇒ 这是一个"常数比较"（`2>1`、`0!=0`、`3<5`）。
+    // 旧实现只会报"不等式里没有自变量"，用户拿不到任何结论；这里直接按真值回答。
     let Some(var) = items
         .iter()
         .find_map(|(f, _)| crate::solver_ineq::find_var(f))
     else {
-        leprint!("{}", i18n::t("不等式里没有自变量（如 x）"));
-        return String::new();
+        return match crate::solver_ineq::eval_constant_inequality(&state.evaluator, items) {
+            Ok(all_true) => (
+                i18n::t(if all_true {
+                    "恒成立（式中没有自变量）"
+                } else {
+                    "不成立（式中没有自变量）"
+                }),
+                false,
+            ),
+            Err(e) => (e, true),
+        };
     };
     match crate::solver_ineq::solve(&state.evaluator, items, var) {
-        Ok(set) => format!("{var} ∈ {set}"),
-        Err(e) => {
-            leprint!("{}", e);
-            String::new()
-        }
+        Ok(set) => (format!("{var} ∈ {set}"), false),
+        Err(e) => (e, true),
     }
 }
 
@@ -4032,6 +4076,7 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   arcsin arccos arctan arccot arcsec arccsc
   sinh cosh tanh     雙曲函數；特殊角與反三角特殊值回傳精確值
   gcd(a,b) lcm(a,b)  最大公因數 / 最小公倍數（須為非零整數，結果恆非負）
+  isprime(n) nextprime(n) prevprime(n)  素性判定 / 下一個質數 / 上一個質數（prevprime 的參數須大於 2）
 
 【常數與精確度】
   pi π e             內部 80 位小數，顯示 20 位有效數字
@@ -4059,7 +4104,6 @@ HiPerCalc 超高精度命令列計算器（直接輸入算式計算；/exit 離�
   mean / median / var / stddev / corr
             统计：mean([1,2,3,4]) 或 mean(k, k, 1, 4)；var 除 n、var_s 除 n−1；percentile(p, […])
   zeta(s)  黎曼 ζ：偶數點給精確閉式（zeta(2) = pi^2/6）；奇數點與非整數走 Euler-Maclaurin 數值（zeta(3) ≈ 1.2020569032）
-  zeta(s)  黎曼 ζ：偶數點給精確閉式（zeta(2) = pi^2/6）；奇數點暫無閉式，報錯提示
   ( )       自動配對：敲 ( 自動補出 ) 並把光標放進中間；再敲 ) 會**越過**已有的 )，不會重複
   z^w      複數冪（主值）：i^i ≈ 0.2078795764、2^i ≈ 0.7692389014 + 0.6389612763i；整數指數仍給精確值
   erf(x) / erfc(x)  誤差函數與補誤差函數（數值級數；|x| ≥ 8 飽和為 ±1）
@@ -4112,6 +4156,7 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   arcsin arccos arctan arccot arcsec arccsc
   sinh cosh tanh     hyperbolic; special angles and inverse values stay exact
   gcd(a,b) lcm(a,b)  greatest common divisor / least common multiple (non-zero integers; never negative)
+  isprime(n) nextprime(n) prevprime(n)  primality test / next prime / previous prime (prevprime needs n > 2)
 
 [Constants & precision]
   pi π e             80 decimal digits internally, 20 significant digits on screen
@@ -4137,7 +4182,6 @@ HiPerCalc - ultra-precision CLI calculator (enter an expression to compute; /exi
   Bitwise   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n) (non-negative integers only)
   Bases     /base dec|hex|oct|bin switches the result base (integers only); input accepts 0xFF / 0o17 / 0b1010
   zeta(s)  Riemann zeta: exact closed form at even points (zeta(2) = pi^2/6); odd points and non-integers use Euler-Maclaurin (zeta(3) ~= 1.2020569032)
-  zeta(s)  Riemann zeta: exact closed form at even points (zeta(2) = pi^2/6); odd points have no known closed form and report an error
   ( )       auto-pairing: typing ( inserts the closing ) with the cursor inside; a later ) moves over the existing one instead of duplicating it
   z^w      complex powers (principal value): i^i ~= 0.2078795764, 2^i ~= 0.7692389014 + 0.6389612763i; integer exponents stay exact
   erf(x) / erfc(x)  error function and complementary error function (numeric series; |x| >= 8 saturates to ±1)
@@ -4198,6 +4242,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   arcsin arccos arctan arccot arcsec arccsc
   sinh cosh tanh     双曲函数；特殊角与反三角特殊值返回精确值
   gcd(a,b) lcm(a,b)  最大公因数 / 最小公倍数（须为非零整数，结果恒非负）
+  isprime(n) nextprime(n) prevprime(n)  素性判定 / 下一个素数 / 上一个素数（prevprime 的参数须大于 2）
 
 【常数与精度】
   pi π e             内部 80 位小数，显示 20 位有效数字
@@ -4214,6 +4259,7 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
 
 【高等数学】（可参与运算：diff(x^2,x)+1 合法；精确值给 =，数值回退给 ≈）
   diff(f, x)         求导：diff(x^2, x) → 2*x、diff(sin(x), x) → cos(x)（变量须为单个字母）
+                     高阶：diff(f, x, 2) 给二阶导（第三参是阶数，0 表示原式）
   int(f, x)          不定积分：int(x^2, x) → 1 / 3 * x^3（省略积分常数）
   int(f, x, a, b)    定积分：int(x^2, x, 0, 1) → 1 / 3；无初等原函数时自动数值积分（上限可写 inf）
   lim(f, x, a)       极限：lim(sin(x)/x, x, 0) → 1、lim(1/x, x, inf) → 0（a 可为 inf）
@@ -4223,15 +4269,14 @@ HiPerCalc 超高精度命令行计算器（输入表达式直接计算；/exit �
   位运算   and(a,b) or(a,b) xor(a,b) not(a) shl(a,n) shr(a,n)（仅限非负整数）
   进制     /base dec|hex|oct|bin 切换结果数制（仅整数）；输入可写 0xFF / 0o17 / 0b1010
   zeta(s)  黎曼 ζ：偶数点给精确闭式（zeta(2) = pi^2/6）；奇数点与非整数走 Euler-Maclaurin 数值（zeta(3) ≈ 1.2020569032）
-  zeta(s)  黎曼 ζ：偶数点给精确闭式（zeta(2) = pi^2/6）；奇数点暂无闭式，报错提示
   单位     3 km、2 mile、500 meter 是**带量纲的值**：3 km / 2 second = 1500 m/s、
             (2 km)^2 = 4000000 m^2、1 km / 1 mile ≈ 0.621371；
             量纲不同的加减会报错（3 km + 2 second）；/unit km 只管无量标量（量纲值自带单位）
   物理常量 C0/LIGHT_SPEED、KB/BOLTZMANN、NA/AVOGADRO、HPL/PLANCK、ME、MP…（CODATA 2022，只读：不能用作变量名）
   linsolve(A, b) 解 Ax=b；eigen([[..]]) 特征值（2×2/3×3，复数也给）
   矩阵     [[1,2],[3,4]]（也是变量/ans 可存的值）；det/inv/trace/transpose/rank、*（矩阵乘）、^（整数次幂）
-  矩陣     [[1,2],[3,4]]（也是變數/ans 可存的值）；det/inv/trace/transpose/rank、*（矩陣乘）、^（整數次幂）
   不等式   x^2>4 / x<=2 / x!=2（>= 与 =>、<= 与 =< 都收）；不等式组用逗号：x>1, x<3, x!=2
+           没有自变量的常数比较（2>1、0!=0）直接给「恒成立 / 不成立」
   ( )       自动配对：敲 ( 自动补出 ) 并把光标放进中间；再敲 ) 会**越过**已有的 )，不会重复
   z^w      复数幂（主值）：i^i ≈ 0.2078795764、2^i ≈ 0.7692389014 + 0.6389612763i；整数指数仍给精确值
   erf(x) / erfc(x)  误差函数与补误差函数（数值级数；|x| ≥ 8 饱和为 ±1）

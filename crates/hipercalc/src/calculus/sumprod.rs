@@ -41,7 +41,9 @@ pub fn sum(
     if a > b {
         return Ok(Expr::Number(Number::from_int(0))); // 空和
     }
-    let count = (b - a + 1) as u128;
+    // 用 i128 算跨度：`b - a + 1` 直接在 i64 里做，在 a、b 相距接近 i64 极限时会先溢出
+    // （debug 下 panic，release 下回绕成负数再 as u128 变成极大值，穿过后面所有预算检查）。
+    let count = (b as i128 - a as i128 + 1) as u128;
     let budget = if has_division(f, var) {
         max_sum_exact_terms()
     } else {
@@ -119,7 +121,8 @@ pub fn prod(
     if a > b {
         return Ok(Expr::Number(Number::from_int(1))); // 空积
     }
-    let count = (b - a + 1) as u128;
+    // 同 sum：跨度用 i128 算，避免 i64 溢出（见上方注释）
+    let count = (b as i128 - a as i128 + 1) as u128;
 
     if let Some(v) = closed_form_prod(ev, f, var, a, b)? {
         return Ok(Expr::Number(v));

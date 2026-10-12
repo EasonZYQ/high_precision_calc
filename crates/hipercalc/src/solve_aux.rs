@@ -427,9 +427,171 @@ pub fn format_periodic_roots(roots: &[Number], var: char, angle_mode: AngleMode)
     Some(format!("{} = {}，k 为整数", var, family.join("  或  ")))
 }
 
+/// 把一个**不含未知量**的表达式取成有理数。
+///
+/// `as_rational()` 只认 `ExactTerm::Rational`，而 `e`、`pi` 这类常数在 AST 里是
+/// `Exact(E(1))` / `Exact(PiPow(1,1))`，直接取必然失败（`e^x=2` 的闭式识别就是这样卡住的）。
+/// 所以先试精确有理数，再退到求值器算一次数值——`detect_linear` 只在方程求解的最外层调用几次，
+/// 这点求值开销可以忽略。
+fn const_rational(ev: &Evaluator, e: &Expr) -> Option<BigRational> {
+    match e {
+        Expr::Number(n) => {
+            if let Some(r) = n.as_rational() {
+                return Some(r);
+            }
+            ev.evaluate_with_var(e, "\u{1}", &Number::from_int(0))
+                .ok()
+                .filter(|v| !v.is_complex())
+                .map(|v| v.to_approx().to_big_rational())
+        }
+        _ => None,
+    }
+}
+
+/// 尝试把表达式识别成"关于 `var` 的线性式" `a·var + b`，返回最简有理数 `(a, b)`。
+/// 只认"常数 + 变量"的加减与"常数 × 变量"的乘，**不认变量之间相乘**（那已不是线性）。
+fn detect_linear(
+    ev: &Evaluator,
+    e: &Expr,
+    var: char,
+) -> Option<(BigRational, BigRational)> {
+    let zero = BigRational::from_integer(BigInt::from(0));
+    match e {
+        Expr::Number(_) => Some((zero, const_rational(ev, e)?)),
+        Expr::Variable(v) => {
+            if v.len() == 1 && v.starts_with(var) {
+                Some((BigRational::from_integer(BigInt::from(1)), zero))
+            } else {
+                None
+            }
+        }
+        Expr::Unary(crate::parser::UnaryOp::Neg, inner) => {
+            let (a, b) = detect_linear(ev, inner, var)?;
+            Some((-a, -b))
+        }
+        Expr::Unary(_, _) => None,
+        Expr::Binary(l, crate::parser::BinOp::Add, r) => {
+            let (a1, b1) = detect_linear(ev, l, var)?;
+            let (a2, b2) = detect_linear(ev, r, var)?;
+            Some((a1 + a2, b1 + b2))
+        }
+        Expr::Binary(l, crate::parser::BinOp::Sub, r) => {
+            let (a1, b1) = detect_linear(ev, l, var)?;
+            let (a2, b2) = detect_linear(ev, r, var)?;
+            Some((a1 - a2, b1 - b2))
+        }
+        Expr::Binary(l, crate::parser::BinOp::Mul, r) => {
+            // 只允许一边是纯常数（斜率 0）、另一边含变量；两边都含变量或都不含则不是线性
+            let (a1, b1) = detect_linear(ev, l, var)?;
+            let (a2, b2) = detect_linear(ev, r, var)?;
+            let z = BigRational::from_integer(BigInt::from(0));
+            match (a1 == z, a2 == z) {
+                (true, false) => {
+                    let c = b1;
+                    Some((&c * &a2, &c * &b2))
+                }
+                (false, true) => {
+                    let c = b2;
+                    Some((&a1 * &c, &b1 * &c))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// `a^x = c` 型方程（`a` 为正的实常数、指数是 `var` 的线性式）的闭式解。
+///
+/// 解为 `x = (ln c / ln a - b) / k`，其中指数是 `k·var + b`。用现成的 `ln/exp` 算一次即可，
+/// 不必让牛顿迭代从几十个初值各跑上百轮（实测 `e^x=2` 从约 470 ms 降到微秒级）。
+///
+/// 返回 `None` 表示"不认识这个形状或无法给出可信解"——调用方**原样回落到通用数值求根**，
+/// 因此这里的保守不会损失任何能力。
+pub fn try_exponential_equation(
+    evaluator: &Evaluator,
+    expr: &Expr,
+    var: char,
+) -> Option<(Number, &'static str)> {
+    // 左边需要是"底数^指数"：AST 里是 Expr::Pow
+    let Expr::Binary(lhs, crate::parser::BinOp::Sub, rhs) = expr else {
+        return None;
+    };
+    let Expr::Pow(base, expo) = lhs.as_ref() else {
+        return None;
+    };
+
+    // 底数与右端必须是"不含未知量"的常数
+    let zero = BigRational::from_integer(BigInt::from(0));
+    let base_lin = detect_linear(evaluator, base, var)?;
+    if base_lin.0 != zero {
+        return None; // 底数含变量（如 x^x）⇒ 不认识
+    }
+    let c_lin = detect_linear(evaluator, rhs, var)?;
+    if c_lin.0 != zero {
+        return None; // 右端含变量 ⇒ 不认识
+    }
+
+    // 指数必须是线性的：k·var + b
+    let (k, b) = detect_linear(evaluator, expo, var)?;
+    if k == zero {
+        return None; // 指数不含变量 ⇒ 这是恒等式而非方程
+    }
+
+    let a_f = BigFloat::from_big_rational(&base_lin.1);
+    let c_f = BigFloat::from_big_rational(&c_lin.1);
+    // 底数必须为正且 ≠1（负底数的实数幂只在特殊点有定义；1^x 恒为 1）⇒ 交给通用路径
+    if !(a_f > BigFloat::from_u64(0)) || a_f == BigFloat::from_u64(1) {
+        return None;
+    }
+    // 右端必须为正（否则实数域无解；复数解交给通用路径）
+    if !(c_f > BigFloat::from_u64(0)) {
+        return None;
+    }
+
+    // k 由 detect_linear 从常数运算构造，恒为有理数；只排除 k = 0（指数不含变量）
+    let k_f = BigFloat::from_big_rational(&k);
+    let b_f = BigFloat::from_big_rational(&b);
+
+    // x = (ln c / ln a - b) / k
+    let ln_c = c_f.ln(bigfloat::precision());
+    let ln_a = a_f.ln(bigfloat::precision());
+    if ln_a.is_zero() {
+        return None;
+    }
+    let ratio = BigFloat::div(&ln_c, &ln_a, bigfloat::precision());
+    let num = BigFloat::sub(&ratio, &b_f, bigfloat::precision());
+    let x = BigFloat::div(&num, &k_f, bigfloat::precision());
+
+    // **回代校验**：形状识别只看 AST，可能碰到"看起来像但语义不同"的情形
+    // （例如底数或指数中含已存储变量被当作常数）。残差不过就放弃，交给通用路径。
+    let xv = Number::Approx(x.clone());
+    const VERIFY_LOG10: f64 = -30.0;
+    match evaluator.evaluate_with_var(expr, &var.to_string(), &xv) {
+        Ok(v) if !v.is_complex() => {
+            let r = v.to_approx();
+            if !(r.is_zero() || r.magnitude_log10() <= VERIFY_LOG10) {
+                return None;
+            }
+        }
+        _ => return None,
+    }
+
+    // 精确化：整数/简单分数的结果还原成精确形式，让显示与"手工解方程"一致
+    // （`2^x=8` 必须仍然给 `x = 3`，而不是 `x ≈ 3.0000000000000000000`）
+    let num_out = match float_to_exact_rational(&x) {
+        Some((p, q)) if q != 0 => Number::from_rational(BigRational::new(
+            BigInt::from(p),
+            BigInt::from(q),
+        )),
+        _ => Number::Approx(x),
+    };
+    let mode = evaluator.display_mode;
+    Some((num_out.clone(), result_prefix(&num_out, mode)))
+}
+
 /// 用多组初始猜测收集非多项式方程在区间内的所有实根（去重）
-pub fn collect_all_roots(evaluator: &Evaluator, expr: &Expr, var: char) -> Vec<Number> {
-    let mut guesses: Vec<BigFloat> = vec![BigFloat::from_u64(0)];
+pub fn collect_all_roots(evaluator: &Evaluator, expr: &Expr, var: char) -> Vec<Number> {    let mut guesses: Vec<BigFloat> = vec![BigFloat::from_u64(0)];
     for i in 1i64..=6 {
         guesses.push(BigFloat::from_i64(i));
         guesses.push(BigFloat::from_i64(-i));

@@ -330,8 +330,20 @@ fn expand_corr(args: Vec<Expr>) -> Result<Expr, String> {
 /// `Evaluator::evaluate` 需要 `&mut`，而这里手上只有 `&`；`Evaluator` 也没实现 `Clone`。
 /// 所以走 `&self` 的 `evaluate_with_var`，代入一个**不可能出现的变量名** —— 语义上等价于直接求值，
 /// 不必为了这点便利去改核心类型的派生。
+///
+/// 数据点必须能比较大小：**复数与带量纲的值在这里就拒绝**。
+/// 它们一旦流到 `to_approx()`（第 22~24 行那两个 debug_assert）就会让进程直接 panic
+/// —— 实测 `median([i, 2])`、`sd(3 km)` 都曾如此。统计量本身对复数没有全序定义，
+/// 明确报错比"崩掉"或"release 下静默取实部"都更诚实。
 fn eval_const(ev: &Evaluator, e: &Expr) -> Result<Number, String> {
-    ev.evaluate_with_var(e, "\u{1}", &Number::from_int(0))
+    let v = ev.evaluate_with_var(e, "\u{1}", &Number::from_int(0))?;
+    if v.is_complex() {
+        return Err("统计函数的数据点必须是实数（不支持复数）".to_string());
+    }
+    if matches!(v, Number::Quantity(_)) || matches!(v, Number::Matrix(_)) {
+        return Err("统计函数的数据点必须是纯数值（不支持带量纲的值与矩阵）".to_string());
+    }
+    Ok(v)
 }
 
 /// 把数据点全部算成具体数值（`median` / `percentile` 排序要用）
@@ -354,8 +366,14 @@ fn concrete_values(ev: &Evaluator, data: &Data) -> Result<Vec<Number>, String> {
             if hi < lo {
                 return Err("范围上界不能小于下界".to_string());
             }
-            if hi - lo > 100_000 {
-                return Err("数据点过多（上限 100000）".to_string());
+            // 上限按模式分档（与项目其它护栏一致）：Fast 限流，Deep 放开死算
+            let max_points: i64 = if hipercalc_core::calc_mode::is_deep() {
+                10_000_000
+            } else {
+                100_000
+            };
+            if hi - lo > max_points {
+                return Err(format!("数据点过多（上限 {max_points}）"));
             }
             (lo..=hi)
                 .map(|v| ev.evaluate_with_var(f, &kname, &Number::from_int(v)))
@@ -364,9 +382,11 @@ fn concrete_values(ev: &Evaluator, data: &Data) -> Result<Vec<Number>, String> {
     }
 }
 
-/// 比较两个数：`Number` 没有 `Ord` ⇒ 借定点尾数的符号判断（与项目里其它比较一致）
+/// 比较两个数：`Number` 没有 `Ord` ⇒ 借定点尾数的符号判断（与项目里其它比较一致）。
+/// 工作精度取运行期精度（原来是硬编码 40，改精度后判据会失真）。
+/// 实数性由 `eval_const` 保证，所以这里不会碰到复数/量纲值。
 fn cmp_numbers(a: &Number, b: &Number) -> std::cmp::Ordering {
-    let d = BigFloat::sub(&a.to_approx(), &b.to_approx(), 40);
+    let d = BigFloat::sub(&a.to_approx(), &b.to_approx(), hipercalc_core::bigfloat::precision());
     if d.value.is_negative() {
         std::cmp::Ordering::Less
     } else if d.value.is_zero() {

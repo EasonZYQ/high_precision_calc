@@ -205,6 +205,36 @@ pub fn next_prime(n: &BigInt) -> BigInt {
     }
 }
 
+/// 小于 n 的最大素数（n ≤ 2 时无解 —— 返回 `None`，由调用方决定怎么报错）。
+///
+/// 与 `next_prime` 对称：先按奇偶跳到 `n-1` / `n-2`，再向下递减 2 试。
+/// **必须从 2 起步的边界往回判**：`prev_prime(3)` = 2（唯一的偶素数），
+/// 若直接按"只试奇数"的节奏走会跳过 2 ⇒ 死循环找下去。
+pub fn prev_prime(n: &BigInt) -> Option<BigInt> {
+    let two = BigInt::from(2u32);
+    if n <= &two {
+        return None; // 2 之前没有素数
+    }
+    // n = 3 时下面算出的 cand = 1，需要单独把 2 交出去
+    let mut cand = if n.is_even() {
+        n - BigInt::one()
+    } else {
+        n - &two
+    };
+    loop {
+        if cand < two {
+            return None;
+        }
+        if cand == two {
+            return Some(two);
+        }
+        if is_prime(&cand) {
+            return Some(cand);
+        }
+        cand -= &two;
+    }
+}
+
 /* ---------------- 自带教材式长除法（Knuth Algorithm D） ---------------- */
 
 /// 大数除法：按符号拆开，内部用 2^64 进制长除法

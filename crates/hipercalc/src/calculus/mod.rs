@@ -207,7 +207,7 @@ pub const ERROR_SUM_COMPLEX: &str = "求和/求积需求出实数（本次得到
 /// 高等数学函数名（与 `parser::FUNCTIONS` 同步；顺序无关）。
 /// 每新增一项，必须同时补 `CALCULUS_ARITIES` 与对应实现。
 pub const CALCULUS_ARITIES: &[(&str, &[usize])] = &[
-    ("diff", &[2]),
+    ("diff", &[2, 3]),
     ("int", &[2, 4]),
     ("lim", &[3]),
     ("taylor", &[4]),
@@ -379,7 +379,19 @@ fn dispatch(ev: &Evaluator, name: &str, args: Vec<Expr>) -> Result<Expr, String>
             if contains_var_name(&args[0], &var) && binds_same_var(&args[0], &var) {
                 return Err(ERROR_SUM_SHADOWED.to_string());
             }
-            diff::diff(ev, &args[0], &var)
+            // 三参形式 diff(f, x, n)：n 阶导（文档承诺支持高阶）。
+            // n 允许 0（返回原式）；上限沿用 `max_diff_depth()` —— 反复求导会让项数增长，
+            // 超过上限直接报错而不是硬算。
+            let mut cur = args[0].clone();
+            let order = if args.len() == 3 {
+                as_diff_order(ev, &args[2])?
+            } else {
+                1
+            };
+            for _ in 0..order {
+                cur = diff::diff(ev, &cur, &var)?;
+            }
+            Ok(cur)
         }
         "int" => {
             let var = as_variable_name(&args[1])?;
@@ -475,6 +487,24 @@ fn as_order(ev: &Evaluator, e: &Expr) -> Result<usize, String> {
         .map_err(|_| ERROR_TAYLOR_ORDER.replace("{0}", &limit.to_string()))?;
     if n > limit {
         return Err(ERROR_TAYLOR_ORDER.replace("{0}", &limit.to_string()));
+    }
+    Ok(n)
+}
+
+/// 求导阶数（`diff(f,x,n)` 的第三参）：必须是非负整数常数，上限 `max_diff_depth()`。
+/// 与 `as_order` 共用解析，但**报错文案是求导自己的** —— 否则 `diff(x^3,x,99)` 会报
+/// "泰勒展开阶数…"，把用户引到完全无关的功能上。
+fn as_diff_order(ev: &Evaluator, e: &Expr) -> Result<usize, String> {
+    let limit = max_diff_depth();
+    let msg = || format!("求导阶数必须是非负整数（上限 {limit}，/mode deep 可放宽）");
+    let v = ev.evaluate_with_vars(e, &[]).map_err(|_| msg())?;
+    let r = v.as_rational().ok_or_else(msg)?;
+    if !r.is_integer() || r.numer().sign() == num_bigint::Sign::Minus {
+        return Err(msg());
+    }
+    let n: usize = r.numer().try_into().map_err(|_| msg())?;
+    if n > limit {
+        return Err(msg());
     }
     Ok(n)
 }

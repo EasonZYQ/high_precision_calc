@@ -67,13 +67,15 @@ Exit codes: 0 normal, 1 evaluation error, 2 bad arguments.
 - **Implicit multiplication**: `2x`, `3(4+5)`, `xy` all mean multiplication (`xy` is x times y).
 - **Functions**: `sin(x)`, `sqrt(2)`, `log(2, 8)` (the first argument is the base).
 - **Case**: function names are case-insensitive; **variables** are single lowercase letters.
-- Full-width characters are converted automatically; trailing Chinese text is ignored.
+- Full-width characters are converted automatically. Trailing text is **not** ignored: extra characters are reported as an error.
 
 ## 3. Exact vs. approximate results
 
 This is the point of the program:
 
-- **`=`** marks an **exact** result: `1/3 + 1/6` = `= 1 / 2`, `sqrt(8)` = `= 2*sqrt(2)`, `sin(pi/6)` = `= 1 / 2`.
+- **`=`** marks an **exact** result: the exact form (fraction, radical, multiple of π) is kept internally and only rendered
+  according to the display mode. `1/3 + 1/6` shows `= 1 / 2` in MathIO and `= 0.5` in the default LineIO; `sqrt(8)` shows
+  `= 2*sqrt(2)` in MathIO; `sin(pi/6)` gives `= 0.5`.
 - **`≈`** marks an **approximate** result (`sin(1)`, `ln(2)`), shown with the configured significant digits.
 
 If an exact form exists, it is never replaced by a decimal.
@@ -83,7 +85,7 @@ If an exact form exists, it is never replaced by a decimal.
 Beyond the four operations, powers and roots:
 
 - **Integer division and modulo**: `idiv(17, 5)` = 3, `mod(17, 5)` = 2.
-- **Combinatorics and number theory**: `nCr(5,2)`, `nPr(5,2)`, `gcd(12,18)`, `lcm(4,6)`, `isprime(97)`, `nextprime(100)`, `prevprime(100)`.
+- **Combinatorics and number theory**: `nCr(5,2)`, `nPr(5,2)`, `gcd(12,18)`, `lcm(4,6)`, `isprime(97)`, `nextprime(100)`, `prevprime(100)` (largest prime below *n*; *n* must be greater than 2).
 - **Rounding and sign**: `abs(-3)`, `sign(-5)`, `floor(2.7)`, `ceil(2.1)`, `round(2.5)`.
 
 Large numbers, high powers and large factorials are supported, with **size guards**: in normal mode an oversized input
@@ -101,8 +103,8 @@ Built-in constants: `pi`, `e`, `tau` (2π), `phi` (golden ratio), `i` (imaginary
 ## 6. Functions
 
 - **Trigonometry**: `sin` `cos` `tan` `cot` `sec` `csc`; inverse: `arcsin` `arccos` `arctan` `arccot` … (`asin`/`acos`/`atan` also work)
-- **Angle unit**: `/mode deg` or `/mode rad`.
-- **Exact values at special angles**: `sin(pi/6)`, `cos(60°)`, `tan(pi/4)` return exact results, not decimals.
+- **Angle unit**: `/mode deg` or `/mode rad` (**radians by default**).
+- **Exact values at special angles**: `sin(pi/6)`, `tan(pi/4)` return exact results, not decimals. To use degrees, switch with `/mode deg` and write the angle **without** a degree sign: `cos(60)`. A literal `°` is not recognised.
 - **Logs and exponentials**: `ln`, `log(base, x)`, `log2`, `log10`, `exp`, `sqrt`, `cbrt`, `nroot(x, n)`.
 - **Hyperbolic / inverse hyperbolic**: `sinh` `cosh` `tanh`, `asinh` `acosh` `atanh` …
 
@@ -110,17 +112,17 @@ Built-in constants: `pi`, `e`, `tau` (2π), `phi` (golden ratio), `i` (imaginary
 
 | Function | Notes |
 |---|---|
-| `gamma(x)` | Gamma function. Exact factorial for positive integers; **exact √π form for positive half-integers** (`gamma(1/2)` = `sqrt(pi)`) |
+| `gamma(x)` | Gamma function. Exact factorial for positive integers; **exact √π form for positive half-integers** (MathIO shows `gamma(1/2)` as `sqrt(pi)`; LineIO shows its decimal value `1.772453850…`) |
 | `erf(x)` / `erfc(x)` | Error function and complementary error function |
-| `zeta(s)` | Riemann zeta. Exact at integer points (e.g. `zeta(2)` contains π²), high-precision approximation elsewhere |
+| `zeta(s)` | Riemann zeta. **Exact closed form at even positive integers** (`zeta(2)` = π²/6); high-precision approximation elsewhere (odd integers included); `s ≤ 1` is not supported yet |
 | `cbrt(x)` / `nroot(x, n)` | Cube root / n-th root |
 
 ## 8. Number bases and bitwise ops
 
 - **Literals**: `0b1010`, `0o17`, `0xFF`.
 - **Bitwise**: `and(a,b)` `or(a,b)` `xor(a,b)` `not(a)` `shl(a,n)` `shr(a,n)`.
-- **Display in a base**: `/base hex` (or `dec` / `oct` / `bin`) — affects integer output only.
-- **Conversions**: `bin(10)`, `hex(255)`.
+- **Display in a base**: `/base hex` (or `dec` / `oct` / `bin`) — affects integer output only. After `/base hex`, `255` prints as `0xff`.
+  (`bin`/`hex`/`oct`/`dec` are **not callable functions**; they are values of `/base`.)
 
 ## 9. Statistics
 
@@ -165,9 +167,10 @@ A unit written after a number is **remembered and participates in arithmetic** �
 
 **Mismatched dimensions are rejected**: `3 km + 2 second`, `3 km + 2` and `sin(3 km)` all give clear errors.
 
-Available units: metres (`m`/`meter`), km, cm, mm, µm, nm, inch, foot, yard, mile, nautical mile; seconds (`s`/`second`),
-ms, µs, ns, minute, hour, day, week; gram, kg, mg, tonne, pound, ounce; litre, ml, hectare, acre;
-`kph`, `mph`, knot; calorie, eV; bar, atm. **Matching is case-insensitive** (`KM` = `Km` = `km`).
+Available units: metres (`m`/`meter`/`metre`), km, cm, mm, µm (`um`/`µm`/`μm`), nm, inch, foot (`foot`/`feet`), yard, mile, nautical mile; seconds (`s`/`second`/`sec`),
+ms, µs (`us`/`µs`/`μs`), ns, minute (`minute`/`min`), hour (`hour`/`h`), day, week; gram, kg, mg, tonne (`tonne`/`t`), pound, ounce; litre (`liter`/`litre`/`l`), ml, hectare, acre;
+`kph`, `mph`, knot; calorie, eV; bar, atm; plus the single-letter SI derived units `a` (ampere), `k` (kelvin), `n` (newton), `j` (joule),
+`w` (watt), `c` (coulomb), `v` (volt), `pa` (pascal), `hz` (hertz). **Matching is case-insensitive** (`KM` = `Km` = `km`; both `µ` and `μ` are accepted).
 
 Units are only recognised **after a number**, so `3 m` is 3 metres while a bare `m` stays a variable.
 
@@ -176,7 +179,7 @@ Units are only recognised **after a number**, so `3 m` is 3 metres while a bare 
 Use `i` directly: `(2+3i)*(1-i)` = `5 + i`, `i^2` = `-1`, `sqrt(-4)` = `2i`.
 
 - **Component access**: `re(...)`, `im(...)`, `conj(...)`, `arg(...)`, `abs(...)`.
-- **Any power works** (principal value): `i^i` ≈ 0.2078795764, `2^i`, `i^(1/2)` = (1+i)/√2.
+- **Any power works** (principal value): `i^i` ≈ 0.2078795764, `2^i`, `i^(1/2)` ≈ 0.7071067812 + 0.7071067812i (i.e. (1+i)/√2).
 - Square roots and logs of negative reals move into the complex domain automatically.
 - Integer powers stay **exact** (`(1+i)^2` = `2i`).
 
@@ -237,13 +240,15 @@ area, perimeter, circumradius and inradius.
 
 **Notation**: a lowercase letter is a side, an uppercase letter is an angle, and `h` plus the uppercase letter is the
 altitude on that side (`hA` is the altitude on side `a`). `a` and `A` denote the same vertex, so `triangle(a=3 b=4 c=5)`,
-`triangle(A=30 b=5 C=60)` and `triangle(hA=4 a=3 b=4)` are all valid.
+`triangle(A=pi/6 b=5 C=pi/3)` and `triangle(hA=4 a=3 b=4)` are all valid. Angles follow the current `/mode deg|rad`:
+radians by default, so write radian values — switch with `/mode deg` if you want to write `30` for 30° (`triangle(A=30 b=5 C=60)` reports "angle must be in (0, 180°)" under the default radian mode).
 
 **The letters are not limited to a/b/c**: `triangle(x=3 y=4 z=5)` is exactly equivalent to `triangle(a=3 b=4 c=5)`, and
 the output labels follow your letters (`X ≈ 36.87…`, `hZ = 12/5`). Greek letters work too, e.g. `triangle(α=3 β=4 γ=5)`.
 
 - Vertices are numbered in order of first appearance, so the output order matches your input order.
-- If only two letters appear, the third vertex is filled in: `triangle(x=1 y=2)` uses `z`, `triangle(p=1 q=2)` uses `r`.
+- If only two letters appear, the third vertex is filled in: `triangle(x=1 y=2)` uses `z`, `triangle(p=1 q=2)` uses `r`
+  (the fill-in only decides the **label**; two sides are still not enough, so you get "not enough information" until you add a third condition).
 - At most three distinct letters; a fourth is an error.
 
 SSS / SAS / ASA / AAS / SSA are supported, analytically where possible; SSA may have two solutions and both are
@@ -251,7 +256,7 @@ reported. The angle unit follows the current `/mode deg|rad`.
 
 ## 20. Calculus
 
-`diff(f, x)` (higher orders: `diff(f, x, 2)`), `lim(f, x, a)`, `int(f, x)` / `int(f, x, a, b)`,
+`diff(f, x)` (higher orders: `diff(f, x, 2)` — the third argument is the order, `0` gives the expression back), `lim(f, x, a)`, `int(f, x)` / `int(f, x, a, b)`,
 `taylor(f, x, a, n)`, `sum(f, k, a, b)`, `prod(f, k, a, b)`.
 
 These expand into ordinary expressions, so they compose freely (`diff(x^2,x)+1`); symbolic results are displayed as-is.
@@ -280,8 +285,11 @@ Commands start with `/`; `/help` lists them all. Highlights:
 
 ## 23. Display formats
 
-MathIO (symbolic, default), LineIO (decimals), LaTeX (`/mode latex`), integer base (`/base`), unit display (`/unit`,
+MathIO (symbolic), LineIO (decimals, **the default**), LaTeX (`/mode latex`), integer base (`/base`), unit display (`/unit`,
 dimensionless results only — dimensioned values carry their own unit). All of these change **presentation only**.
+
+> The symbolic examples in section 3 (`= 1 / 2`, `= 2*sqrt(2)`) require `/mode mathio` first; under the default LineIO they
+> appear as decimals (`1/3 + 1/6` gives `= 0.5`).
 
 ## 24. Language and colours
 

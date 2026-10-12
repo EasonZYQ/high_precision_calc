@@ -232,6 +232,15 @@ impl BigFloat {
         self.value.is_zero()
     }
 
+    /// 转成精确有理数：值 = `value / 10^precision`（分母是 10 的幂，恒为精确表示）。
+    /// 用于"把数值常数重新拿回精确域"的场合（如指数方程的闭式解精确化）。
+    pub fn to_big_rational(&self) -> num_rational::BigRational {
+        num_rational::BigRational::new(
+            self.value.clone(),
+            BigInt::from(10).pow(self.precision as u32),
+        )
+    }
+
     /// 符号：正返回 true，负返回 false
     pub fn is_positive(&self) -> bool {
         self.value.is_positive()

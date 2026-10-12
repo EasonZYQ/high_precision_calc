@@ -212,8 +212,17 @@ pub fn format_decimal(num: &Number) -> String {
 }
 
 fn format_decimal_raw(num: &Number) -> String {
+    // 五个变体都要显式分流：只挡 Complex 会让量纲/矩阵落到 to_approx()，
+    // 而 to_approx 对这两者带 debug_assert（sd(3 km) / sd([[1,2],[3,4]]) 曾直接崩进程）。
+    if let Number::Matrix(m) = num {
+        return crate::matrix::render(m, &format_decimal_raw);
+    }
     if let Number::Complex(z) = num {
-        return format_complex(z, &format_decimal);
+        return format_complex(z, &format_decimal_raw);
+    }
+    if let Number::Quantity(q) = num {
+        // 这个入口是 sd() 的内部显示，**不套 /unit 缩放**，但量纲自身的单位要保留
+        return format_quantity(q, &format_decimal_raw);
     }
     let bf = num.to_approx();
     let s = bf.to_significant_string(bigfloat::display_digits());

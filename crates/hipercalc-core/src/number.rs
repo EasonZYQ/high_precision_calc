@@ -111,6 +111,24 @@ where
     }
 }
 
+/// 若 `n` "在数值上正好是某个整数"，返回该整数。
+///
+/// `BigFloat` 的表示是 `mantissa / 10^precision`：`precision == 0` 是精确整数，
+/// 而经乘除后的近似值 precision 会变大、数值上仍可能是整数
+/// （例如 `20/10` 得到尾数 `2·10^80`、精度 80）。两种都要认出来，
+/// 否则 `k^2`（k 由范围代入为 Approx）会退化成 `exp(2·ln k)`。
+fn approx_integer(n: &Number) -> Option<BigInt> {
+    match n {
+        Number::Exact(e) => e.as_rational().filter(|r| r.is_integer()).map(|r| r.to_integer()),
+        Number::Approx(bf) => {
+            let scale = BigInt::from(10).pow(bf.precision as u32);
+            let (q, r) = bf.value.div_rem(&scale);
+            if r.is_zero() { Some(q) } else { None }
+        }
+        _ => None,
+    }
+}
+
 impl Number {
     /// 是否为带量纲的量
     pub fn is_quantity(&self) -> bool {
@@ -733,6 +751,30 @@ impl Number {
             }
         }
 
+        // 整数指数的快速幂（**近似底数也走这里**）。
+        //
+        // 上面"尝试精确计算"那段要求 `(self, exponent)` **都是 `Number::Exact`**，
+        // 于是 `k^2`（`k` 来自范围/变量代入，是 `Approx`）会掉到最底下的
+        // `BigFloat::pow = exp(b·ln a)`——一次 ln + 一次 exp，实测约 10µs；
+        // 而整数平方只需一次 BigFloat 乘法（约 1µs）。
+        // `sum(k^2, k, 1, 10000)`、`mean(k*k, k, 1, 1000)` 这类逐项求值因此白付了十倍代价。
+        //
+        // 判据：把近似值还原成整数（值 = mantissa / 10^precision，除以 10^precision 余零即整数）。
+        // 只处理 |n| ≤ u32::MAX：更大的指数本来就被 `check_pow_scale` 拦下，
+        // 不必在这里重复构造大整数。
+        if let Some(n) = approx_integer(&exponent)
+            && let Some(k) = n.abs().to_u32()
+        {
+            self.check_pow_scale(k as f64)?;
+            if n.is_negative() {
+                if self.is_zero() {
+                    return Err("0 的负次幂未定义".to_string());
+                }
+                return Ok(Number::from_int(1).div(&self.int_pow(k)?));
+            }
+            return self.int_pow(k);
+        }
+
         // 回退到数值计算
         let base = self.to_approx();
         let exp = exponent.to_approx();
@@ -772,6 +814,21 @@ impl Number {
             Number::Exact(expr) => {
                 if let Some(int_val) = expr.as_integer() {
                     return Ok(Number::from_bigint(int_val.pow(exp)));
+                }
+                // 有理数底数的整数幂：**必须保持精确**（`(1/2)^3` 是 `1/8`，不是 `≈ 0.125`）。
+                // 旧实现只认"整数"与"单个 Sqrt"，有理数会一路掉到下面的数值回退，
+                // 于是 `(1/2)^3`、`1.5^4`、`(3/4)^2` 全被标成 `≈`（值对、但丢失了精确性）。
+                if expr.denominator == BigInt::one()
+                    && expr.terms.len() == 1
+                    && let ExactTerm::Rational(r) = &expr.terms[0]
+                {
+                    // 规模保护：位数 ≈ exp·(分子位数 + 分母位数)
+                    let digits = r.numer().abs().to_string().len() + r.denom().to_string().len();
+                    self.check_pow_scale(exp as f64 * digits as f64)?;
+                    return Ok(Number::from_rational(BigRational::new(
+                        r.numer().pow(exp),
+                        r.denom().pow(exp),
+                    )));
                 }
                 // 展开 sqrt：a 必须按**有理数**参与运算
                 //   n = 2m 偶：(a√b)^(2m) = a^(2m)·b^m
@@ -981,17 +1038,32 @@ impl ExactExpr {
                     BigFloat::mul(&c, &e, pr)
                 }
                 ExactTerm::PiPow(coeff, k) => {
-                    // c · π^k：k 拆成「整数部分 + 0/半」，整数部分连乘、半次开方
+                    // c·π^k。k 只由调用方产生两种形态：整数（zeta 的偶数点，π^2n）
+                    // 与半整数（gamma 的正半整数，π^(1/2)）。统一按
+                    //   π^k = sqrt(π^ceil(k))      当 k 落在 (m, m+1] 且 2k 为奇数
+                    //   π^k = π^k                  当 k 为整数
+                    // 实现：先连乘 ceil(k) 个 π，若 k 的小数部分恰为 1/2 再开一次平方。
+                    //
+                    // 旧实现用 floor（`k.numer() / k.denom()`）当整数部分，于是 k = 1/2 时
+                    // 整数部分算成 0 ⇒ 一个 π 都没乘、只对 1 开方 ⇒ 结果少乘了整个 π
+                    // （症状：gamma(1/2) 在 LineIO 下给 1，而 MathIO 下的 sqrt(pi) 是对的）。
+                    // 注意 k ≥ 1/2 恒成立，所以 ceil 至少为 1，不存在除零/零次幂。
                     let c = BigFloat::from_big_rational(coeff);
                     let pi = BigFloat::pi(pr);
-                    let int_part = k.numer() / k.denom();
+                    let (num, den) = (k.numer(), k.denom());
+                    // floor(k) = num / den（num ≥ 1、den ≥ 1，BigInt 的截断除法对正数即 floor）
+                    let floor = num / den;
+                    let rem = num - &floor * den; // k 的小数部分 = rem / den
+                    // ceil(k) = floor(k)（k 为整数）或 floor(k)+1
+                    let ceil = if rem.is_zero() { floor } else { &floor + 1 };
                     let mut pw = BigFloat::from_u64(1);
                     let mut i = BigInt::zero();
-                    while i < int_part {
+                    while i < ceil {
                         pw = BigFloat::mul(&pw, &pi, pr);
                         i += BigInt::one();
                     }
-                    if k.denom() != &BigInt::one() {
+                    // 小数部分为 1/2 ⇒ 半次幂，开平方
+                    if !rem.is_zero() && den == &BigInt::from(2) && rem == BigInt::one() {
                         pw = pw.sqrt(pr);
                     }
                     BigFloat::mul(&c, &pw, pr)
@@ -1612,4 +1684,76 @@ fn bigfloat_round(b: &BigFloat) -> BigInt {
     let s: i64 = if b.value < BigInt::from(0) { -1 } else { 1 };
     let abs = b.value.abs();
     (abs + half) / p10 * s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rat(p: i64, q: i64) -> Number {
+        Number::from_rational(BigRational::new(BigInt::from(p), BigInt::from(q)))
+    }
+
+    /// 有理数底数的整数幂必须**保持精确**：
+    /// `(1/2)^3` 是 `1/8`，不能退化成 `Approx`（那会让显示前缀从 `=` 变成 `≈`）。
+    #[test]
+    fn rational_int_pow_stays_exact() {
+        let half = rat(1, 2);
+        assert!(
+            matches!(half.pow(&Number::from_int(3)).unwrap(), Number::Exact(_)),
+            "(1/2)^3 应保持精确"
+        );
+        assert_eq!(half.pow(&Number::from_int(3)).unwrap().as_rational(),
+                   Some(BigRational::new(BigInt::from(1), BigInt::from(8))));
+        // 3/2 的四次方 = 81/16（旧实现同样退化成 Approx）
+        assert_eq!(rat(3, 2).pow(&Number::from_int(4)).unwrap().as_rational(),
+                   Some(BigRational::new(BigInt::from(81), BigInt::from(16))));
+        // 负指数走倒数，仍应精确：2^-3 = 1/8
+        let two = Number::from_int(2);
+        assert_eq!(two.pow(&Number::from_int(-3)).unwrap().as_rational(),
+                   Some(BigRational::new(BigInt::from(1), BigInt::from(8))));
+    }
+
+    /// 近似整数指数也要走整数快速幂（`k^2` 里的 k 由范围代入是 `Approx`）。
+    /// 这里只断言**数值正确**——快速幂与 exp/ln 路径必须给出同一个值。
+    #[test]
+    fn approx_base_integer_exponent_is_correct() {
+        let k = Number::Approx(BigFloat::from_u64(7));
+        let sq = k.pow(&Number::from_int(2)).unwrap();
+        assert!(!sq.is_complex());
+        // 7^2 = 49：转成精确有理数比较（不手工推算精度对齐）
+        assert_eq!(sq.to_approx().to_big_rational(), BigRational::from_integer(BigInt::from(49)));
+        // 立方与负数底数同理
+        let cube = Number::Approx(BigFloat::from_u64(3))
+            .pow(&Number::from_int(3))
+            .unwrap();
+        assert_eq!(
+            cube.to_approx().to_big_rational(),
+            BigRational::from_integer(BigInt::from(27))
+        );
+    }
+
+    /// `approx_integer` 的判据：精确整数、precision 归零的近似整数都要认出来
+    #[test]
+    fn approx_integer_recognises_whole_values() {
+        assert_eq!(approx_integer(&Number::from_int(-5)), Some(BigInt::from(-5)));
+        assert_eq!(
+            approx_integer(&Number::Approx(BigFloat::from_u64(20))),
+            Some(BigInt::from(20))
+        );
+        // 20/10 = 2（precision 不为 0，但数值上是整数）
+        let bf = BigFloat::div(
+            &BigFloat::from_u64(20),
+            &BigFloat::from_u64(10),
+            crate::bigfloat::precision(),
+        );
+        assert_eq!(approx_integer(&Number::Approx(bf)), Some(BigInt::from(2)));
+        // 非整数应返回 None
+        let half = BigFloat::div(
+            &BigFloat::from_u64(1),
+            &BigFloat::from_u64(2),
+            crate::bigfloat::precision(),
+        );
+        assert_eq!(approx_integer(&Number::Approx(half)), None);
+    }
 }

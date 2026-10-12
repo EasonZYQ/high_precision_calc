@@ -310,5 +310,32 @@
   "用法: /unit 单位名|off（如 /unit km）": "usage: /unit <name>|off (e.g. /unit km)",
   "无法解析该单位的系数": "cannot parse the conversion factor for that unit",
   "单位名|off（结果按该单位显示；如 /unit km）": "unit name|off (show results in that unit; e.g. /unit km)",
-  "不等式里没有自变量（如 x）": "the inequality has no variable (e.g. x)"
+  "不等式里没有自变量（如 x）": "the inequality has no variable (e.g. x)",
+
+  "恒成立（式中没有自变量）": "always true (the expression has no variable)",
+  "不成立（式中没有自变量）": "false (the expression has no variable)",
+  "没有可比较的表达式": "nothing to compare",
+  "比较式的值无法定符号": "cannot determine the sign of the compared value",
+  "比较运算符异常": "malformed comparison operator",
+  "不等式目前只支持多项式：{0} 不是关于 {1} 的多项式（含分式、根式或三角函数的暂不支持）": "inequalities support polynomials only: {0} is not a polynomial in {1} (fractions, radicals and trig functions are not supported yet)",
+
+  "只有方阵才能做幂运算": "only square matrices can be raised to a power",
+  "矩阵不可逆（存在全零列）": "matrix is not invertible (it has an all-zero column)",
+  "右端向量长度应为 {0}": "the right-hand side vector must have length {0}",
+
+  "统计函数的数据点必须是实数（不支持复数）": "statistics data points must be real numbers (complex values are not supported)",
+  "统计函数的数据点必须是纯数值（不支持带量纲的值与矩阵）": "statistics data points must be plain numbers (dimensioned values and matrices are not supported)",
+  "范围形态的第二个参数必须是变量": "the second argument of the range form must be a variable",
+  "范围下界必须是具体整数": "the range lower bound must be a concrete integer",
+  "范围上界必须是具体整数": "the range upper bound must be a concrete integer",
+  "范围上界不能小于下界": "the range upper bound cannot be smaller than the lower bound",
+  "数据点过多（上限 {0}）": "too many data points (limit {0})",
+
+  "prevprime 的参数必须大于 2（2 之前没有素数）": "prevprime requires an argument greater than 2 (there is no prime below 2)",
+  "求导阶数必须是非负整数（上限 {0}，/mode deep 可放宽）": "the derivative order must be a non-negative integer (limit {0}; /mode deep lifts it)",
+
+  "一个数字里不能有两个小数点": "a number cannot contain two decimal points",
+
+  "量纲不同，不能相加减：{0} 与 {1}": "dimension mismatch: cannot add or subtract {0} and {1}",
+  "带量纲的值不能与无量纲的数相加减（乘除则可以）": "a dimensioned value cannot be added to or subtracted from a plain number (multiplication and division are fine)"
 }

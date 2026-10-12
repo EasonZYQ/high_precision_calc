@@ -182,11 +182,14 @@ pub fn load() -> Option<(
             }
         } else if let Some(v) = line.strip_prefix("prec=") {
             if let Ok(n) = v.trim().parse::<usize>() {
-                prec = n;
+                // 与 `/mode prec` 的范围校验一致：状态文件是可以手改的，
+                // 这里不收敛的话就能绕过命令行的 20..2000 限制（`prec=0` 会让显示与判定失真）。
+                prec = n.clamp(crate::MIN_PRECISION, crate::MAX_PRECISION);
             }
         } else if let Some(v) = line.strip_prefix("digits=") {
             if let Ok(n) = v.trim().parse::<usize>() {
-                digits = n;
+                // 显示位数上限是 `prec - 1`（见 `/mode digits`），此处 prec 已收敛过
+                digits = n.clamp(1, prec.saturating_sub(1).max(1));
             }
         } else if let Some(v) = line.strip_prefix("sci=") {
             sci = v.trim() != "off";

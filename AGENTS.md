@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`hipercalc`：中文超高精度命令行计算器。Rust 双 crate workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc`。**含 144 项单元测试**（core 11 + hipercalc 133，另 1 项 doctest），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
+`hipercalc`：中文超高精度命令行计算器。Rust 双 crate workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc`。**含 200 项单元测试**（hipercalc 180 + core 20，其中 1 项 `perf_scan` 默认 ignore，另 1 项 doctest），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
 
 ## 硬性要求（用户指定）
 
@@ -34,8 +34,8 @@
 ## 仓库结构（两 crate workspace）
 
 ```text
-crates/hipercalc-core/   数值底座：bigfloat / bigint_ext / number / complex / trig / display / calc_mode / cancel
-crates/hipercalc/        parser / equation / primefac / solver_* / solve_aux / calculus / i18n / language / state / lib.rs + main.rs
+crates/hipercalc-core/   数值底座：bigfloat / bigint_ext / number / complex / matrix / quantity / trig / display / calc_mode / cancel / settings
+crates/hipercalc/        parser / equation / primefac / solver_* / solver_ineq / solve_aux / stats / calculus / i18n / language / state / lib.rs + main.rs
 ```
 
 - **依赖方向严格单向**：`hipercalc-core ← hipercalc`。core 不依赖 colored / rustyline，也不引用任何上层模块。
@@ -49,14 +49,14 @@ crates/hipercalc/        parser / equation / primefac / solver_* / solve_aux / c
 ```powershell
 cargo build
 cargo run            # 交互式 REPL（rustyline）
-cargo test --workspace   # 144 项单元测试（core 11 + hipercalc 133，其中 1 项 perf_scan 默认 ignore）
+cargo test --workspace   # 200 项单元测试（hipercalc 180 + core 20，其中 1 项 perf_scan 默认 ignore）
 ```
 
 - **跑构建/测试必须计时**（硬性要求）：不要只贴 `test result: ok` —— 必须带上耗时。
   `cargo test` 结尾自带 `finished in X.XXs`（纯测试耗时），需要连编译一起看时用 `time cargo test`。
   多轮验证（反复跑测试、跑全语料扫描）要写清**总耗时**。
   原因：不看时间就发现不了"某次改动把求解拖慢了十倍"，也无法判断某个预算是真有必要的。
-- 已有 `#[cfg(test)]` 单元测试（**144 项**：core 11 + hipercalc 133，`cargo test --workspace` 全绿），
+- 已有 `#[cfg(test)]` 单元测试（**200 项**：hipercalc 180 + core 20，`cargo test --workspace` 全绿），
   其余验证靠管道喂输入人工核对结果：  
   `Write-Output "1+2*3", "x^2-4=0", "x+y=5,2x-y=1", "sin(pi/6)", "/exit" | cargo run`
 - 新增了**非交互入口**：`-e "表达式"`（裸结果、无耗时行）、`-f 脚本文件`、`--stdin`、
@@ -77,12 +77,15 @@ cargo test --workspace   # 144 项单元测试（core 11 + hipercalc 133，其�
 
 | 文件                    | 职责                                                                                     |
 | --------------------- | -------------------------------------------------------------------------------------- |
-| `bigfloat.rs`         | 任意精度浮点：值 = BigInt 尾数 / 10^precision；PRECISION=80、DISPLAY_DIGITS=20。四则/开方/幂/exp/ln/三角级数 + 规模保护 |
+| `bigfloat.rs`         | 任意精度浮点：值 = BigInt 尾数 / 10^precision；运行期精度（`precision()`，默认 `DEFAULT_PRECISION = 80`）/ 显示位数（`display_digits()`，默认 20）。四则/开方/幂/exp/ln/三角级数 + 规模保护 |
 | `bigint_ext.rs`       | 大整数补充运算：按规模分派的自带长除法（绕开 num-bigint 的 BZ 断言缺陷）+ 自带整数平方根；带单元测试 |
 | `calc_mode.rs`        | 计算模式开关：Fast（默认，超限给提示）/ Deep（死算，取消规模上限 + 完整精度输出）；低层护栏统一查 `is_deep()` |
 | `calculus/`           | 高等数学：重写通路（mod）+ 化简（normalize）+ 渲染（render）+ 求导/积分/极限/泰勒/求和求积；护栏统一受 `/mode deep` 放宽 |
 | `i18n.rs`             | 界面语言（简/繁/英）：以简体原文为键的词条表 + 运行期整行模式翻译 + 系统语言探测（Win32 `GetUserDefaultUILanguage`） |
-| `number.rs`           | `Number::{Exact, Approx}` 双重表示，运算先精确后数值回退                                              |
+| `number.rs`           | `Number` 五变体：`Exact` / `Approx` / `Complex` / `Quantity`（量纲）/ `Matrix`；运算先精确到数值回退                                              |
+| `matrix.rs`（core）   | 矩阵值：`render` / `det` / `trace` / `rank` / `transpose` / `inv` / `mul` / `pow` / `linsolve` / `eigen`（2×2、3×3）；`unrecoverable` 是非法组合的 debug 兜底 |
+| `quantity.rs`（core） | 量纲：`Quantity { value, dim }` + `Dim = [i8; 7]`（m/kg/s/A/K/mol/cd）；`combine`/`pow`/`render`/`binary`（加减要求量纲相同、乘除指数相加减）|
+| `settings.rs`（core） | 运行期可配项（精度/显示位数等）的集中存放，供 core 内部访问器读取 |
 | `parser.rs`           | 递归下降解析 + 求值器 + `parse_and_eval`（返回 `EvalResult`）；绝对值/阶乘/多参函数                           |
 | `trig.rs`             | 特殊角精确值表（度/弧度/反三角）                                                                      |
 | `display.rs`          | mathio 符号输出 / lineio 20 位有效数字                                                          |
@@ -93,9 +96,13 @@ cargo test --workspace   # 144 项单元测试（core 11 + hipercalc 133，其�
 | `solver_fit.rs`       | 多项式函数拟合：坐标 → 解析式（2 点一次、3 点二次…）；大写 `P` 为顶点；模板可带未知参数，欠定则输出参数关系 |
 | `solver_triangle.rs`  | 三角形求解：`triangle(a=3 b=4 c=5)` / `triangle(a=3, b=4, c=5)`（括号内空白或逗号分隔，**只能是整个表达式的最外层函数**；记号是**任意字母**：小写=边、大写=角、`h`+字母=高）→ 三边三角三高 + 面积周长两半径；SSS/SAS/ASA/AAS/SSA 走解析解，其余数值兜底，SSA 可给两解 |
 | `solver_factor.rs`    | 多项式因式分解（单/多元，按模式区分实数域/有理数域）                                                            |
+| `solver_ineq.rs`      | 不等式与不等式组：移项成 `f op 0` → 求实根分段 → 逐段判符号 → 区间解集；`eval_constant_inequality` 处理无自变量的常数比较（`2>1`）|
 | `primefac.rs`         | 整数素因数分解：小素数表 + 6k±1 试除 + 确定性 Miller-Rabin + Brent 版 Pollard's rho（u64/BigInt 双路），格式化成 `12 = 2^2 * 3`（负数 `-12 = -2^2 * 3`）；带单元测试 |
+| `stats.rs`            | 统计：`mean` / `var` / `var_s` / `stddev` / `stddev_s` / `median` / `percentile` / `corr`；列表或"表达式+范围"两种数据形态，排序类在解析期求值；`eval_const` 拒收复数与量纲值 |
+| `language/`           | 界面词条表：`<语言代码>.json`（编译期 `include_str!`）+ `mod.rs` 里的极简 JSON 解析器；键为简体原文逐字 |
 | `solve_aux.rs`        | `=`/`≈` 前缀、周期通式、根收集等辅助工具                                                               |
 | `state.rs`            | 会话状态持久化：显示/角度/计算模式 + `/let` 变量 + `/set` 颜色的读写（`~/.hipercalc_state`）                              |
+| `lib.rs`（core 的）   | core 的模块声明与对外导出（`pub mod` 清单），新增 core 模块要在这里声明 |
 | `lib.rs`              | **应用主体**：`run`/`run_line`、`EvalResult` 分派与各 handler、REPL、`/` 指令、`/help` 正文与着色器、颜色配置（`/set` 持久化）、rustyline 实时高亮、变量存储、历史持久化、运算计时（`Timing`）；**键位绑定**（全角转半角）、**括号配对高亮与标红**、**框内参数提示** |
 | `main.rs`             | **程序入口（仅 8 行）**：`std::process::exit(hipercalc::run())` |
 | `README.md`           | 功能手册 + 代码架构文档；改动功能后须同步                                                                 |
@@ -144,14 +151,24 @@ cargo test --workspace   # 144 项单元测试（core 11 + hipercalc 133，其�
 - `Number::div` 除数为零时只做 `debug_assert!` + 返回 0 兜底（调用方须先判 `is_zero()`），  
   不能调用 `BigFloat::div`（其 `assert!` 会让进程 panic）。
 - `Number::pow` 的整数指数分支先调 `check_pow_scale` 做规模保护。
+- **`Number::pow` 有两条整数快路，缺一条就会让逐项求值慢十倍**：
+  1. **精确分支**（`(self, exponent)` 都是 `Number::Exact`）走 `int_pow`；
+  2. **近似分支**（底数是 `Approx`，如 `k^2` 里由范围代入的 `k`）由 `approx_integer(&exponent)`
+     认出"数值上是整数"的指数后**也走 `int_pow`**。少了这条，`k^2` 会掉到最底下的
+     `BigFloat::pow = exp(b·ln a)`（一次 ln + 一次 exp，约 10µs），而整数平方只要一次乘法（约 1µs）——
+     `sum(k^2, k, 1, 10000)` 实测 141ms → 2.5ms 就是这条的收益。
+     **不要**把它改回"只有 Exact 才走快速幂"。
+- `int_pow` 的 `Number::Exact` 分支必须**同时**处理三类底数：整数、**有理数**、单个 `Sqrt`。
+  旧实现只有整数与 `Sqrt` 两条，有理数会掉到数值回退 ⇒ `(1/2)^3`、`1.5^4`、`(3/4)^2`
+  值虽正确但被标成 `≈`（丢失精确性）。新增 `ExactTerm` 变体时记得在这里表态。
 
 ### 解析器（parser.rs）
 
 - 顶层入口 `parse_system()`（逗号分隔方程组）→ `parse_equation()`（单个 `=`）→ 表达式。不要另起入口绕过它。
-- `Expr::Function(name, Vec<Expr>)` 已是**参数列表**：绝大多数单参，仅 `log(b, x)` 两参。内部 `"fact"`（`!` 生成）与 `"abs"`（`|x|` 生成）不在白名单内。
+- `Expr::Function(name, Vec<Expr>)` 已是**参数列表**：绝大多数单参，两参函数登记在 `TWO_ARG_FUNCTIONS`（`log` 单独处理）。内部 `"fact"`（`!` 生成）不在白名单内；`"abs"`（`|x|` 生成）**在**白名单里，因为它也是用户可见函数（`abs(-3)` = 3）。
 - 变量：单字母 `x y z a b...`（`VALID_VARIABLES`，大写段只到 W）+ 全大写存储变量（`/let`，可含 `_`：`X`、`AB`、`PI_VAR`）+ `ans`；`pi`/`e` 是常数。
-- **函数白名单唯一来源是 `parser::FUNCTIONS`**（现 65 个：含 6 个位运算 `and`/`or`/`xor`/`not`/`shl`/`shr`，只限非负整数）（解析校验、多字母拆分判断、`lib.rs` 高亮共用），  
-  新增函数只需改它 + `Evaluator::eval_function`（旧实现有三份重复数组，容易漏改）。`fact`/`abs` 作为内部名不要加进白名单。
+- **函数白名单唯一来源是 `parser::FUNCTIONS`**（含 6 个位运算 `and`/`or`/`xor`/`not`/`shl`/`shr`，只限非负整数）（解析校验、多字母拆分判断、`lib.rs` 高亮共用），  
+  新增函数只需改它 + `Evaluator::eval_function` + `lib.rs::FUNCTIONS_META`（三处都要，`functions_meta_covers_parser_functions` 测试兜底）。内部名 `fact` 不要加进白名单。
 - `eval_function` 签名是 `(name, args: &[Number])`：单参函数开头统一校验 `args.len()==1`，`log` 校验 `len()==2` 并检查底数 >0 且 ≠1。
 - `log` 的底数判定必须精确（`as_rational().is_one()` 或与 1 的偏差 > 1e-40），**不要用 `rounded(0) == 1`**  
   （会把 0.5/0.9/1.2 误判成 1）。
@@ -258,8 +275,10 @@ cargo test --workspace   # 144 项单元测试（core 11 + hipercalc 133，其�
   - **初值半径** `R = min(柯西界, max(|a₀/aₙ|^(1/n), 1))`，n 个起点按 `2π(k+0.5)/n` 撒在半径 R 的圆上。
     柯西界 1+max|a_i| 对稀疏多项式过宽（`x^96+…+1` 的界为 2 而根模为 1），会拖到几百轮不收敛；
     旧实现的 `(0.4+0.9i)^k` 几何衰减初值更差（x^100=1 曾 368 秒且输出错误根）。首轮未收敛才退回柯西界半径重试。
-  - **两阶段精度**：先 40 位粗收敛（`rough_prec`，步数上限 300），再 80 位精化（上限 200）。
+  - **两阶段精度**：粗收敛用 `rough_prec = (precision()/2).clamp(16, 60)`，精化用全精度 `precision()`。
     每轮是 O(n²) 复数乘除，成本由 BigInt 位数决定，低精度阶段单轮开销约为全精度的 1/2~1/3。
+    **粗阶段精度必须随 `precision()` 相对变化**（旧实现硬编码 40）：固定值在非默认精度下要么失去"粗"的意义、
+    要么与精化阶段差距过大而拖长精化轮数。
   - **顺序更新**（Gauss-Seidel 型，用已更新的 `zs[j]`）而非"全部同时更新"，收敛明显更快；
     且**未收敛必须返回 `Err`**，绝不能把中间迭代值当根输出（调用方 `solve_poly_full` 用 `?` 传播）。
   - **Fast 次数护栏** `DK_MAX_DEGREE_FAST = 200`：n≈200 约 25 秒、n≥300 超过 1 分钟，故 Fast 下超限直接提示
@@ -278,9 +297,13 @@ cargo test --workspace   # 144 项单元测试（core 11 + hipercalc 133，其�
 
 ### 复数（complex.rs + Number::Complex）
 
-- `Number` 有**三个变体**：`Exact` / `Approx` / `Complex(Box<ComplexNum>)`（`ComplexNum { re, im }` 的实部虚部又是 `Number`，
+- `Number` 有**五个变体**：`Exact` / `Approx` / `Complex(Box<ComplexNum>)` / `Quantity(Box<Quantity>)`（量纲值）/ `Matrix(Box<Vec<Vec<Number>>>)`（`ComplexNum { re, im }` 的实部虚部又是 `Number`，
   因此"精确高斯有理数"与"带根号/数值的复数"统一表示）。`Number::from_complex` 在虚部为 0 时**自动退化为实数**，
   保证显示与判定一致；反向用 `to_complex()` 提升。
+  **`to_approx()` 对 `Complex` / `Quantity` / `Matrix` 都是 `debug_assert!(false)`**（release 下静默取实部/数值），
+  所以每个新入口都要先分流：`display.rs::format_mathio_raw`/`format_lineio_raw`/`format_decimal_raw`
+  三个格式化入口都必须显式处理全部五个变体（`format_decimal_raw` 曾经只挡 `Complex`，
+  导致 `sd(3 km)`、`sd([[1,2],[3,4]])` 直接 panic）。
 - **`add`/`sub`/`mul`/`div` 必须在入口先判 `is_complex()`**：它们的 match 带 `_` 兜底臂，
   漏判会静默落到 `to_approx()` 数值路径**丢掉虚部**（编译器不会报错，这是本模块最大的坑）。
 - `to_approx()` 对复数只取实部并 `debug_assert!(false)`——**parser 必须先分流**（`eval_function` 开头的
@@ -537,6 +560,6 @@ cargo test --workspace   # 144 项单元测试（core 11 + hipercalc 133，其�
   需要上万次求值、直接撞穿预算。节点由 Newton 迭代现算，可用"对 2n-1 次多项式精确"验证。
 - **泰勒系数的精确化**：求值器对 `cos(0)`/`sin(0)` 返回 `Approx`，必须经 `snap_exact` 还原成精确值
   （十进制还原 + 约分，分母 ≤ 10⁶ 才认），否则会输出 `1.0000000000…*x`。
-- **新增一个高数函数要同步**：`CALCULUS_ARITIES`、`FUNCTIONS`、`SIGNATURES`、`/help` **三份**、
-  `i18n::TABLE`、`docs/DOC.zh-CN.md` + `docs/DOC.en.md`。`CALCULUS_INF_ALLOWED` 决定 `inf` 能出现在哪个参数位
+- **新增一个高数函数要同步**：`CALCULUS_ARITIES`、`FUNCTIONS`、`lib.rs::FUNCTIONS_META`、`/help` **三份**、
+  `i18n::TABLE`（`en.json` + `zh-TW.json`）、`docs/DOC.zh-CN.md` + `docs/DOC.en.md`。`CALCULUS_INF_ALLOWED` 决定 `inf` 能出现在哪个参数位
   —— 不登记就会落到求值路径报"未定义变量: inf"，误导用户。

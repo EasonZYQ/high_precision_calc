@@ -874,8 +874,7 @@ mod tests {
     }
 
     #[test]
-    fn indefinite_basics() {
-        // MathIO 下系数是"前置因子"（与 fac 的 `1 / 8 * (2*x - 1)` 同风格）
+    fn indefinite_basics() {        // MathIO 下系数是"前置因子"（与 fac 的 `1 / 8 * (2*x - 1)` 同风格）
         assert_eq!(anti("x^2"), "1 / 3 * x^3");
         assert_eq!(anti("3*x^2"), "x^3");
         assert_eq!(anti("1/x"), "ln(abs(x))");
