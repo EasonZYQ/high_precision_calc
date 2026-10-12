@@ -159,6 +159,31 @@ fn cache_put(cache: &'static ConstantCache, prec: usize, value: BigFloat) {
 }
 
 /// `ln(小整数)` 缓存：键 (底数, 目标精度) → 已算好的值。
+/// `10^k`（带缓存）。
+///
+/// 为什么需要：`BigFloat` 的每一次加减都要把两个操作数**对齐到同一量纲**
+/// （`value · 10^(prec - self.precision)`）、结尾还要 `round_to` 一次 —— 一次加法就要构造
+/// 3 个 `10^k`，一次除法要 2 个。而 `BigInt::from(10).pow(k)` 是"从零反复平方"，
+/// k≈160 时每次约 1µs；实际用到的 k 只有少数几个值（工作精度、显示位数与它们的差），
+/// 缓存后每次只是一次克隆（约 50ns）。逐项求和、数值积分、三角级数这些"上万次小运算"的
+/// 场景因此能省下可观比例的时间。
+fn pow10(k: usize) -> BigInt {
+    thread_local! {
+        static CACHE: std::cell::RefCell<Vec<BigInt>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    CACHE.with(|c| {
+        let mut v = c.borrow_mut();
+        if v.is_empty() {
+            v.push(BigInt::from(1)); // 10^0
+        }
+        while v.len() <= k {
+            let next = &v[v.len() - 1] * 10u32;
+            v.push(next);
+        }
+        v[k].clone()
+    })
+}
+
 /// 说明：`pow(a, b) = exp(b·ln a)` 是幂运算与指数方程的主要开销，
 /// 而牛顿迭代求解 `a^x = c` 时底数 a 固定不变、却每轮都要重算 `ln(a)`
 /// （atanh 级数展开约百项，实测 `3^x=27` 因此比 `2^x=8` 慢 5 倍，后者
@@ -235,10 +260,7 @@ impl BigFloat {
     /// 转成精确有理数：值 = `value / 10^precision`（分母是 10 的幂，恒为精确表示）。
     /// 用于"把数值常数重新拿回精确域"的场合（如指数方程的闭式解精确化）。
     pub fn to_big_rational(&self) -> num_rational::BigRational {
-        num_rational::BigRational::new(
-            self.value.clone(),
-            BigInt::from(10).pow(self.precision as u32),
-        )
+        num_rational::BigRational::new(self.value.clone(), pow10(self.precision))
     }
 
     /// 符号：正返回 true，负返回 false
@@ -291,19 +313,19 @@ impl BigFloat {
         }
         if self.precision < target_prec {
             let diff = target_prec - self.precision;
-            self.value = &self.value * BigInt::from(10).pow(diff as u32);
+            self.value = &self.value * pow10(diff);
             self.precision = target_prec;
             return;
         }
 
         let diff = self.precision - target_prec;
-        let pow10 = BigInt::from(10).pow(diff as u32);
+        let scale = pow10(diff);
         let is_neg = self.value.is_negative();
         let abs_val = self.value.abs();
 
-        let (q, r) = abs_val.div_rem(&pow10);
+        let (q, r) = abs_val.div_rem(&scale);
         let mut new_abs = q;
-        if (r * 2) >= pow10 {
+        if (r * 2) >= scale {
             new_abs += 1u32;
         }
         self.value = if is_neg { -new_abs } else { new_abs };
@@ -330,9 +352,8 @@ impl BigFloat {
             std::cmp::max(a.precision, b.precision),
             target_prec + MARGIN / 2,
         );
-        let ten = BigInt::from(10);
-        let a_val = &a.value * ten.pow((prec - a.precision) as u32);
-        let b_val = &b.value * ten.pow((prec - b.precision) as u32);
+        let a_val = &a.value * pow10(prec - a.precision);
+        let b_val = &b.value * pow10(prec - b.precision);
         let mut result = BigFloat {
             value: a_val + b_val,
             precision: prec,
@@ -363,10 +384,9 @@ impl BigFloat {
         assert!(!b.is_zero(), "除以零错误");
 
         let total_prec = target_prec + MARGIN + b.precision;
-        let ten = BigInt::from(10);
         let scale = total_prec.saturating_sub(a.precision);
 
-        let numerator = a.value.abs() * ten.pow(scale as u32);
+        let numerator = a.value.abs() * pow10(scale);
         let denominator = b.value.abs();
         // 走 bigint_ext 分派：两个操作数都很大时绕开 num-bigint 的 BZ 除法断言缺陷
         // （实测 (10^200000+pi)/(10^100000+pi) 会 panic），小规模仍用原生除法
@@ -407,7 +427,7 @@ impl BigFloat {
 
         // 使用整数平方根获得更好的初始猜测
         let extra = if self.precision % 2 == 1 { 1 } else { 0 };
-        let shifted_value = self.value.abs() * BigInt::from(10).pow(extra as u32);
+        let shifted_value = self.value.abs() * pow10(extra);
         let shifted_prec = self.precision + extra;
         let guess_val = crate::bigint_ext::int_sqrt(&shifted_value);
         let guess_prec = shifted_prec / 2;
@@ -500,11 +520,7 @@ impl BigFloat {
             let is_int = exponent.precision == 0
                 || BigFloat::sub(
                     exponent,
-                    &BigFloat::from_int(
-                        &exponent
-                            .value
-                            .div_floor(&BigInt::from(10).pow(exponent.precision as u32)),
-                    ),
+                    &BigFloat::from_int(&exponent.value.div_floor(&pow10(exponent.precision))),
                     target_prec + MARGIN,
                 )
                 .is_zero();
@@ -520,16 +536,12 @@ impl BigFloat {
             || (exponent.precision > 0
                 && BigFloat::sub(
                     exponent,
-                    &BigFloat::from_int(
-                        &exponent
-                            .value
-                            .div_floor(&BigInt::from(10).pow((exponent.precision) as u32)),
-                    ),
+                    &BigFloat::from_int(&exponent.value.div_floor(&pow10(exponent.precision))),
                     work_prec,
                 )
                 .is_zero())
         {
-            let exp_int = &exponent.value / BigInt::from(10).pow(exponent.precision as u32);
+            let exp_int = &exponent.value / pow10(exponent.precision);
             if let Some(exp_u32) = exp_int.to_u32() {
                 self.check_pow_scale(exp_u32 as f64)?;
                 return Ok(self.int_pow(exp_u32, target_prec));
@@ -639,7 +651,7 @@ impl BigFloat {
         }
 
         // 级数展开（|arg| ≤ 1 时约 100 项即收敛到 work_prec 位）
-        let scale = BigInt::from(10).pow(work_prec as u32);
+        let scale = pow10(work_prec);
         let mut result = BigFloat::from_u64(1);
         let mut term = BigFloat::from_u64(1);
         // 计数器用 u64（旧实现每轮 `&k + &step` 都要做一次 BigInt 加法并克隆，
@@ -683,7 +695,7 @@ impl BigFloat {
         // 注意 AST 里的常数经 `to_bigfloat` 后形如 3·10^80（precision 不为 0），
         // 必须先按精度归一还原出整数值，不能直接用 `precision == 0` 判断。
         let cache_key = {
-            let scale = BigInt::from(10).pow(self.precision as u32);
+            let scale = pow10(self.precision);
             let (q, r) = self.value.div_rem(&scale);
             if r.is_zero() && q > BigInt::from(1) && q <= BigInt::from(1_000_000) {
                 Some(q)
@@ -762,11 +774,7 @@ impl BigFloat {
         let mut x = self.rounded(work_prec);
         if x.value.abs() > pi.value {
             let quot = BigFloat::div(&x, &two_pi, work_prec);
-            let int_part = BigFloat::from_int(
-                &quot
-                    .value
-                    .div_floor(&BigInt::from(10).pow(quot.precision as u32)),
-            );
+            let int_part = BigFloat::from_int(&quot.value.div_floor(&pow10(quot.precision)));
             x = BigFloat::sub(&x, &BigFloat::mul(&int_part, &two_pi, work_prec), work_prec);
         }
 
@@ -820,7 +828,7 @@ impl BigFloat {
         let one = BigFloat::from_u64(1);
 
         // 边界情况：|x| = 1
-        let ten_pow = BigInt::from(10).pow(self.precision as u32);
+        let ten_pow = pow10(self.precision);
         if self.value.abs() >= ten_pow {
             let pi = Self::pi(work_prec);
             let half_pi = BigFloat::div(&pi, &BigFloat::from_u64(2), work_prec);
