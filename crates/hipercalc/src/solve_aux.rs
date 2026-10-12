@@ -255,7 +255,24 @@ fn pi_ratio(x: &BigFloat, pi: &BigFloat, max_den: i64, tol_rel: f64) -> Option<(
 /// 会混进 ≈29.8 这类根），它们混进根集合会让相邻差不再规整、把整条通式判否。
 /// 窗口**只影响判定输入**，不影响调用方在回退分支里列出的全部根。
 pub fn format_periodic_roots(roots: &[Number], var: char, angle_mode: AngleMode) -> Option<String> {
-    if roots.len() < 4 {
+    format_periodic_roots_min(roots, var, angle_mode, MIN_ROOTS_FOR_PERIOD)
+}
+
+/// 判定周期所需的**最少根数**。
+///
+/// 数值扫根来的根可能残缺（`sin(x)=1` 的切点重根只有 3 个）⇒ 阈值取 4，宁可退回列表也不误判。
+/// 而闭式快路是**自己按家族构造**出来的根，根集完整，可以用更低的阈值（见 `trig_closed_form`）。
+const MIN_ROOTS_FOR_PERIOD: usize = 4;
+
+/// 同 `format_periodic_roots`，但可指定"最少根数"（闭式快路传 3：`x = π/2 + k·2π` 这类
+/// 单族解在 ±3π 窗口内本来就只有 3 个根）
+pub fn format_periodic_roots_min(
+    roots: &[Number],
+    var: char,
+    angle_mode: AngleMode,
+    min_roots: usize,
+) -> Option<String> {
+    if roots.len() < min_roots {
         return None;
     }
     let prec = bigfloat::precision();
@@ -277,7 +294,7 @@ pub fn format_periodic_roots(roots: &[Number], var: char, angle_mode: AngleMode)
     // 窗口：只保留 ±3 个单位角以内的根（已折算成弧度，故两模式窗口一致）
     let window = BigFloat::mul(&pi, &BigFloat::from_u64(3), prec);
     vals.retain(|v| bf_abs(v.clone()).value.abs() <= window.value.abs());
-    if vals.len() < 4 {
+    if vals.len() < min_roots {
         return None;
     }
 
@@ -827,6 +844,9 @@ fn exact_phase(a: &Number, b: &Number) -> Option<Number> {
     })
 }
 
+/// 闭式快路判定周期所需的最少根数：根由家族**完整**构造，3 个就够定单族（见 `format_periodic_roots_min`）
+const MIN_ROOTS_FOR_CLOSED_FORM: usize = 3;
+
 /// `F(u) = c` 的主值（弧度）与周期：返回若干 `(主值, 周期)`；常数不是特殊角返回 `None`
 fn principal_angles(fname: &str, c: &Number) -> Option<Vec<(Number, Number)>> {
     let pi = || Number::from_pi_times(BigRational::from_integer(BigInt::from(1)));
@@ -943,10 +963,12 @@ pub fn trig_closed_form(ev: &Evaluator, eq_expr: &Expr, var: char) -> Option<Str
     }
     // 两个主值可能是同一族（`sin(x)=1` 的 α 与 π−α 相等、`cos(x)=±1`）⇒ 先精确去重
     dedup_exact(&mut roots);
-    if roots.len() < 4 {
+    // 根是**按家族构造**的，所以完整；窗口内只落到 3 个根也足以定出单族解
+    // （`sin(x)=1` ⇒ `x = π/2 + k·2π`，数值扫根那条路认不出来、只会列出残缺的 3 个根）
+    if roots.len() < MIN_ROOTS_FOR_CLOSED_FORM {
         return None;
     }
-    format_periodic_roots(&roots, var, angle_mode)
+    format_periodic_roots_min(&roots, var, angle_mode, MIN_ROOTS_FOR_CLOSED_FORM)
 }
 
 /// 用多组初始猜测收集非多项式方程在区间内的所有实根（去重）
