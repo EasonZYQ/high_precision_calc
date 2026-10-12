@@ -292,7 +292,8 @@ pub fn eval_constant_inequality(ev: &Evaluator, items: &[(Expr, u8)]) -> Result<
 }
 
 /// 解不等式（组）。`items` 每项是 `(移项后的 f, 运算符)`，全部对同一个 `var`。
-pub fn solve(ev: &Evaluator, items: &[(Expr, u8)], var: char) -> Result<String, String> {    if items.is_empty() {
+pub fn solve(ev: &Evaluator, items: &[(Expr, u8)], var: char) -> Result<String, String> {
+    if items.is_empty() {
         return Err("没有可解的不等式".to_string());
     }
     let mut acc: Option<Vec<Interval>> = None;

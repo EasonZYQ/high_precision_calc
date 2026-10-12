@@ -1,16 +1,34 @@
 use num_bigint::BigInt;
 use num_rational::BigRational;
-use num_traits::{Signed, ToPrimitive, Zero};
+use num_traits::{One, Signed, ToPrimitive, Zero};
 
 use crate::parser::{DisplayMode, Evaluator, Expr};
 use hipercalc_core::bigfloat::{self, BigFloat};
+use hipercalc_core::complex::ComplexNum;
 use hipercalc_core::number::Number;
+use hipercalc_core::trig::{self, AngleMode};
 
 /// 高次数值求根被规模护栏拒绝时的错误前缀。
 /// 调用方（main.rs::handle_equation）据此判断"这是明确拒绝"而不是"求根失败"，
 /// 从而**不再回退牛顿单根**——高次多项式的牛顿求值代价极高（x^5000-1 每次求值都要算 5000 次幂），
 /// 回退只会让界面长时间无响应，而且只能给出一个根。
 pub const DEGREE_GUARD_PREFIX: &str = "数值求根次数过高";
+
+/// Fast 模式下的次数上限（DK 与幂替换共用同一口径）。
+///
+/// DK 每轮 O(n²) 复数乘除，实测 n≈200 已需约 25 秒；幂替换本身很快，但**根的数量仍是原次数**
+/// （`x^5000-1` 会刷出 5000 个根），所以两者用同一个上限，避免"换个入口就把护栏绕过去"。
+/// Deep 模式放开（死算由用户承担代价）。
+const MAX_DEGREE_FAST: usize = 200;
+
+/// 当前允许的最大次数（Deep 模式不设限）
+fn degree_limit() -> usize {
+    if hipercalc_core::calc_mode::is_deep() {
+        usize::MAX
+    } else {
+        MAX_DEGREE_FAST
+    }
+}
 
 /// 多项式求解结果
 #[derive(Debug, Clone)]
@@ -424,6 +442,21 @@ pub fn solve_poly_full(coeffs: &[Number]) -> Result<Vec<PolySolution>, String> {
         return Ok(Vec::new()); // 0 方程无根
     }
 
+    // ── 幂替换优先：把所有指数同属某个 g 的倍数的多项式用 `y = x^g` 降次 ──
+    //
+    // **必须排在因式分解之前**：分解器对这种结构只能提出几个平凡因子
+    // （`x^100-1` 只提出 `(x-1)(x+1)(x²+1)`，`x^96+x^48+1` 一个都提不出来），
+    // 剩下的整块不可约因子会落进 Durand-Kerner —— `x^100-1` 实测 1.9 s，其中 1.76 s 全在 DK。
+    // 走幂替换后 `x^100-1 → y-1`、`x^96+x^48+1 → y²+y+1`，都是几次除法的事。
+    //
+    // 次数护栏与原 DK 同口径（见 `MAX_DEGREE_FAST`）：替换后虽快，根的数量仍是原次数，
+    // 不设限会让 `x^5000-1` 从"明确拒绝"变成刷出 5000 个根。超限时照旧落到原路径去拒绝。
+    if let Some(g) = power_substitution_degree(&bc)
+        && bc.len() - 1 <= degree_limit()
+    {
+        return solve_by_power_substitution(&bc, g);
+    }
+
     let (factors, _) = crate::solver_factor::factor_univariate_coeffs(&bc);
     let mut sols: Vec<PolySolution> = Vec::new();
     for (fc, exp) in factors {
@@ -456,6 +489,150 @@ pub fn solve_poly_full(coeffs: &[Number]) -> Result<Vec<PolySolution>, String> {
         }
     }
     Ok(sols)
+}
+
+/* ---------------- 幂替换求根（y = x^g） ---------------- */
+
+/// 幂替换指数：所有**非零项**指数的最大公约数；≤ 1 表示没有可用结构（返回 `None`）。
+///
+/// `x^100-1`（指数 0、100）→ 100；`x^96+x^48+1`（0、48、96）→ 48；`x^4-5x^2+4` → 2；
+/// `x^50-2x+1`（0、1、50）→ 1（无结构）。
+fn power_substitution_degree(bc: &[BigRational]) -> Option<usize> {
+    let mut g = 0usize;
+    for (i, c) in bc.iter().enumerate() {
+        if !c.is_zero() {
+            g = gcd_usize(g, i);
+        }
+    }
+    (g > 1).then_some(g)
+}
+
+/// `usize` 的最大公约数（`g == 0` 时返回另一个数，于是常数项不影响结果）
+fn gcd_usize(a: usize, b: usize) -> usize {
+    if b == 0 { a } else { gcd_usize(b, a % b) }
+}
+
+/// 幂替换求解：令 `y = x^g`，先解降次后的多项式（可能再被替换一次），再把每个根开 g 次方还原。
+///
+/// 递归天然收敛：`g ≥ 2` ⇒ 降次后的项数 `ceil(len / g) < len`，次数严格下降。
+/// 重数也自动正确：降次后的某个根 y 重 m 次 ⇒ 还原出的 g·m 个根（实测 `(x²-1)²` 给 4 个根）。
+fn solve_by_power_substitution(bc: &[BigRational], g: usize) -> Result<Vec<PolySolution>, String> {
+    let reduced: Vec<Number> = bc
+        .iter()
+        .step_by(g)
+        .map(|c| Number::from_rational(c.clone()))
+        .collect();
+    let y_roots = solve_poly_full(&reduced)?;
+    let mut out: Vec<PolySolution> = Vec::with_capacity(bc.len() - 1);
+    for y in &y_roots {
+        out.extend(nth_roots_of(y, g));
+    }
+    Ok(out)
+}
+
+/// `x^g = y` 的全部 g 个根（`k = 0..g-1`：从主值开始，每步转过 `2π/g`）。
+///
+/// 精确性靠两条路，缺一条就会把"整根"降级成近似：
+/// - **模**走 `Number` 算术：`|(-1±i√3)/2| = 1`、`nth_root(4, 2) = 2` 都能保持精确，
+///   所以 `x = 1`、`x = -1`、`x = ±2` 照旧标 `=`（不是 `≈`）；
+/// - **角度**：`y` 是实数时角度恰是 π 的有理倍（正 ⇒ `2kπ/g`，负 ⇒ `(2k+1)π/g`），
+///   直接构造**精确角**交给 `trig::sin/cos_number` —— 特殊角表里有的（`i`、`-1`、`√3/2`…）仍是精确值。
+///   `y` 非实数时才用数值辐角：此时 g 个根必然**都不实**（实数的 g 次方必是实数），
+///   所以不需要再判别"虚部接近 0 就当实根"。
+fn nth_roots_of(y: &PolySolution, g: usize) -> Vec<PolySolution> {
+    let (re, im) = match y {
+        PolySolution::Real(n) => (n.clone(), Number::from_int(0)),
+        PolySolution::Complex(re, im) => (re.clone(), im.clone()),
+    };
+    // x^g = 0 ⇒ x = 0（g 重根）
+    if re.is_zero() && im.is_zero() {
+        return vec![PolySolution::Real(Number::from_int(0)); g];
+    }
+
+    let prec = bigfloat::precision();
+    // 模：|y| 再开 g 次方
+    let modulus = if im.is_zero() {
+        re.abs()
+    } else {
+        Number::from_complex(ComplexNum::new(re.clone(), im.clone())).abs()
+    };
+    let rho = match u32::try_from(g) {
+        Ok(k) => modulus
+            .nth_root(k)
+            .unwrap_or_else(|_| Number::Approx(modulus.to_approx())),
+        // g ≤ MAX_DEGREE_FAST，走不到这里；兜底保持"不 panic"
+        Err(_) => Number::Approx(modulus.to_approx()),
+    };
+
+    // 辐角基准（π 的有理倍）：实正 ⇒ 0，实负 ⇒ π；非实数 ⇒ None（循环里用数值辐角）
+    let arg_base = if !im.is_zero() {
+        None
+    } else if re.is_negative() {
+        Some(BigRational::one())
+    } else {
+        Some(BigRational::zero())
+    };
+    let g_rat = BigRational::from_integer(BigInt::from(g));
+    // z 非零（上面已排除）⇒ `arg()` 不会失败；失败只可能是"0 没有辐角"，用 0 兜底
+    let numeric_arg = if arg_base.is_none() {
+        Some(
+            ComplexNum::new(re.clone(), im.clone())
+                .arg()
+                .map(|a| a.to_approx())
+                .unwrap_or_else(|_| BigFloat::from_u64(0)),
+        )
+    } else {
+        None
+    };
+    let two_pi = BigFloat::mul(&BigFloat::from_u64(2), &BigFloat::pi(prec), prec);
+
+    let mut out: Vec<PolySolution> = Vec::with_capacity(g);
+    for k in 0..g {
+        let (c, s) = match &arg_base {
+            // 精确角：(base + 2k)·π/g
+            Some(base) => {
+                let coeff =
+                    (base.clone() + BigRational::from_integer(BigInt::from(2 * k))) / &g_rat;
+                if coeff.is_integer() {
+                    // 整数倍 π（含 0）**必须自己给**：rad 模式的精确表只认 `PiPow` 项，
+                    // 而 π 的 0 倍会被规范化成普通有理数 0 ⇒ `cos(0)` 退化成 `≈ 1`，
+                    // 会把本该精确的 `x = 1` 降级成 `x ≈ 1`。
+                    let n = coeff.to_integer();
+                    let cos = if (n % 2i32).is_zero() {
+                        Number::from_int(1)
+                    } else {
+                        Number::from_int(-1)
+                    };
+                    (cos, Number::from_int(0))
+                } else {
+                    let a = Number::from_pi_times(coeff);
+                    (
+                        trig::cos_number(&a, AngleMode::Radian),
+                        trig::sin_number(&a, AngleMode::Radian),
+                    )
+                }
+            }
+            // 数值角：(arg + 2kπ)/g
+            None => {
+                let arg = numeric_arg.clone().unwrap_or_else(|| BigFloat::from_u64(0));
+                let step = BigFloat::mul(&two_pi, &BigFloat::from_u64(k as u64), prec);
+                let total = BigFloat::add(&arg, &step, prec);
+                let a = Number::Approx(BigFloat::div(&total, &BigFloat::from_u64(g as u64), prec));
+                (
+                    trig::cos_number(&a, AngleMode::Radian),
+                    trig::sin_number(&a, AngleMode::Radian),
+                )
+            }
+        };
+        let xr = rho.mul(&c);
+        let xi = rho.mul(&s);
+        out.push(if xi.is_zero() {
+            PolySolution::Real(xr)
+        } else {
+            PolySolution::Complex(xr, xi)
+        });
+    }
+    out
 }
 
 /* ---------------- Durand-Kerner 数值复数求根 ---------------- */
@@ -593,10 +770,9 @@ fn durand_kerner(coeffs: &[BigFloat]) -> Result<Vec<Cx>, String> {
     }
     // Fast 模式的次数护栏：DK 每轮 O(n²) 复数乘除，实测 n≈200 已需约 25 秒、
     // n≥300 超过 1 分钟。Deep 模式放开（死算由用户承担代价）。
-    const DK_MAX_DEGREE_FAST: usize = 200;
-    if n > DK_MAX_DEGREE_FAST && !hipercalc_core::calc_mode::is_deep() {
+    if n > MAX_DEGREE_FAST && !hipercalc_core::calc_mode::is_deep() {
         return Err(format!(
-            "{DEGREE_GUARD_PREFIX}（{n} 次，Fast 模式上限 {DK_MAX_DEGREE_FAST}）；\
+            "{DEGREE_GUARD_PREFIX}（{n} 次，Fast 模式上限 {MAX_DEGREE_FAST}）；\
              如确认需要继续，请先执行 /mode deep",
         ));
     }
@@ -829,6 +1005,92 @@ mod tests {
         assert_eq!(
             root_set(&sols, DisplayMode::MathIO),
             set(&["-2", "-1", "1", "2"])
+        );
+    }
+
+    /// 由 `(指数, 系数)` 生成升幂系数表（构造测试用多项式）
+    fn poly(terms: &[(usize, i64)]) -> Vec<Number> {
+        let n = terms.iter().map(|(e, _)| e + 1).max().unwrap();
+        let mut v = vec![Number::from_int(0); n];
+        for (e, c) in terms {
+            v[*e] = Number::from_int(*c);
+        }
+        v
+    }
+
+    /// 系数表 → 有理数表（幂替换只看指数，用它来构造输入）
+    fn ratios(ns: &[Number]) -> Vec<BigRational> {
+        ns.iter().map(|n| number_to_rational(n).unwrap()).collect()
+    }
+
+    #[test]
+    fn power_substitution_degree_detects_structure() {
+        // x⁴ - 5x² + 4 → g = 2；x^100 - 1 → g = 100；x⁵ - x - 1 → 无结构
+        assert_eq!(
+            power_substitution_degree(&ratios(&poly(&[(4, 1), (2, -5), (0, 4)]))),
+            Some(2)
+        );
+        assert_eq!(
+            power_substitution_degree(&ratios(&poly(&[(100, 1), (0, -1)]))),
+            Some(100)
+        );
+        assert_eq!(
+            power_substitution_degree(&ratios(&poly(&[(5, 1), (1, -1), (0, -1)]))),
+            None
+        );
+        // 只有常数项 ⇒ 没有可替换的指数
+        assert_eq!(power_substitution_degree(&ratios(&poly(&[(0, 7)]))), None);
+    }
+
+    #[test]
+    fn power_substitution_solves_high_degree_without_durand_kerner() {
+        // x^100 - 1：因式分解只提得出 `(x-1)(x+1)(x²+1)`，余下 96 次整块会落进 DK（实测约 1.8 s）；
+        // 幂替换把它变成 `y - 1 = 0` 再开 100 次方。
+        let sols = solve_poly_full(&poly(&[(100, 1), (0, -1)])).expect("应能求解");
+        assert_eq!(sols.len(), 100, "100 次方程应给 100 个根");
+        let labels = root_set(&sols, DisplayMode::MathIO);
+        // ±1 与 ±i 必须仍是**精确**根：幂替换不能让它们退化成近似值
+        for k in ["1", "-1", "0 + 1i", "0 - 1i"] {
+            assert!(labels.contains(k), "缺精确根 {k}: {labels:?}");
+        }
+        // 单位根：|z|² = 1
+        let prec = bigfloat::precision();
+        for s in &sols {
+            let (re, im) = match s {
+                PolySolution::Real(n) => (n.to_approx(), BigFloat::from_u64(0)),
+                PolySolution::Complex(re, im) => (re.to_approx(), im.to_approx()),
+            };
+            let m2 = BigFloat::add(
+                &BigFloat::mul(&re, &re, prec),
+                &BigFloat::mul(&im, &im, prec),
+                prec,
+            );
+            let diff = BigFloat::sub(&m2, &BigFloat::from_u64(1), prec);
+            assert!(
+                diff.magnitude_log10() < -30.0,
+                "根不在单位圆上: {}",
+                format_solution(s, DisplayMode::LineIO)
+            );
+        }
+    }
+
+    #[test]
+    fn power_substitution_keeps_original_multiplicity() {
+        // (x² - 1)² = x⁴ - 2x² + 1 ⇒ 幂替换后是 (y-1)² ⇒ 4 个根（±1 各重 2 次）
+        let sols = solve_poly_full(&poly(&[(4, 1), (2, -2), (0, 1)])).expect("应能求解");
+        assert_eq!(
+            root_set(&sols, DisplayMode::MathIO),
+            set(&["1", "1", "-1", "-1"])
+        );
+    }
+
+    #[test]
+    fn power_substitution_handles_root_at_zero() {
+        // x⁶ = 0 ⇒ 6 重根 0（降次后是 `y = 0`，再开 6 次方）
+        let sols = solve_poly_full(&poly(&[(6, 1)])).expect("应能求解");
+        assert_eq!(
+            root_set(&sols, DisplayMode::MathIO),
+            set(&["0", "0", "0", "0", "0", "0"])
         );
     }
 

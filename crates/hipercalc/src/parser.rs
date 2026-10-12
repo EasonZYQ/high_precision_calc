@@ -781,7 +781,8 @@ impl Parser {
                 }
                 if self.pos > start {
                     let word: String = self.input[start..self.pos].iter().collect();
-                    if let Some((_, factor, dim)) = find_unit(&word) {                        let mut fp = Parser::new(factor);
+                    if let Some((_, factor, dim)) = find_unit(&word) {
+                        let mut fp = Parser::new(factor);
                         let mut f = fp.parse_number()?;
                         let mut dim = dim;
                         // ★ `^n` 属于**单位**：`3 km^2` = 3×(1000 m)² = 3e6 m²（**不是** (3 km)²）。
@@ -882,7 +883,12 @@ impl Parser {
         // 比报错危险得多。这里直接拒绝。
         // 注意只在"小数点后确实跟着数字"时报错：`1...2` 那种"小数点后没数字"的情形留给下面
         // 原有的分支报"小数点后缺少数字"，两处文案各自最贴切。
-        if has_dot && self.peek() == Some('.') && self.input.get(self.pos + 1).is_some_and(|c| c.is_ascii_digit())
+        if has_dot
+            && self.peek() == Some('.')
+            && self
+                .input
+                .get(self.pos + 1)
+                .is_some_and(|c| c.is_ascii_digit())
         {
             return Err("一个数字里不能有两个小数点".to_string());
         }

@@ -450,11 +450,7 @@ fn const_rational(ev: &Evaluator, e: &Expr) -> Option<BigRational> {
 
 /// 尝试把表达式识别成"关于 `var` 的线性式" `a·var + b`，返回最简有理数 `(a, b)`。
 /// 只认"常数 + 变量"的加减与"常数 × 变量"的乘，**不认变量之间相乘**（那已不是线性）。
-fn detect_linear(
-    ev: &Evaluator,
-    e: &Expr,
-    var: char,
-) -> Option<(BigRational, BigRational)> {
+fn detect_linear(ev: &Evaluator, e: &Expr, var: char) -> Option<(BigRational, BigRational)> {
     let zero = BigRational::from_integer(BigInt::from(0));
     match e {
         Expr::Number(_) => Some((zero, const_rational(ev, e)?)),
@@ -580,10 +576,9 @@ pub fn try_exponential_equation(
     // 精确化：整数/简单分数的结果还原成精确形式，让显示与"手工解方程"一致
     // （`2^x=8` 必须仍然给 `x = 3`，而不是 `x ≈ 3.0000000000000000000`）
     let num_out = match float_to_exact_rational(&x) {
-        Some((p, q)) if q != 0 => Number::from_rational(BigRational::new(
-            BigInt::from(p),
-            BigInt::from(q),
-        )),
+        Some((p, q)) if q != 0 => {
+            Number::from_rational(BigRational::new(BigInt::from(p), BigInt::from(q)))
+        }
         _ => Number::Approx(x),
     };
     let mode = evaluator.display_mode;
@@ -591,7 +586,8 @@ pub fn try_exponential_equation(
 }
 
 /// 用多组初始猜测收集非多项式方程在区间内的所有实根（去重）
-pub fn collect_all_roots(evaluator: &Evaluator, expr: &Expr, var: char) -> Vec<Number> {    let mut guesses: Vec<BigFloat> = vec![BigFloat::from_u64(0)];
+pub fn collect_all_roots(evaluator: &Evaluator, expr: &Expr, var: char) -> Vec<Number> {
+    let mut guesses: Vec<BigFloat> = vec![BigFloat::from_u64(0)];
     for i in 1i64..=6 {
         guesses.push(BigFloat::from_i64(i));
         guesses.push(BigFloat::from_i64(-i));

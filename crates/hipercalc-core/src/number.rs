@@ -119,7 +119,10 @@ where
 /// 否则 `k^2`（k 由范围代入为 Approx）会退化成 `exp(2·ln k)`。
 fn approx_integer(n: &Number) -> Option<BigInt> {
     match n {
-        Number::Exact(e) => e.as_rational().filter(|r| r.is_integer()).map(|r| r.to_integer()),
+        Number::Exact(e) => e
+            .as_rational()
+            .filter(|r| r.is_integer())
+            .map(|r| r.to_integer()),
         Number::Approx(bf) => {
             let scale = BigInt::from(10).pow(bf.precision as u32);
             let (q, r) = bf.value.div_rem(&scale);
@@ -1703,15 +1706,21 @@ mod tests {
             matches!(half.pow(&Number::from_int(3)).unwrap(), Number::Exact(_)),
             "(1/2)^3 应保持精确"
         );
-        assert_eq!(half.pow(&Number::from_int(3)).unwrap().as_rational(),
-                   Some(BigRational::new(BigInt::from(1), BigInt::from(8))));
+        assert_eq!(
+            half.pow(&Number::from_int(3)).unwrap().as_rational(),
+            Some(BigRational::new(BigInt::from(1), BigInt::from(8)))
+        );
         // 3/2 的四次方 = 81/16（旧实现同样退化成 Approx）
-        assert_eq!(rat(3, 2).pow(&Number::from_int(4)).unwrap().as_rational(),
-                   Some(BigRational::new(BigInt::from(81), BigInt::from(16))));
+        assert_eq!(
+            rat(3, 2).pow(&Number::from_int(4)).unwrap().as_rational(),
+            Some(BigRational::new(BigInt::from(81), BigInt::from(16)))
+        );
         // 负指数走倒数，仍应精确：2^-3 = 1/8
         let two = Number::from_int(2);
-        assert_eq!(two.pow(&Number::from_int(-3)).unwrap().as_rational(),
-                   Some(BigRational::new(BigInt::from(1), BigInt::from(8))));
+        assert_eq!(
+            two.pow(&Number::from_int(-3)).unwrap().as_rational(),
+            Some(BigRational::new(BigInt::from(1), BigInt::from(8)))
+        );
     }
 
     /// 近似整数指数也要走整数快速幂（`k^2` 里的 k 由范围代入是 `Approx`）。
@@ -1722,7 +1731,10 @@ mod tests {
         let sq = k.pow(&Number::from_int(2)).unwrap();
         assert!(!sq.is_complex());
         // 7^2 = 49：转成精确有理数比较（不手工推算精度对齐）
-        assert_eq!(sq.to_approx().to_big_rational(), BigRational::from_integer(BigInt::from(49)));
+        assert_eq!(
+            sq.to_approx().to_big_rational(),
+            BigRational::from_integer(BigInt::from(49))
+        );
         // 立方与负数底数同理
         let cube = Number::Approx(BigFloat::from_u64(3))
             .pow(&Number::from_int(3))
@@ -1736,7 +1748,10 @@ mod tests {
     /// `approx_integer` 的判据：精确整数、precision 归零的近似整数都要认出来
     #[test]
     fn approx_integer_recognises_whole_values() {
-        assert_eq!(approx_integer(&Number::from_int(-5)), Some(BigInt::from(-5)));
+        assert_eq!(
+            approx_integer(&Number::from_int(-5)),
+            Some(BigInt::from(-5))
+        );
         assert_eq!(
             approx_integer(&Number::Approx(BigFloat::from_u64(20))),
             Some(BigInt::from(20))

@@ -386,7 +386,11 @@ fn concrete_values(ev: &Evaluator, data: &Data) -> Result<Vec<Number>, String> {
 /// 工作精度取运行期精度（原来是硬编码 40，改精度后判据会失真）。
 /// 实数性由 `eval_const` 保证，所以这里不会碰到复数/量纲值。
 fn cmp_numbers(a: &Number, b: &Number) -> std::cmp::Ordering {
-    let d = BigFloat::sub(&a.to_approx(), &b.to_approx(), hipercalc_core::bigfloat::precision());
+    let d = BigFloat::sub(
+        &a.to_approx(),
+        &b.to_approx(),
+        hipercalc_core::bigfloat::precision(),
+    );
     if d.value.is_negative() {
         std::cmp::Ordering::Less
     } else if d.value.is_zero() {

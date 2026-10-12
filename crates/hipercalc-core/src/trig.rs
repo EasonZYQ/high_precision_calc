@@ -315,7 +315,16 @@ fn sin_exact_pi_multiple(coeff: &BigRational) -> Option<Number> {
         return Some(Number::from_int(0));
     }
 
-    // 判断象限
+    // 判断象限。`m ∈ [0,2)` 是 **π 的倍数**（不是角度），所以 `sin(mπ)` 只在 `m ∈ (0,1)` 时为正：
+    // - `(0, 1/2]`：`ref = m`，直接取正；
+    // - `(1/2, 1]`：`ref = 1 - m`，仍为正；
+    // - `(1, 3/2]`：`ref = m - 1`，`sin((m-1)π) = -sin(mπ)` ⇒ 取负；
+    // - `(3/2, 2)`：`ref = 2 - m`，`sin((2-m)π) = -sin(mπ)` ⇒ **同样取负**。
+    //
+    // 旧实现最后多了一句 `sin_pos || (m > 3/2)`，把第四象限判成了正号
+    // ⇒ `sin(5π/3)` 给 `= sqrt(3)/2`（应为 `-sqrt(3)/2`）、`sin(7π/4)`、`sin(11π/6)` 一起错，
+    // 而 `cos(x) = sin(x + π/2)` 又把它传导到第三象限的 `cos(4π/3) = 1/2`。
+    // 度模式走的是 `deg_to_ref`（另一套，符号一直是对的），所以默认度模式下看不出来。
     let sin_pos = m <= one;
     let ref_m = if m <= half {
         m.clone()
@@ -326,8 +335,6 @@ fn sin_exact_pi_multiple(coeff: &BigRational) -> Option<Number> {
     } else {
         two.clone() - &m
     };
-
-    let sin_pos = sin_pos || (m > BigRational::new(BigInt::from(3), BigInt::from(2)));
 
     let base = base_sin_pi_multiple(&ref_m)?;
     if sin_pos {
@@ -600,5 +607,86 @@ fn is_exact_sqrt_ratio(num: &Number, rad: u64, den: u64) -> Option<()> {
             None
         }
         Number::Approx(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bigfloat::{self, BigFloat};
+
+    /// π 的有理倍
+    fn pi_times(p: i64, q: i64) -> Number {
+        Number::from_pi_times(BigRational::new(BigInt::from(p), BigInt::from(q)))
+    }
+
+    /// 四个象限的特殊角都要有正确**符号**。
+    ///
+    /// 这里守的是一个真实踩过的坑：`sin_exact_pi_multiple` 曾把 `m ∈ (3/2, 2)`（第四象限）
+    /// 判成正号 ⇒ `sin(5π/3)` 给 `= sqrt(3)/2`（应为 `-sqrt(3)/2`），`sin(7π/4)`、`sin(11π/6)`
+    /// 一起错，而 `cos(x) = sin(x + π/2)` 又把它传导到第三象限（`cos(4π/3)` 给 `1 / 2`）。
+    /// 度模式走的是另一套折角逻辑（`deg_to_ref`），符号一直是对的，而默认恰好就是度模式
+    /// ⇒ 这个错误只在弧度模式下看得见。
+    #[test]
+    fn radian_exact_angles_have_right_signs() {
+        // (p, q, sin 应为负, cos 应为负)
+        let cases = [
+            (1, 6, false, false), //  30°
+            (1, 4, false, false), //  45°
+            (1, 3, false, false), //  60°
+            (1, 2, false, false), //  90°
+            (2, 3, false, true),  // 120°
+            (3, 4, false, true),  // 135°
+            (5, 6, false, true),  // 150°
+            (1, 1, false, true),  // 180°
+            (7, 6, true, true),   // 210°
+            (5, 4, true, true),   // 225°
+            (4, 3, true, true),   // 240°
+            (3, 2, true, false),  // 270°
+            (5, 3, true, false),  // 300°
+            (7, 4, true, false),  // 315°
+            (11, 6, true, false), // 330°
+        ];
+        for (p, q, sin_neg, cos_neg) in cases {
+            let a = pi_times(p, q);
+            let s = sin_number(&a, AngleMode::Radian);
+            let c = cos_number(&a, AngleMode::Radian);
+            assert_eq!(s.is_negative(), sin_neg, "sin({p}π/{q}) = {s:?} 符号错");
+            assert_eq!(c.is_negative(), cos_neg, "cos({p}π/{q}) = {c:?} 符号错");
+            assert!(s.is_exact() && c.is_exact(), "{p}π/{q} 应走精确表");
+        }
+        // 轴上的零点
+        assert!(sin_number(&pi_times(0, 1), AngleMode::Radian).is_zero());
+        assert!(sin_number(&pi_times(1, 1), AngleMode::Radian).is_zero());
+        assert!(cos_number(&pi_times(1, 2), AngleMode::Radian).is_zero());
+        assert!(cos_number(&pi_times(3, 2), AngleMode::Radian).is_zero());
+    }
+
+    /// 同一个角度用「弧度」与「角度」两种写法必须给出同一个值（两张精确表交叉校验）。
+    #[test]
+    fn radian_and_degree_exact_tables_agree() {
+        for k in 0..24i64 {
+            let deg = Number::from_int(k * 15);
+            let rad = pi_times(k, 12);
+            for (name, a, b) in [
+                (
+                    "sin",
+                    sin_number(&deg, AngleMode::Degree),
+                    sin_number(&rad, AngleMode::Radian),
+                ),
+                (
+                    "cos",
+                    cos_number(&deg, AngleMode::Degree),
+                    cos_number(&rad, AngleMode::Radian),
+                ),
+            ] {
+                let diff = BigFloat::sub(&a.to_approx(), &b.to_approx(), bigfloat::precision());
+                assert!(
+                    diff.magnitude_log10() < -50.0,
+                    "{name}({0}°) 两种模式不一致: deg={a:?} rad={b:?}",
+                    k * 15
+                );
+            }
+        }
     }
 }

@@ -3030,7 +3030,8 @@ fn handle_equation(left: &parser::Expr, right: &parser::Expr, state: &mut AppSta
     // 这类方程（`e^x=2`、`2^x=8`、`3^(2x+1)=5`）在数值路径上要跑"几十个初值 × 上百轮牛顿"，
     // 每次迭代都重新算 exp/ln（实测 e^x=2 约 470 ms）；闭式解只需一次 ln 与一次除法。
     // 形状不认识或回代校验不过 ⇒ 原样落到下面的通用数值求根，能力不减。
-    if let Some((root, prefix)) = solve_aux::try_exponential_equation(&state.evaluator, &eq_expr, var)
+    if let Some((root, prefix)) =
+        solve_aux::try_exponential_equation(&state.evaluator, &eq_expr, var)
     {
         let sol = solver_poly::PolySolution::Real(root);
         return colorize_result(
