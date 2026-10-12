@@ -3045,6 +3045,13 @@ fn handle_equation(left: &parser::Expr, right: &parser::Expr, state: &mut AppSta
         );
     }
 
+    // 三角方程闭式快路：`sin/cos/tan(线性) = 特殊值` 直接用精确主值构造函数族并出通式，
+    // 省掉"约 50 个初值 × 最多 20 轮牛顿"的数值扫根。只在确实能给出通式时命中，
+    // 其余情况（形状不符 / 常数不是特殊角 / 周期不是 π 的有理倍）返回 None，往下走原路径。
+    if let Some(spec) = solve_aux::trig_closed_form(&state.evaluator, &eq_expr, var) {
+        return colorize_result(&spec, &state.colors);
+    }
+
     // 非多项式方程：收集所有实根；若构成周期序列则输出通式，否则列出全部根
     let roots = solve_aux::collect_all_roots(&state.evaluator, &eq_expr, var);
     if roots.is_empty() {

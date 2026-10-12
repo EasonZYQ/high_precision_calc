@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`hipercalc`：中文超高精度命令行计算器。Rust 双 crate workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc`。**含 200 项单元测试**（hipercalc 180 + core 20，其中 1 项 `perf_scan` 默认 ignore，另 1 项 doctest），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
+`hipercalc`：中文超高精度命令行计算器。Rust 双 crate workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc`。**含 208 项单元测试**（hipercalc 185 + core 22，其中 1 项 `perf_scan` 默认 ignore，另 1 项 doctest），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
 
 ## 硬性要求（用户指定）
 
@@ -49,16 +49,25 @@ crates/hipercalc/        parser / equation / primefac / solver_* / solver_ineq /
 ```powershell
 cargo build
 cargo run            # 交互式 REPL（rustyline）
-cargo test --workspace   # 200 项单元测试（hipercalc 180 + core 20，其中 1 项 perf_scan 默认 ignore）
+cargo test --workspace   # 208 项单元测试（hipercalc 185 + core 22，其中 1 项 perf_scan 默认 ignore）
 ```
 
 - **跑构建/测试必须计时**（硬性要求）：不要只贴 `test result: ok` —— 必须带上耗时。
   `cargo test` 结尾自带 `finished in X.XXs`（纯测试耗时），需要连编译一起看时用 `time cargo test`。
   多轮验证（反复跑测试、跑全语料扫描）要写清**总耗时**。
   原因：不看时间就发现不了"某次改动把求解拖慢了十倍"，也无法判断某个预算是真有必要的。
-- 已有 `#[cfg(test)]` 单元测试（**200 项**：hipercalc 180 + core 20，`cargo test --workspace` 全绿），
+- 已有 `#[cfg(test)]` 单元测试（**208 项**：hipercalc 185 + core 22 + 1 doctest，`cargo test --workspace` 全绿），
   其余验证靠管道喂输入人工核对结果：  
   `Write-Output "1+2*3", "x^2-4=0", "x+y=5,2x-y=1", "sin(pi/6)", "/exit" | cargo run`
+- **性能基准用 `change_logs/perf_py.py`**（`python change_logs/perf_py.py [轮数]`）：逐条 `-e` 计 best-of-N，
+  再减掉用 `-e 1+1` 量出的**进程启动底噪**（约 35 ms——不扣掉就会把 35 ms 当成"计算时间"去优化）。
+  两条踩过的坑：① 旧的 `perf_precise.ps1` 依赖 `-f 脚本文件`，而**本机沙箱拒绝被调起进程读文件**
+  （`读取文件失败: 没有访问权限`）⇒ 所有用例都退化成"启动 + 报错"的 35 ms 假数据；
+  ② **对拍改动前后**要另存一份二进制（改前那份用 `git checkout HEAD -- <文件>` 重建），
+  用 `change_logs/ab_output_diff.py` 逐行比输出、并**过滤掉 `用时：` 行与横幅**（它们本来就该变）。
+- 本项目源码在 `opt-level=0`（`[profile.dev.package."*"]` 只优化第三方依赖）：实测把它提到 3
+  **只快 1.4~1.6×**（大数运算都在 num-bigint 里，本来就是 3；`primefac` 例外 3.8×）
+  ⇒ 想提速别先折腾构建参数，先找算法级的重复劳动。
 - 新增了**非交互入口**：`-e "表达式"`（裸结果、无耗时行）、`-f 脚本文件`、`--stdin`、
   `--lang <代码>`（强制语言，便于三语断言）、`-q`（不输出耗时）。退出码 0/1/2，参数解析在 `parse_args`（带单元测试）。
   **管道默认仍是 REPL**（不带参数时横幅/提示符不变），脚本化断言请用显式参数。
@@ -294,6 +303,30 @@ cargo test --workspace   # 200 项单元测试（hipercalc 180 + core 20，其�
 - `solve_aux::result_prefix` 对 `Number::Approx` **一律**给 `≈`，哪怕数值恰好是 0。
   所以"数学上是精确 0"的结果必须返回 `Number::from_int(0)`，否则会显示成 `≈ 0`
   （`arcsinh(0)`/`arccosh(1)`/`arctanh(0)` 三者都靠显式零短路才给 `= 0`；新增这类函数时别忘了）。
+- **幂替换优先于因式分解**（`solver_poly::solve_poly_full`）：所有非零项指数的 gcd `g > 1` 时，
+  先令 `y = x^g` 降次、递归求解、再把每个根开 `g` 次方还原（`x^100-1 → y-1`、`x^4-5x²+4 → y²-5y+4`）。
+  必须在分解**之前**：分解器对这种结构只能提出几个平凡因子，剩下的整块不可约因子会整块砸进
+  Durand-Kerner（`x^100-1=0` 实测 1.9 s → 44 ms 就是这条的收益）。三条不能动的地方：
+  1. **次数护栏与 DK 同口径**（`MAX_DEGREE_FAST`，Deep 放开）：替换后计算量小，但**根的数量仍是原次数**，
+     不设限会让 `x^5000-1` 从"明确拒绝"变成刷出 5000 个根；
+  2. **模**必须走 `Number` 算术（`|(-1±i√3)/2| = 1`、`nth_root(4,2) = 2` 才保持精确），
+     **角度**在 `y` 为实数时是精确的 π 有理倍（`2kπ/g`、`(2k+1)π/g`）；
+  3. **整数倍 π 的 cos/sin 要自己给精确值**：rad 模式的精确表只认 `PiPow` 项，π 的 0 倍会被
+     规范化成有理数 0 ⇒ `cos(0)` 会退化成 `≈ 1`，把本该精确的 `x = 1` 弄成 `x ≈ 1`。
+     同理"非实数的 y"用数值辐角即可（实数的 g 次方必为实数 ⇒ 那些根必然不实，不必再判虚部）。
+- **三角方程闭式快路**（`solve_aux::trig_closed_form`，在 `handle_equation` 的数值扫根**之前**）：
+  形状 `A·sin(u)+B·cos(u)+C·tan(u)+m`（`u = a·x+b`、三角节点同相）经 `affine_in_trig`/`affine_in_var` 抽出，
+  归约成 `R·F(v) = c` 后用 **`try_exact_arcsin/arccos/arctan`** 取精确主值，把 ±3π 窗口内的家族成员
+  （精确值）交给**既有的** `format_periodic_roots` 出通式 —— **不要另写一套通式渲染**，
+  格式同源才不会两套慢慢漂移。它**只在确实能出通式时返回 `Some`**，其余（形状不符 / 常数不是特殊角 /
+  周期不是 π 的有理倍 / 窗口内根不足 4 个）一律 `None` 走原数值路径 ⇒ 那些用例的输出逐字不变。
+  `tan(x)=1` 1.9 s → 96 ms、`sin(x)=0.5` 0.6 s → 77 ms 是这条的收益。
+- **弧度模式特殊角的象限判定极易写错**（`trig.rs::sin_exact_pi_multiple`）：`m ∈ [0,2)` 是 π 的倍数，
+  `sin(mπ)` **只在 `m ∈ (0,1)` 为正**，四个分支 `(0,1/2] (1/2,1] (1,3/2] (3/2,2)` 里后两个都要取负。
+  历史包袱：末尾曾多一句 `|| (m > 3/2)`，把第四象限判成正号 ⇒ `sin(5π/3)` 给 `+√3/2`、
+  `cos(4π/3)` 给 `+1/2`（`cos` 走 `sin(x+π/2)` 被连累）。**度模式是另一套折角逻辑（`deg_to_ref`）一直是对的**，
+  而默认恰好是度模式 ⇒ 只在 rad 模式暴露。两张表各有一个测试守着
+  （`radian_exact_angles_have_right_signs`、`radian_and_degree_exact_tables_agree`），改这里必须跑它们。
 
 ### 复数（complex.rs + Number::Complex）
 

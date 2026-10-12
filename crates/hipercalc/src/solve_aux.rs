@@ -2,11 +2,11 @@ use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::Signed;
 
-use crate::parser::{DisplayMode, Evaluator, Expr};
+use crate::parser::{BinOp, DisplayMode, Evaluator, Expr, UnaryOp};
 use crate::solver_poly;
 use hipercalc_core::bigfloat::{self, BigFloat};
 use hipercalc_core::number::Number;
-use hipercalc_core::trig::AngleMode;
+use hipercalc_core::trig::{self, AngleMode};
 
 /// 判定结果前缀：有限小数/精确符号表达 → "="；无限小数（近似/循环小数/无理）→ "≈"
 pub fn result_prefix(n: &Number, mode: DisplayMode) -> &'static str {
@@ -585,6 +585,370 @@ pub fn try_exponential_equation(
     Some((num_out.clone(), result_prefix(&num_out, mode)))
 }
 
+/* ---------------- 三角方程闭式快路 ---------------- */
+
+/// `e` 是否含自变量 `var`
+fn expr_has_var(e: &Expr, var: char) -> bool {
+    match e {
+        Expr::Number(_) => false,
+        Expr::Variable(n) => n.starts_with(var),
+        Expr::Binary(a, _, b) | Expr::Pow(a, b) => expr_has_var(a, var) || expr_has_var(b, var),
+        Expr::Unary(_, a) | Expr::Sd(a) | Expr::Factor(a) => expr_has_var(a, var),
+        Expr::Function(_, args) => args.iter().any(|a| expr_has_var(a, var)),
+        Expr::Equation(l, r) => expr_has_var(l, var) || expr_has_var(r, var),
+        Expr::System(items) => items.iter().any(|e| expr_has_var(e, var)),
+    }
+}
+
+/// 不含自变量的子表达式求值（`pi/2`、`sqrt(2)/2` 这类常数都要能取到精确值）
+fn const_value(ev: &Evaluator, e: &Expr) -> Option<Number> {
+    ev.evaluate_with_vars(e, &[]).ok()
+}
+
+/// 两个子表达式是否**结构相同**。
+///
+/// `Expr` 与 `Number` 都没有实现 `PartialEq`（`Number` 把精确/近似混在一起，做相等判断很容易出错，
+/// 见 `number.rs` 的说明），这里用 `Debug` 形式比较。只在"`sin(u)` 与 `cos(u)` 是否同相"这一处调用，
+/// AST 很小、次数极少，开销可以忽略。
+fn same_expr(a: &Expr, b: &Expr) -> bool {
+    format!("{a:?}") == format!("{b:?}")
+}
+
+/// 三角线性形：`A·sin(u) + B·cos(u) + C·tan(u) + m`（`u` 必须同相）
+struct TrigLinear {
+    sin: Number,
+    cos: Number,
+    tan: Number,
+    m: Number,
+    /// 三者的公共内层参数；`None` 表示整式里没有三角节点
+    arg: Option<Expr>,
+}
+
+impl TrigLinear {
+    fn zero() -> Self {
+        TrigLinear {
+            sin: Number::from_int(0),
+            cos: Number::from_int(0),
+            tan: Number::from_int(0),
+            m: Number::from_int(0),
+            arg: None,
+        }
+    }
+
+    /// 只有常数项
+    fn constant(v: Number) -> Self {
+        let mut t = Self::zero();
+        t.m = v;
+        t
+    }
+
+    fn is_pure_constant(&self) -> bool {
+        self.sin.is_zero() && self.cos.is_zero() && self.tan.is_zero()
+    }
+
+    /// 不加/相减两个线性形
+    fn combine(a: &Self, b: &Self, sub: bool) -> Self {
+        let f = |x: &Number, y: &Number| if sub { x.sub(y) } else { x.add(y) };
+        // 两个三角节点的内层参数必须一致：`sin(x) + cos(2x)` 不是同相，
+        // 这种形状把 `arg` 置空，调用方据此放弃（走数值路径）。
+        let arg = match (&a.arg, &b.arg) {
+            (Some(x), Some(y)) if !same_expr(x, y) => None,
+            (Some(x), _) => Some(x.clone()),
+            (None, y) => y.clone(),
+        };
+        TrigLinear {
+            sin: f(&a.sin, &b.sin),
+            cos: f(&a.cos, &b.cos),
+            tan: f(&a.tan, &b.tan),
+            m: f(&a.m, &b.m),
+            arg,
+        }
+    }
+
+    /// 整体乘以常数 `k`
+    fn scaled(&self, k: &Number) -> Self {
+        TrigLinear {
+            sin: self.sin.mul(k),
+            cos: self.cos.mul(k),
+            tan: self.tan.mul(k),
+            m: self.m.mul(k),
+            arg: self.arg.clone(),
+        }
+    }
+}
+
+/// 把 `e` 拆成 `A·sin(u) + B·cos(u) + C·tan(u) + m`：系数是与 `var` 无关的常数，
+/// 三角节点的内层参数必须同相。形状不符（`sin²`、`x·sin(x)`、`sin(x)·cos(2x)`…）返回 `None`。
+fn affine_in_trig(ev: &Evaluator, e: &Expr, var: char) -> Option<TrigLinear> {
+    fn walk(e: &Expr, var: char, ev: &Evaluator) -> Option<TrigLinear> {
+        match e {
+            Expr::Number(n) => Some(TrigLinear::constant(n.clone())),
+            Expr::Function(name, args)
+                if args.len() == 1
+                    && matches!(name.as_str(), "sin" | "cos" | "tan")
+                    && expr_has_var(&args[0], var) =>
+            {
+                let mut t = TrigLinear::zero();
+                t.arg = Some(args[0].clone());
+                let one = Number::from_int(1);
+                match name.as_str() {
+                    "sin" => t.sin = one,
+                    "cos" => t.cos = one,
+                    _ => t.tan = one,
+                }
+                Some(t)
+            }
+            Expr::Unary(UnaryOp::Neg, a) => {
+                let t = walk(a, var, ev)?;
+                Some(t.scaled(&Number::from_int(-1)))
+            }
+            Expr::Unary(UnaryOp::Pos, a) => walk(a, var, ev),
+            Expr::Binary(a, op @ (BinOp::Add | BinOp::Sub), b) => {
+                let ta = walk(a, var, ev)?;
+                let tb = walk(b, var, ev)?;
+                Some(TrigLinear::combine(&ta, &tb, matches!(op, BinOp::Sub)))
+            }
+            Expr::Binary(a, BinOp::Mul, b) => {
+                let ta = walk(a, var, ev)?;
+                let tb = walk(b, var, ev)?;
+                // 只允许"常数 × 线性项"；两边都含三角节点（`sin·cos`）一律放弃
+                if ta.is_pure_constant() {
+                    Some(tb.scaled(&ta.m))
+                } else if tb.is_pure_constant() {
+                    Some(ta.scaled(&tb.m))
+                } else {
+                    None
+                }
+            }
+            Expr::Binary(a, BinOp::Div, b) => {
+                let ta = walk(a, var, ev)?;
+                let tb = walk(b, var, ev)?;
+                // 只允许"线性项 ÷ 常数"（`1/sin(x)` 这类不算）
+                if tb.is_pure_constant() && !tb.m.is_zero() {
+                    Some(ta.scaled(&Number::from_int(1).div(&tb.m)))
+                } else {
+                    None
+                }
+            }
+            other => {
+                if expr_has_var(other, var) {
+                    None
+                } else {
+                    Some(TrigLinear::constant(const_value(ev, other)?))
+                }
+            }
+        }
+    }
+    walk(e, var, ev)
+}
+
+/// 把 `e` 拆成 `a·var + b`（`a`、`b` 为常数）；不是线性就 `None`
+fn affine_in_var(ev: &Evaluator, e: &Expr, var: char) -> Option<(Number, Number)> {
+    match e {
+        Expr::Number(n) => Some((Number::from_int(0), n.clone())),
+        Expr::Variable(n) if n.starts_with(var) => Some((Number::from_int(1), Number::from_int(0))),
+        Expr::Unary(UnaryOp::Neg, a) => {
+            let (x, y) = affine_in_var(ev, a, var)?;
+            Some((x.neg(), y.neg()))
+        }
+        Expr::Unary(UnaryOp::Pos, a) => affine_in_var(ev, a, var),
+        Expr::Binary(a, op @ (BinOp::Add | BinOp::Sub), b) => {
+            let (x1, y1) = affine_in_var(ev, a, var)?;
+            let (x2, y2) = affine_in_var(ev, b, var)?;
+            if matches!(op, BinOp::Add) {
+                Some((x1.add(&x2), y1.add(&y2)))
+            } else {
+                Some((x1.sub(&x2), y1.sub(&y2)))
+            }
+        }
+        Expr::Binary(a, BinOp::Mul, b) => {
+            let (x1, y1) = affine_in_var(ev, a, var)?;
+            let (x2, y2) = affine_in_var(ev, b, var)?;
+            if x1.is_zero() {
+                Some((y1.mul(&x2), y1.mul(&y2)))
+            } else if x2.is_zero() {
+                Some((y2.mul(&x1), y2.mul(&y1)))
+            } else {
+                None
+            }
+        }
+        Expr::Binary(a, BinOp::Div, b) => {
+            let (x1, y1) = affine_in_var(ev, a, var)?;
+            let (x2, y2) = affine_in_var(ev, b, var)?;
+            if x2.is_zero() && !y2.is_zero() {
+                Some((x1.div(&y2), y1.div(&y2)))
+            } else {
+                None
+            }
+        }
+        other => {
+            if expr_has_var(other, var) {
+                None
+            } else {
+                Some((Number::from_int(0), const_value(ev, other)?))
+            }
+        }
+    }
+}
+
+/// 用户单位 → 弧度（度模式下 `b` 是"度数"，要折成弧度才能与反三角的主值相加）
+fn unit_to_radians(v: &Number, mode: AngleMode) -> Number {
+    match mode {
+        AngleMode::Radian => v.clone(),
+        AngleMode::Degree => {
+            let pi_over_180 = BigRational::new(BigInt::from(1), BigInt::from(180));
+            v.mul(&Number::from_pi_times(pi_over_180))
+        }
+    }
+}
+
+/// 弧度 → 用户单位（度模式下把精确 `Pi(coeff)` 精确折成 `coeff·180`）
+fn radians_to_unit(v: &Number, mode: AngleMode) -> Number {
+    match mode {
+        AngleMode::Radian => v.clone(),
+        AngleMode::Degree => crate::parser::radians_to_degrees(v.clone()),
+    }
+}
+
+/// `A·sin(u) + B·cos(u) = √(A²+B²)·sin(u + φ)` 里的相位 `φ`（弧度、精确）。
+///
+/// `φ = atan2(B, A)`，而 `trig::try_exact_arctan` 只覆盖 `(−π/2, π/2)` ⇒ `A < 0` 时
+/// 按 `B` 的符号平移 `±π` 补回第二/三象限；比值不是特殊角（`try_exact_arctan` 给 `None`）就放弃。
+fn exact_phase(a: &Number, b: &Number) -> Option<Number> {
+    let pi = Number::from_pi_times(BigRational::from_integer(BigInt::from(1)));
+    let base = trig::try_exact_arctan(&b.div(a))?;
+    if !a.is_negative() {
+        return Some(base);
+    }
+    Some(if b.is_negative() {
+        base.sub(&pi)
+    } else {
+        base.add(&pi)
+    })
+}
+
+/// `F(u) = c` 的主值（弧度）与周期：返回若干 `(主值, 周期)`；常数不是特殊角返回 `None`
+fn principal_angles(fname: &str, c: &Number) -> Option<Vec<(Number, Number)>> {
+    let pi = || Number::from_pi_times(BigRational::from_integer(BigInt::from(1)));
+    let two_pi = || Number::from_pi_times(BigRational::from_integer(BigInt::from(2)));
+    match fname {
+        // sin(u) = c ⇒ u = α + 2kπ 或 π − α + 2kπ
+        "sin" => {
+            let a = trig::try_exact_arcsin(c)?;
+            let b = pi().sub(&a);
+            Some(vec![(a, two_pi()), (b, two_pi())])
+        }
+        // cos(u) = c ⇒ u = ±α + 2kπ
+        "cos" => {
+            let a = trig::try_exact_arccos(c)?;
+            let b = a.neg();
+            Some(vec![(a, two_pi()), (b, two_pi())])
+        }
+        // tan(u) = c ⇒ u = α + kπ
+        "tan" => Some(vec![(trig::try_exact_arctan(c)?, pi())]),
+        _ => None,
+    }
+}
+
+/// 去掉数值上完全相同的根（同一族被两个主值各生成一遍的情况：`cos(x) = ±1`）
+fn dedup_exact(roots: &mut Vec<Number>) {
+    let mut out: Vec<Number> = Vec::with_capacity(roots.len());
+    for r in roots.drain(..) {
+        if !out.iter().any(|x| x.sub(&r).is_zero()) {
+            out.push(r);
+        }
+    }
+    *roots = out;
+}
+
+/// 三角方程闭式快路：`k·F(a·x + b) + m = 0`（`F ∈ {sin, cos, tan}`）。
+///
+/// **为什么值得做**：这类方程现在要走"约 50 个初值 × 最多 20 轮牛顿"的数值扫根，
+/// 只为了**认出它是周期方程** —— 根全部用 80 位精度算出来，最后却只输出一行通式。
+/// 实测（本机、度模式）：`tan(x)=1` 1869 ms、`sin(x)=1` 1533 ms、`sin(x)=0.5` 438 ms。
+///
+/// **做法**：用**精确反三角表**直接给出主值（`1/2 → π/6`、`1 → π/2`…），把各家族在 ±3π
+/// 窗口内的成员（都是精确值）全部构造出来，再交给既有的 `format_periodic_roots` 出通式 ——
+/// 渲染与数值路径**同源**，不必另写一套格式，也就不会出现"两套格式慢慢漂移"。
+///
+/// 下面三种情况一律返回 `None`，由调用方照旧走数值路径（那些情况的输出因此**逐字不变**）：
+/// 形状不匹配、常数不是特殊角（`cos(x)=0.3`）、通式判不出来（周期不是 π 的有理倍，如 `sin(pi*x)=0`）。
+pub fn trig_closed_form(ev: &Evaluator, eq_expr: &Expr, var: char) -> Option<String> {
+    let lin = affine_in_trig(ev, eq_expr, var)?;
+    if lin.is_pure_constant() {
+        return None;
+    }
+    let u = lin.arg.clone()?;
+    let (a, b) = affine_in_var(ev, &u, var)?;
+    if a.is_zero() {
+        return None;
+    }
+    // 归约成 `R·F(v) = c`（`v = u + φ`）：
+    // - 只有 sin / 只有 cos ⇒ R 就是那个系数、φ = 0；
+    // - `A·sin + B·cos` ⇒ `√(A²+B²)·sin(u + φ)`（φ 走精确反三角，非特殊角就放弃）；
+    // - 只有 tan ⇒ `tan(u) = c`；`sin + tan` 这类混合形状直接放弃。
+    let (fname, c, phase) = if !lin.tan.is_zero() {
+        if !lin.sin.is_zero() || !lin.cos.is_zero() {
+            return None;
+        }
+        ("tan", lin.m.neg().div(&lin.tan), Number::from_int(0))
+    } else if lin.cos.is_zero() {
+        ("sin", lin.m.neg().div(&lin.sin), Number::from_int(0))
+    } else if lin.sin.is_zero() {
+        ("cos", lin.m.neg().div(&lin.cos), Number::from_int(0))
+    } else {
+        let r = lin.sin.mul(&lin.sin).add(&lin.cos.mul(&lin.cos)).sqrt();
+        if r.is_zero() {
+            return None;
+        }
+        ("sin", lin.m.neg().div(&r), exact_phase(&lin.sin, &lin.cos)?)
+    };
+    let families = principal_angles(fname, &c)?;
+
+    let angle_mode = ev.angle_mode;
+    let prec = bigfloat::precision();
+    let window = BigFloat::mul(&BigFloat::pi(prec), &BigFloat::from_u64(3), prec);
+    let b_rad = unit_to_radians(&b, angle_mode);
+
+    let a_f = bf_to_f64(&a.to_approx());
+    let b_f = bf_to_f64(&b_rad.to_approx());
+    if a_f == 0.0 || !a_f.is_finite() || !b_f.is_finite() {
+        return None;
+    }
+
+    // 窗口条件 |x| ≤ 3π 等价于 u ∈ [b − 3π|a|, b + 3π|a|] ⇒ 直接算出 j 的范围，
+    // 不必盲目地多生成一堆再筛（f64 只用来定边界，取整后再 ±1 留余量，最终仍按精确值筛）。
+    let span = 3.0 * std::f64::consts::PI * a_f.abs();
+    let mut roots: Vec<Number> = Vec::new();
+    for (u0, period) in &families {
+        let u0_f = bf_to_f64(&u0.to_approx());
+        let p_f = bf_to_f64(&period.to_approx());
+        if !p_f.is_finite() || p_f <= 0.0 || !u0_f.is_finite() {
+            return None;
+        }
+        let j_min = ((b_f - span - u0_f) / p_f).floor() as i64 - 1;
+        let j_max = ((b_f + span - u0_f) / p_f).ceil() as i64 + 1;
+        // 周期太密（`sin(1000x)=0.5`）⇒ 窗口里塞得下几千个根，交给数值路径去处理
+        if j_max - j_min > 512 {
+            return None;
+        }
+        for j in j_min..=j_max {
+            // v = u + φ ⇒ u = v − φ
+            let uu = u0.sub(&phase).add(&period.mul(&Number::from_int(j)));
+            let x_rad = uu.sub(&b_rad).div(&a);
+            if bf_abs(x_rad.to_approx()).value.abs() <= window.value.abs() {
+                roots.push(radians_to_unit(&x_rad, angle_mode));
+            }
+        }
+    }
+    // 两个主值可能是同一族（`sin(x)=1` 的 α 与 π−α 相等、`cos(x)=±1`）⇒ 先精确去重
+    dedup_exact(&mut roots);
+    if roots.len() < 4 {
+        return None;
+    }
+    format_periodic_roots(&roots, var, angle_mode)
+}
+
 /// 用多组初始猜测收集非多项式方程在区间内的所有实根（去重）
 pub fn collect_all_roots(evaluator: &Evaluator, expr: &Expr, var: char) -> Vec<Number> {
     let mut guesses: Vec<BigFloat> = vec![BigFloat::from_u64(0)];
@@ -728,6 +1092,70 @@ mod tests {
         let expr = eq_expr(input);
         let roots = collect_all_roots(&ev, &expr, 'x');
         format_periodic_roots(&roots, 'x', angle_mode)
+    }
+
+    /// 闭式快路（绕开数值扫根）的结果
+    fn closed(input: &str, angle_mode: AngleMode) -> Option<String> {
+        let mut ev = Evaluator::new();
+        ev.angle_mode = angle_mode;
+        trig_closed_form(&ev, &eq_expr(input), 'x')
+    }
+
+    #[test]
+    fn closed_form_covers_special_angle_equations() {
+        for (input, want) in [
+            ("sin(x)=0.5", "x = π/6 + k·2π  或  5π/6 + k·2π，k 为整数"),
+            ("cos(x)=0.5", "x = π/3 + k·2π  或  5π/3 + k·2π，k 为整数"),
+            ("sin(x)=0", "x = k·π，k 为整数"),
+            ("cos(x)=0", "x = π/2 + k·π，k 为整数"),
+            ("tan(x)=1", "x = π/4 + k·π，k 为整数"),
+            ("tan(x)=sqrt(3)", "x = π/3 + k·π，k 为整数"),
+            ("sin(2*x)=0.5", "x = π/12 + k·π  或  5π/12 + k·π，k 为整数"),
+            ("2*sin(x)=1", "x = π/6 + k·2π  或  5π/6 + k·2π，k 为整数"),
+            ("sin(x)=-1/2", "x = 7π/6 + k·2π  或  11π/6 + k·2π，k 为整数"),
+            ("cos(x)=-1", "x = π + k·2π，k 为整数"),
+            // `A·sin(u) + B·cos(u)` 走"合成一个相位"的路
+            ("sin(x)+cos(x)=1", "x = k·2π  或  π/2 + k·2π，k 为整数"),
+            ("sin(x)+cos(x)=0", "x = 3π/4 + k·π，k 为整数"),
+            ("sin(x)=cos(x)", "x = π/4 + k·π，k 为整数"),
+        ] {
+            assert_eq!(
+                closed(input, AngleMode::Radian).as_deref(),
+                Some(want),
+                "{input}"
+            );
+        }
+        // 度模式：标签换成度数，通式必须一致
+        assert_eq!(
+            closed("sin(x)=0.5", AngleMode::Degree).as_deref(),
+            Some("x = 30 + k·360  或  150 + k·360，k 为整数")
+        );
+        assert_eq!(
+            closed("sin(x)+cos(x)=1", AngleMode::Degree).as_deref(),
+            Some("x = k·360  或  90 + k·360，k 为整数")
+        );
+    }
+
+    #[test]
+    fn closed_form_declines_shapes_it_cannot_promise() {
+        // 这些一律返回 None ⇒ 走数值扫根，输出与加快路之前逐字相同
+        for input in [
+            "cos(x)=0.3",        // 常数不是特殊角
+            "sin(x)^2=1/4",      // 平方不是线性形
+            "sin(pi*x)=0",       // 周期不是 π 的有理倍，通式判不出来
+            "sin(x)+cos(x)=3",   // |c| > √(A²+B²)，无实根
+            "sin(x)+cos(2*x)=1", // 两个三角节点不同相
+            "x*sin(x)=1",        // 系数含自变量
+            "1/sin(x)=2",        // 三角在分母
+            "sin(x)+tan(x)=1",   // sin 与 tan 混合
+            "ln(x)=1",           // 根本不是三角方程
+            "e^x=2",
+        ] {
+            assert!(
+                closed(input, AngleMode::Radian).is_none(),
+                "{input} 不该走闭式快路"
+            );
+        }
     }
 
     #[test]
