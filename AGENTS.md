@@ -48,7 +48,7 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）—— 现状是环境自检
 ## GUI（crates/hipercalc-gui，Iced）
 
 - **为什么单开一个包**：二进制名 `hipercalc` 已被 CI 冒烟与 release 产物占用，GUI 不能再产一个同名二进制；
-  而且 GUI 的依赖树（iced → wgpu / naga / winit，**354 个包**）比命令行重得多，
+  而且 GUI 的依赖树（iced → wgpu / naga / winit，**新增 354 个包、合计 399**）比命令行重得多，
   分开才能让命令行保持"零额外依赖、秒级构建"。
 - **版本以 crates.io 稳定版为准**：`iced = "0.14"`（MSRV 1.88，本机 1.97）。
   ⚠️ **`docs.iced.rs` 上跟的是 master（0.15.0-dev）**，与 0.14 的 API 有出入

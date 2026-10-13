@@ -33,8 +33,8 @@ cargo run -p hipercalc-gui     # 开一个窗口，显示 hipercalc-core 现场�
 cargo build -p hipercalc-gui   # 只编译
 ```
 
-> 首次编译要拉取并编译 **354 个**依赖（wgpu / naga / winit …），耗时较长；
-> 之后增量编译就快了。仓库根 `Cargo.toml` 的 `[profile.dev.package."*"] opt-level = 3`
+> 首次编译要拉取并编译 **354 个新依赖**（wgpu / naga / winit …；整个 workspace 的包数从 44 涨到 399），
+> 耗时较长（实测 5m34s）；之后增量编译就快了。仓库根 `Cargo.toml` 的 `[profile.dev.package."*"] opt-level = 3`
 > 对本 crate 同样生效——第三方依赖在 debug 下也带优化，渲染才不会慢得离谱。
 
 ## Iced 核心概念速查（0.14）
