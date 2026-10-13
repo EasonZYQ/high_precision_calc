@@ -1,5 +1,10 @@
 [workspace]
-members = ["crates/hipercalc-core", "crates/hipercalc"]
+members = ["crates/hipercalc-core", "crates/hipercalc", "crates/hipercalc-gui"]
+# `default-members`：裸 `cargo build` / `cargo test`（不带 -p / --workspace）只构建**出货的两个 crate**。
+# 必要性：GUI 把 iced 拉进来后有 354 个包、首次编译约 5.5 分钟，而命令行要保持"秒级构建"；
+# 不加这一行，CI 的 `cargo build` / `cargo test` / 6 目标交叉编译都会连带把 GUI 编一遍。
+# 要构建 GUI 请显式写 `-p hipercalc-gui`（或其目录下 `cargo build`）。
+default-members = ["crates/hipercalc-core", "crates/hipercalc"]
 # 虚拟清单没有 edition；不显式写会回退 resolver=1 并告警
 # （edition 2024 隐含 resolver 3）
 resolver = "3"
@@ -11,6 +16,9 @@ num-traits = "0.2"
 num-integer = "0.1"
 colored = "2"
 rustyline = "14"
+# GUI 框架（仅 hipercalc-gui 使用）：Elm 架构（State/Message/View/Update）、声明式 widget。
+# 0.14 是当前稳定版（需要 rustc ≥ 1.88）。
+iced = "0.14"
 
 # debug 构建下仅对第三方依赖开启优化：
 # 本项目源码保持 opt-level 0（断点/变量查看不受影响），但 num-bigint / num-rational

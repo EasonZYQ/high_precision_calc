@@ -12,7 +12,7 @@
 
 [简体中文](README.md) · **English**
 
-An **ultra-precision command-line calculator** (a two-crate Rust workspace: `hipercalc` plus the reusable numeric library `hipercalc-core`): 80 decimal digits of internal precision,
+An **ultra-precision command-line calculator** (a Rust workspace: the `hipercalc` command line plus the reusable numeric library `hipercalc-core`; the graphical front-end `hipercalc-gui` is **work in progress**): 80 decimal digits of internal precision,
 arbitrary-precision decimals plus exact symbolic arithmetic, equation / system / inequality solving, polynomial factorization,
 function fitting, triangle solving, prime factorization, matrices and linear algebra, statistics, number bases and bitwise
 ops, dimensional quantities with units, special functions (`gamma`/`erf`/`zeta`) and physical constants — and **higher mathematics** (derivative `diff`,
@@ -74,7 +74,8 @@ circumradius = 2.5, inradius = 1
 ```text
 crates/
 ├── hipercalc-core/   numeric core (arbitrary-precision floats / exact numbers / complex / exact trig) — publishable on its own
-└── hipercalc/        parser, solvers, higher mathematics, trilingual UI and the REPL (produces the hipercalc binary)
+├── hipercalc/        parser, solvers, higher mathematics, trilingual UI and the REPL (produces the hipercalc binary)
+└── hipercalc-gui/    graphical front-end (Iced) — **work in progress**, currently just a toolchain smoke test; see its README
 ```
 
 ## Quick start

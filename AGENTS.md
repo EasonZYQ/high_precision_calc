@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`hipercalc`：中文超高精度命令行计算器。Rust 双 crate workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc`。**含 208 项单元测试**（hipercalc 185 + core 22，其中 1 项 `perf_scan` 默认 ignore，另 1 项 doctest），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
+`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**开发中，目前只有环境自检骨架**）。**含 208 项单元测试**（hipercalc 185 + core 22，其中 1 项 `perf_scan` 默认 ignore，另 1 项 doctest），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
 
 ## 硬性要求（用户指定）
 
@@ -31,32 +31,60 @@
      再决定做与不做；估算要基于读到的代码，不基于印象（"146 处引用"实际只需改 21 处穷尽匹配，
      反之 core 的错误会挡住 app 的错误，工作量必须分轮估）。
 
-## 仓库结构（两 crate workspace）
+## 仓库结构（三 crate workspace）
 
 ```text
 crates/hipercalc-core/   数值底座：bigfloat / bigint_ext / number / complex / matrix / quantity / trig / display / calc_mode / cancel / settings
 crates/hipercalc/        parser / equation / primefac / solver_* / solver_ineq / solve_aux / stats / calculus / i18n / language / state / lib.rs + main.rs
+crates/hipercalc-gui/    图形界面（Iced 0.14）—— 现状是环境自检骨架，正式界面未开工；约定见下节
 ```
 
-- **依赖方向严格单向**：`hipercalc-core ← hipercalc`。core 不依赖 colored / rustyline，也不引用任何上层模块。
+- **依赖方向严格单向**：`hipercalc-core ← hipercalc ← hipercalc-gui`。core 不依赖 colored / rustyline，
+  也不引用任何上层模块；GUI 同样只往下依赖，不许往数值层塞界面逻辑。
 - 为什么不拆更多：`parser ↔ calculus`、`parser ↔ solver_fit`、`parser ↔ solver_triangle` 三处**真实双向依赖**，
   拆成不同 crate 会直接编译不过；`calc_mode` / `cancel` 被四层共用，必须沉在 core。
 - 二进制名必须保持 `hipercalc`（CI 冒烟与 release 产物名都按它引用）；**不要改包名**。
+
+## GUI（crates/hipercalc-gui，Iced）
+
+- **为什么单开一个包**：二进制名 `hipercalc` 已被 CI 冒烟与 release 产物占用，GUI 不能再产一个同名二进制；
+  而且 GUI 的依赖树（iced → wgpu / naga / winit，**354 个包**）比命令行重得多，
+  分开才能让命令行保持"零额外依赖、秒级构建"。
+- **版本以 crates.io 稳定版为准**：`iced = "0.14"`（MSRV 1.88，本机 1.97）。
+  ⚠️ **`docs.iced.rs` 上跟的是 master（0.15.0-dev）**，与 0.14 的 API 有出入
+  （0.15-dev 里 `update` 更常写成返回 `Task<Message>`；0.14 返回 `()` 即可）
+  ⇒ **查签名请用 `docs.rs/iced/0.14.0` 或本地 `cargo doc -p iced --open`、或 `.iced-ref/src/iced-0.14.0/`**。
+- 入口用 `iced::application(State::default, update, view)` 而不是更短的 `iced::run(update, view)`：
+  只有前者能设 `.title(...)` / `.window_size(...)` / `.theme(...)` / `.subscription(...)`。
+  `update` 签名是 `fn(&mut State, Message)`（只改状态），`view` 是 `fn(&State) -> impl Into<Element>`。
+- **离线参考资料在 `.iced-ref/`**（已 gitignore，仅本地）：官方文档快照 + iced 0.14.0 完整源码 +
+  5 个官方示例 + 社区教程 65 章。**注意社区教程是按 0.13.1 写的**，概念可读、API 细节要回 0.14 核对。
+- **正式开工前必须先做的前置**：`hipercalc` 目前**只导出 `pub fn run() -> i32`**（整个 REPL），
+  GUI 无法复用求值逻辑 ⇒ 先把"输入字符串 → 结果字符串"的纯函数（`run_line` 一类）整理成公开 API，
+  再在 GUI 的 `Cargo.toml` 里加 `hipercalc = { path = "../hipercalc" }`。
+- 该 crate 的 `README.md` 里记了 Iced 核心概念速查与资料重取命令，改动 GUI 时同步维护。
 
 ## 文档
 
 功能手册（只讲功能与用法，供人类阅读）：[docs/DOC.zh-CN.md](docs/DOC.zh-CN.md)（中文）· [docs/DOC.en.md](docs/DOC.en.md)（English）。
 ```powershell
-cargo build
-cargo run            # 交互式 REPL（rustyline）
-cargo test --workspace   # 208 项单元测试（hipercalc 185 + core 22，其中 1 项 perf_scan 默认 ignore）
+cargo build              # 只建两个出货 crate（workspace 设了 default-members）
+cargo run                # 交互式 REPL（rustyline）
+cargo test               # 208 项单元测试（hipercalc 185 + core 22 + 1 doctest，其中 1 项 perf_scan 默认 ignore）
+cargo build -p hipercalc-gui   # 图形界面（唯一会编 iced 的命令，首次约 5.5 分钟）
 ```
+
+> **为什么是 `cargo build` 而不是 `cargo test --workspace`**：GUI 把 iced 拉进来后依赖树有 354 个包，
+> `--workspace` 会把 GUI 一并编译/测试（且 6 目标交叉编译里 GUI 的支持度未验证）。
+> 根 `Cargo.toml` 因此设了 `default-members = [hipercalc-core, hipercalc]` —— 裸 `cargo build`/`cargo test`
+> 只覆盖**出货的两个 crate**；要碰 GUI 必须显式 `-p hipercalc-gui`。CI 同样按这套走
+> （`.github/workflows/ci.yml` 的 clippy 步也刻意不带 `--workspace`）。
 
 - **跑构建/测试必须计时**（硬性要求）：不要只贴 `test result: ok` —— 必须带上耗时。
   `cargo test` 结尾自带 `finished in X.XXs`（纯测试耗时），需要连编译一起看时用 `time cargo test`。
   多轮验证（反复跑测试、跑全语料扫描）要写清**总耗时**。
   原因：不看时间就发现不了"某次改动把求解拖慢了十倍"，也无法判断某个预算是真有必要的。
-- 已有 `#[cfg(test)]` 单元测试（**208 项**：hipercalc 185 + core 22 + 1 doctest，`cargo test --workspace` 全绿），
+- 已有 `#[cfg(test)]` 单元测试（**208 项**：hipercalc 185 + core 22 + 1 doctest，`cargo test` 全绿；GUI 目前 0 项），
   其余验证靠管道喂输入人工核对结果：  
   `Write-Output "1+2*3", "x^2-4=0", "x+y=5,2x-y=1", "sin(pi/6)", "/exit" | cargo run`
 - **⚠️ 对拍用的二进制一定要放在 `target-t/` 下，不要放 `change_logs/`**：同一份 exe 放在 `change_logs/`

@@ -12,7 +12,7 @@
 
 [English](README.en.md) · **简体中文**
 
-**中文超高精度命令行计算器**（Rust 双 crate workspace：`hipercalc` + 可独立使用的数值库 `hipercalc-core`）：内置 80 位精度，任意精度小数与符号精确运算兼得，
+**中文超高精度命令行计算器**（Rust workspace：命令行 `hipercalc` + 可独立使用的数值库 `hipercalc-core`；图形界面 `hipercalc-gui` **开发中**）：内置 80 位精度，任意精度小数与符号精确运算兼得，
 支持方程 / 方程组 / 不等式求解、多项式因式分解与函数拟合、三角形求解、素因数分解，矩阵与线性代数、统计、
 数制与位运算、带量纲的单位运算、特殊函数（`gamma`/`erf`/`zeta`）与物理常量，
 以及**高等数学**（求导 `diff` / 极限 `lim` / 积分 `int` / 泰勒展开 `taylor` / 求和求积 `sum`·`prod`，
@@ -72,7 +72,8 @@ hX = 4, hY = 3, hZ = 2.4
 ```text
 crates/
 ├── hipercalc-core/   数值底座（任意精度浮点 / 符号精确数 / 复数 / 特殊角）—— 可独立发布
-└── hipercalc/        解析器、求解器、高等数学、三语界面与 REPL（产出 hipercalc 二进制）
+├── hipercalc/        解析器、求解器、高等数学、三语界面与 REPL（产出 hipercalc 二进制）
+└── hipercalc-gui/    图形界面（Iced）—— **开发中**，目前只有环境自检骨架，见其 README
 ```
 
 ## 快速开始
