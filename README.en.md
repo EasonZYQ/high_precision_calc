@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/EasonZYQ/high_precision_calc/actions/workflows/ci.yml/badge.svg)](https://github.com/EasonZYQ/high_precision_calc/actions/workflows/ci.yml)
 [![Release](https://github.com/EasonZYQ/high_precision_calc/actions/workflows/release.yml/badge.svg)](https://github.com/EasonZYQ/high_precision_calc/actions/workflows/release.yml)
+[![Version](https://img.shields.io/github/v/release/EasonZYQ/high_precision_calc?label=release)](https://github.com/EasonZYQ/high_precision_calc/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#quick-start)
 [![Rust](https://img.shields.io/badge/rust-edition%202024-orange.svg)](https://www.rust-lang.org/)
@@ -31,16 +32,29 @@ in-bracket argument hints, Ctrl+C interrupts or quits, full-width punctuation au
                            disappears once you have typed it
 > (x-2)(x+3)+2x=12
 x = 3, x = -6
-> diff(x^2*sin(x),x)
-= x^2*cos(x) + 2*x*sin(x)
-> fac(x^5+x^4+1)
-= (x^2 + x + 1) * (x^3 - x + 1)
+> x^6-1=0               <- equations give every root, real and complex
+x = 1, x ≈ 0.5 + 0.86602540378443864676i, x ≈ -0.5 + 0.86602540378443864676i, x = -1, x ≈ -0.5 - 0.86602540378443864676i, x ≈ 0.5 - 0.86602540378443864676i
+> tan(x)=1              <- trigonometric equations give the general solution
+x = π/4 + k·π, k ∈ ℤ
+> 3 km / 2 second       <- unit arithmetic with dimensions
+= 1500 m/s
+> x^4-5x^2+4>0          <- inequalities come back as intervals
+x ∈ (-∞, -2) ∪ (-1, 1) ∪ (2, ∞)
 > sum(k,k,1,1000000)    <- sums with a closed form are exact (no term-by-term loop)
 = 500000500000
+> triangle(x=3 y=4 z=5) <- triangle notation accepts any letters: lower = side, upper = angle, hX = altitude
+x = 3, y = 4, z = 5
+X ≈ 0.6435011087932843868, Y ≈ 0.92729521800161223243, Z ≈ 1.5707963267948966192
+hX = 4, hY = 3, hZ = 2.4
+area = 6, perimeter = 12
+circumradius = 2.5, inradius = 1
 ```
 
 > Real output with the **default** settings (LineIO, 20 digits, radians); switch to MathIO for exact
-> fractions and radicals, or `/mode deg` for degrees. The Chinese demo is `docs/demo.gif`.
+> fractions and radicals, or `/mode deg` for degrees. The Chinese demo is `docs/demo.gif`. Both GIFs are
+> recorded with [`vhs`](https://github.com/charmbracelet/vhs) from `docs/demo.tape` / `docs/demo.en.tape`
+> and compressed with `gifsicle -O3 --colors 128 --lossy=80`; to re-record, move `~/.hipercalc_state`
+> away first (otherwise the demo inherits this machine's persisted settings and is not reproducible).
 
 ## Input & shortcuts
 

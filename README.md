@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/EasonZYQ/high_precision_calc/actions/workflows/ci.yml/badge.svg)](https://github.com/EasonZYQ/high_precision_calc/actions/workflows/ci.yml)
 [![Release](https://github.com/EasonZYQ/high_precision_calc/actions/workflows/release.yml/badge.svg)](https://github.com/EasonZYQ/high_precision_calc/actions/workflows/release.yml)
+[![Version](https://img.shields.io/github/v/release/EasonZYQ/high_precision_calc?label=release)](https://github.com/EasonZYQ/high_precision_calc/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#快速开始)
 [![Rust](https://img.shields.io/badge/rust-edition%202024-orange.svg)](https://www.rust-lang.org/)
@@ -29,23 +30,29 @@
 = 0.5                      右侧暗色显示还没写的参数，写完一个该参数就消失
 > (x-2)(x+3)+2x=12
 x = 3, x = -6
-> diff(x^2*sin(x),x)
-= x^2*cos(x) + 2*x*sin(x)
-> fac(x^5+x^4+1)
-= (x^2 + x + 1) * (x^3 - x + 1)
+> x^6-1=0               ← 方程给全部根（实数与复数）
+x = 1, x ≈ 0.5 + 0.86602540378443864676i, x ≈ -0.5 + 0.86602540378443864676i, x = -1, x ≈ -0.5 - 0.86602540378443864676i, x ≈ 0.5 - 0.86602540378443864676i
+> tan(x)=1              ← 三角方程直接给周期通式
+x = π/4 + k·π，k 为整数
+> 3 km / 2 second       ← 带量纲的单位运算
+= 1500 m/s
+> x^4-5x^2+4>0          ← 不等式的区间解
+x ∈ (-∞, -2) ∪ (-1, 1) ∪ (2, ∞)
 > sum(k,k,1,1000000)    ← 有闭式的求和直接给精确值（不逐项累加）
 = 500000500000
-> triangle(a=3,b=4,c=5)
-a = 3, b = 4, c = 5
-A ≈ 0.6435011087932843868, B ≈ 0.92729521800161223243, C ≈ 1.5707963267948966192
-hA = 4, hB = 3, hC = 2.4
+> triangle(x=3 y=4 z=5) ← 三角形记号可以用任意字母：小写=边、大写=角、hX=高
+x = 3, y = 4, z = 5
+X ≈ 0.6435011087932843868, Y ≈ 0.92729521800161223243, Z ≈ 1.5707963267948966192
+hX = 4, hY = 3, hZ = 2.4
 面积 = 6, 周长 = 12
 外接圆半径 = 2.5, 内切圆半径 = 1
 ```
 
 > 上面是**默认设置**（LineIO 20 位 / 弧度）下的真实输出；切到 MathIO 会显示精确分数与根式，
 > `/mode deg` 换成角度制。
-> 英文界面演示见 `docs/demo.en.gif`（录制脚本 `--lang en`）。
+> 英文界面演示见 `docs/demo.en.gif`。两版动图都由 [`vhs`](https://github.com/charmbracelet/vhs) 按
+> `docs/demo.tape` / `docs/demo.en.tape` 录制，再用 `gifsicle -O3 --colors 128 --lossy=80` 压缩；
+> 改动后想重录，先移走 `~/.hipercalc_state`（否则演示会继承本机的持久化设置，结果不可复现）。
 
 ## 输入与快捷键
 
