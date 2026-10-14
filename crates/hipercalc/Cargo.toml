@@ -16,3 +16,9 @@ num-traits.workspace = true
 num-integer.workspace = true
 colored.workspace = true
 rustyline.workspace = true
+
+# 非 Windows 平台：给 `session::capture_stdout` 用（pipe/dup/dup2/close 四个 C 函数）。
+# Windows 那条路走的是手写 kernel32 FFI，零依赖 —— 这也是本仓 `rawkey` / `cancel`
+# 已有的做法，保持一致。
+[target.'cfg(not(windows))'.dependencies]
+libc = "0.2"

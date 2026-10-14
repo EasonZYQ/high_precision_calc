@@ -26,6 +26,7 @@ mod i18n;
 mod language;
 mod parser;
 mod primefac;
+pub mod session;
 mod solve_aux;
 mod solver_factor;
 mod solver_fit;
@@ -65,6 +66,10 @@ use std::time::{Duration, Instant};
 /// 恢复时不收敛就能绕过命令行校验。
 pub const MIN_PRECISION: usize = 20;
 pub const MAX_PRECISION: usize = 2000;
+
+/// 供 GUI 复用的求值会话（见 `session.rs`）。
+/// 这是本 crate 面向**库用法**的入口：REPL 仍是 `run()`，一次性进程式使用。
+pub use session::{Base, LineResult, Session};
 
 /// 全部指令（Tab 补全共用；新增指令时同时改这里与 `handle_command`）
 const COMMANDS: &[&str] = &[
