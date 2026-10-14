@@ -8,11 +8,29 @@ license = "MIT"
 repository = "https://github.com/EasonZYQ/high_precision_calc"
 publish = false
 
+# lib + bin 双形态：界面实现放库里，`tests/` 才能驱动它做快照与交互测试；
+# bin 只负责起 iced 事件循环。
+[lib]
+name = "hipercalc_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hipercalc-gui"
+path = "src/main.rs"
+
 [dependencies]
 # 数值底座：GUI 里显示/计算的一切高精度数值都从这里来。
-# 注意：解析器与求解器在 `hipercalc` 里，但它目前只导出 `run()`（整个 REPL），
-# 还不能被 GUI 复用 —— 等正式开工时先把它的求值入口暴露成公开 API，再在这里加依赖。
 hipercalc-core = { path = "../hipercalc-core", version = "0.1" }
+
+# 求值会话：`Session` 把 CLI 的求值能力包成公开 API（见 crates/hipercalc/src/session.rs），
+# 于是 GUI 与命令行走**同一条求值路径**，结果必然一致。
+hipercalc = { path = "../hipercalc", version = "1.3.0" }
 
 # GUI 框架。用默认 feature 集（wgpu 渲染 + tiny-skia 软件兜底 + crisp 文字）。
 iced.workspace = true
+
+[dev-dependencies]
+# 离屏（headless）渲染 + 快照：用来在**没有显示器**的环境里验证界面长什么样，
+# 并把 PNG 存进 tests/snapshots/ 作为视觉基线。这是本项目"截图验证"的主力手段 ——
+# 系统级的抓屏（PowerShell + System.Drawing）在本机受限，靠不住。
+iced_test = "0.14"

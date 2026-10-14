@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**开发中，目前只有环境自检骨架**）。**含 208 项单元测试**（hipercalc 185 + core 22，其中 1 项 `perf_scan` 默认 ignore，另 1 项 doctest），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
+`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**已可用**：计算 / 历史 / 虚拟键盘 / 函数弹窗 / 数学排版 / 深浅双主题）。**含 234 项单元测试**（hipercalc 194 + core 22 + GUI 40 单测 + 6 快照，其中 1 项 `perf_scan` 默认 ignore，另 1 项 doctest），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
 
 ## 硬性要求（用户指定）
 
@@ -35,8 +35,8 @@
 
 ```text
 crates/hipercalc-core/   数值底座：bigfloat / bigint_ext / number / complex / matrix / quantity / trig / display / calc_mode / cancel / settings
-crates/hipercalc/        parser / equation / primefac / solver_* / solver_ineq / solve_aux / stats / calculus / i18n / language / state / lib.rs + main.rs
-crates/hipercalc-gui/    图形界面（Iced 0.14）—— 现状是环境自检骨架，正式界面未开工；约定见下节
+crates/hipercalc/        parser / equation / primefac / solver_* / solver_ineq / solve_aux / stats / calculus / i18n / language / state / session / lib.rs + main.rs
+crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender / theme / backdrop / lib.rs + main.rs；约定见下节
 ```
 
 - **依赖方向严格单向**：`hipercalc-core ← hipercalc ← hipercalc-gui`。core 不依赖 colored / rustyline，
@@ -47,22 +47,103 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）—— 现状是环境自检
 
 ## GUI（crates/hipercalc-gui，Iced）
 
+### 定位与结构
+
 - **为什么单开一个包**：二进制名 `hipercalc` 已被 CI 冒烟与 release 产物占用，GUI 不能再产一个同名二进制；
   而且 GUI 的依赖树（iced → wgpu / naga / winit，**新增 354 个包、合计 399**）比命令行重得多，
   分开才能让命令行保持"零额外依赖、秒级构建"。
+- **crate 是 lib + bin 双形态**：界面实现在库里（`lib.rs` 导出 `app` / `keypad` / `mathrender` /
+  `theme` / `backdrop`），`main.rs` 只负责起事件循环。**拆两半的唯一目的是让 `tests/` 能驱动界面**
+  —— 集成测试编译的是库，看不到 bin 里的东西。
+- **模块分工**（各管一件事，改动时不要越界）：
+
+  | 文件 | 职责 |
+  | --- | --- |
+  | `app.rs` | 状态 / 消息 / update / view；**所有业务逻辑都在 `update` 里**，`view` 只读状态 |
+  | `keypad.rs` | 虚拟键盘布局 `LAYOUT` + 函数目录 `FN_GROUPS` + 插入行为 `splice`/`cursor_back_for`（纯数据 + 纯函数，可脱 GUI 单测） |
+  | `mathrender.rs` | MathIO 文本 → 真正的数学排版（分数竖排、根号顶线、幂上标）。**解析与渲染分离**，解析层是纯函数 |
+  | `theme.rs` | 色板令牌 + 全部样式函数 + 圆角定额。深/浅两套 WinUI3 令牌 |
+  | `backdrop.rs` | Windows DWM 亚克力（含 `EnumWindows` + PID 反查 HWND）；非 Windows 是空实现 |
+
+- **`Session` 是 GUI 与 CLI 的公共求值入口**（`crates/hipercalc/src/session.rs`）：
+  GUI **不直接调** `run_line` / `handle_command`，一律走 `Session::eval(&str) -> LineResult`。
+  这样两条前端走同一条求值路径，行为不会漂移。改求值行为时**两处都要回归**。
+
+### Iced 0.14 API 陷阱（全部实测踩过，写代码前先看这里）
+
 - **版本以 crates.io 稳定版为准**：`iced = "0.14"`（MSRV 1.88，本机 1.97）。
   ⚠️ **`docs.iced.rs` 上跟的是 master（0.15.0-dev）**，与 0.14 的 API 有出入
-  （0.15-dev 里 `update` 更常写成返回 `Task<Message>`；0.14 返回 `()` 即可）
   ⇒ **查签名请用 `docs.rs/iced/0.14.0` 或本地 `cargo doc -p iced --open`、或 `.iced-ref/src/iced-0.14.0/`**。
 - 入口用 `iced::application(State::default, update, view)` 而不是更短的 `iced::run(update, view)`：
-  只有前者能设 `.title(...)` / `.window_size(...)` / `.theme(...)` / `.subscription(...)`。
-  `update` 签名是 `fn(&mut State, Message)`（只改状态），`view` 是 `fn(&State) -> impl Into<Element>`。
+  只有前者能设 `.title(...)` / `.window(..)` / `.theme(...)` / `.subscription(...)`。
+  `update` 签名是 `fn(&mut State, Message) -> Task<Message>`。
+- **不存在的方法**（第一版编译时撞了 22 个错误，这几个最常犯）：
+  - `Space::with_width` / `with_height` ⇒ 用 `Space::new().width(..)` / `.height(..)`
+  - `Rule::width()` ⇒ 放进 `container().width(Length::Fixed(w))` 里撑开
+  - `Color::scale_rgb` ⇒ 只有 `scale_alpha`；**亮度变化一律用 alpha 表达**
+  - `theme::Palette` 只有 6 个字段（`background`/`text`/`primary`/`success`/`warning`/`danger`）
+  - `iced::application` 构建器**没有 `run_with`**；窗口就绪只能靠 `window::events()` 订阅
+  - `window::get_latest` ⇒ 是 `window::latest()`（返回 `Task`）
+- **类型对不上的地方**：
+  - `Background::Gradient` 要的是 `iced::Gradient`，不是 `Linear` ⇒ 得包一层 `Gradient::Linear(..)`
+  - `Background` 没有 `From<Color>` ⇒ 必须显式 `Background::Color(c)`
+  - `text_editor` 的 `.width()` **只接受 `Pixels`**（不像别的控件收 `Length`）⇒
+    想让它占满剩余空间要靠**外层 `container`**，别硬塞 `FillPortion`
+- **`text_editor` 模块名与辅助函数名冲突**：`iced::widget::text_editor` 既是模块又是函数，
+  同文件里 `use ...::{Action, Edit, Motion}` 会撞名 ⇒ 内容类型用 `Content as EditorContent` 别名
+- **光标移动是 `Action::Move(Motion)` 这个顶层变体**，不是 `Action::Edit(Edit::Move(..))`
+  —— `Edit` 里只有增删改，**没有 `Move`**。
+- **没有可直接用的菜单 / popup 组件**：函数弹窗用 `stack![backdrop, panel]` +
+  `mouse_area(...).on_press(Close)` 做遮罩，这是 iced 0.14 里最干净的做法。
+- **`Grid::columns(n)` 是整行等高**：换行后第一行会被撑到很高。要"自动换行 + 行高自然"
+  得**手动 `chunks(COLS)` 切行**、每行一个 `Row`。注意 `chunks` 会丢原始下标，
+  全局下标要自己算 `chunk_i * COLS + j`（有单测钉死）。
+
+### 视觉：WinUI3 / 亚克力 / liquid glass
+
+- 用户指定的观感：**现代化 + WinUI3 + 亚克力质感 + 圆角 + 深色模式 + 尽量接近 Apple liquid glass**。
+- **玻璃感全在 `theme.rs` 里纯 iced 叠加出来**（零系统依赖）：半透明渐变底 + 1px 高光描边 + 柔和投影。
+- **真正的桌面模糊必须靠 DWM**（`backdrop.rs`）。iced 0.14 **不暴露原生窗口句柄** ⇒
+  用 `EnumWindows` + `GetWindowThreadProcessId` 按 PID 反查 HWND。
+  逐级降级：`DWMWA_SYSTEMBACKDROP_TYPE`(3=Acrylic / 2=Mica) → `DWMWA_MICA_EFFECT`(1029)
+  → `SetWindowCompositionAttribute` + `ACCENT_ENABLE_ACRYLICBLURBEHIND` → 不透明回退。
+- **接口是 `theme::set_acrylic(ok)`**：DWM 成功时窗口背景接近全透（让桌面透上来），
+  失败时 `theme::root` 给不透明背景。**绝不假装成功** —— 探测失败要 `eprintln!` 如实报告
+  （远程桌面 / 无头环境下失败是预期行为）。
+- 手工 Win32 FFI 在本项目有先例（`rawkey`、Ctrl+C 处理器），加新的 FFI 前先看看它们怎么声明类型。
+
+### 明暗主题怎么传（容易被这个坑到）
+
+- 样式函数的签名是 `Fn(&Theme) -> Style`，**拿不到 `State`** ⇒ 明暗只能走**进程级开关**
+  （`theme::set_dark` / `theme::dark`，`AtomicBool`），做法与 `calc_mode` 一致。
+- `State::update` 的**第一行**就是 `theme::set_dark(self.dark)`，保证任何消息都同步过去。
+- ⚠️ 因此**凡是读写这些全局开关的测试必须串行**。快照测试里有一把 `SERIAL: Mutex<()>`
+  —— 不抢锁的话，`cargo test` 的默认多线程会让"深色测试刚设 true、浅色测试刚要渲染"互相覆盖，
+  症状是**浅色快照渲染出深色界面**（第一次跑就踩到了，找了很久）。
+
+### 验证手段（用户硬性要求："制作时应当进行截图验证"）
+
+- **主力手段是 `iced_test` 的离屏快照**：`tests/snapshot.rs`，5 张基线落在
+  `crates/hipercalc-gui/tests/snapshots/*.png`（文件名实际会带 `-wgpu` 后缀）。
+  - 渲染入口：`Simulator::with_size(Settings::default(), size, element)` 再 `.snapshot(&theme)`。
+    **视口尺寸必须固定**且与 `main.rs` 的 `window::Settings.size` 一致。
+  - ⚠️ `iced_test::Settings` 在 crate 根**没有** re-export（它其实是 `iced_core::Settings`），
+    要从 `iced_test::core` 拿；`Snapshot` 只在 `iced_test::simulator` 模块里。
+  - **`matches_image` 在文件不存在时会自己创建并返回 `true`** ⇒
+    改完界面要**删掉 `snapshots/*.png` 再跑一次**得到新基线，然后
+    **必须用 Read 打开 PNG 亲眼看一下**，只看"测试变绿"等于没验证（这条纪律救过好几次）。
+- **系统级抓屏在本机不可用**（`Add-Type` 被安全策略拦、`Screen.Bounds` 返回空、
+  `Bitmap.Save` 静默失败）⇒ 别再走 PowerShell + `System.Drawing` 这条路。
+- ⚠️ **离屏快照无法证明"DWM 亚克力真的生效"**（看不到桌面透出）。这一项目前没有可靠的
+  自动化手段，只能在真实桌面上人工确认。
+- PowerShell 工具结束后**子进程树会被清理**，所以"起 GUI 再截图"必须在同一次调用内完成。
+
+### 其他约定
+
 - **离线参考资料在 `.iced-ref/`**（已 gitignore，仅本地）：官方文档快照 + iced 0.14.0 完整源码 +
   5 个官方示例 + 社区教程 65 章。**注意社区教程是按 0.13.1 写的**，概念可读、API 细节要回 0.14 核对。
-- **正式开工前必须先做的前置**：`hipercalc` 目前**只导出 `pub fn run() -> i32`**（整个 REPL），
-  GUI 无法复用求值逻辑 ⇒ 先把"输入字符串 → 结果字符串"的纯函数（`run_line` 一类）整理成公开 API，
-  再在 GUI 的 `Cargo.toml` 里加 `hipercalc = { path = "../hipercalc" }`。
 - 该 crate 的 `README.md` 里记了 Iced 核心概念速查与资料重取命令，改动 GUI 时同步维护。
+- `hipercalc-gui` **不发布**（`publish = false`），版本号跟随 workspace。
 
 ## 文档
 
@@ -148,6 +229,42 @@ cargo build -p hipercalc-gui   # 图形界面（唯一会编 iced 的命令，�
 | `README.md`           | 功能手册 + 代码架构文档；改动功能后须同步                                                                 |
 
 ## 容易改错的地方
+
+### 全局设置与测试串行（**先看这条**）
+
+`hipercalc` / `hipercalc-core` 有一批**进程级全局设置**（`AtomicBool` / `AtomicUsize`）：
+
+| 开关 | 存放 | 影响 |
+| --- | --- | --- |
+| 数制 base | `display::RESULT_BASE` | 整数输出（`0x1` vs `1`） |
+| 显示模式 | `parser::DisplayMode` | MathIO 竖排 vs LineIO 小数 |
+| 角度模式 | `trig` | 三角函数的弧度/角度解释 |
+| 精度 / 显示位数 | `bigfloat` | 全部数值输出 |
+| 计算模式 / timing / quiet | `calc_mode` | 深度求解、耗时行、`lprint!` 是否输出 |
+
+**测试必须串行跑**（`.cargo/config.toml` 里设了 `RUST_TEST_THREADS = "1"`，对所有人生效）。
+⚠️ **不要删这条设置** —— 实测过两类真实偶发失败：
+
+1. `session::tests::modes_roundtrip` 把数制设成 Hex 的瞬间，另一个线程正在跑的
+   `solver_fit::tests::plain_fit_linear_quadratic_cubic` 读到了它 ⇒
+   期望 `y = x^2 + x + 1`，实际 `y = x^2 + x + 0x1`。
+   同一条污染还会打到 `parser::func_tests::primality_functions`
+   （期望 `2305843009213693967`，实际 `0x200000000000000f`）。
+2. session 用例改掉显示模式与角度模式后，`solve_aux::tests` 的 5 条三角方程用例全部变红。
+
+这类失败的**特征**：单线程全绿、多线程偶发（实测 5 次挂 1~4 次），
+而且**报错位置离元凶很远**（报在 `solver_fit`，问题出在 `session`）。
+
+**为什么"哪条用例自己加锁"修不干净**：互斥锁只在抢锁方之间生效，
+没抢锁的读者照样能读到别人的改动。所以：
+
+- 代码里另有一把 `crate::lock_tests()`（`lib.rs`）作为**双保险**：
+  `session::tests::Isolated` 与 `solver_fit::tests::dec_guard` 都持有它；
+- 但**真正保证确定性的是 `RUST_TEST_THREADS=1`**，不是锁。
+
+改动建议：给这些开关写新测试时，用 `with_session!` 宏（自动进出还原）；
+若在别的模块写依赖全局设置的断言，显式把值钉死（如 `display::set_base(10)`），
+别依赖默认值。
 
 ### 精度（bigfloat.rs）
 

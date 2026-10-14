@@ -16,6 +16,7 @@
 //! 因为用户明确说"类似 WinUI3"，用系统色系最不容易跑偏。
 
 use iced::theme::Palette;
+use iced::widget::text_editor as text_edit;
 use iced::widget::{button, container, rule, text, text_editor, text_input};
 use iced::{Background, Border, Color, Shadow, Theme, Vector};
 
@@ -170,7 +171,14 @@ pub fn theme(_state: &super::app::State) -> Theme {
             danger: c.danger,
         }
     };
-    Theme::custom(if dark { "HiPerCalc Dark" } else { "HiPerCalc Light" }, palette)
+    Theme::custom(
+        if dark {
+            "HiPerCalc Dark"
+        } else {
+            "HiPerCalc Light"
+        },
+        palette,
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -196,11 +204,10 @@ pub const RADIUS_BUTTON: f32 = 6.0;
 fn glass(c: &Colors, lift: f32, tint: f32) -> container::Style {
     let base = c.surface;
     container::Style {
-        background: Some(Background::Gradient(
-            iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
-                .add_stop(0.0, base.scale_alpha(base.a * tint))
-                .add_stop(1.0, base.scale_alpha(base.a * tint * 0.62)),
-        )),
+        background: Some(gradient_background([
+            (0.0, base.scale_alpha(base.a * tint)),
+            (1.0, base.scale_alpha(base.a * tint * 0.62)),
+        ])),
         text_color: Some(c.text),
         border: Border {
             color: c.stroke,
@@ -216,9 +223,45 @@ fn glass(c: &Colors, lift: f32, tint: f32) -> container::Style {
     }
 }
 
+/// 造一个自上而下的线性渐变背景。
+///
+/// `Background::Gradient` 要的是 `Gradient`（不是 `Linear`）—— `Linear` 是
+/// `Gradient` 的一个字段。另外停靠点必须**按位置递增**，否则 iced 内部插值会错乱。
+fn gradient_background(stops: [(f32, Color); 2]) -> Background {
+    let mut linear = iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI));
+    for (offset, color) in stops {
+        linear = linear.add_stop(offset, color);
+    }
+    Background::Gradient(iced::Gradient::Linear(linear))
+}
+
 /// 主面板（工具条 / 结果区 / 输入区）
 pub fn panel(_theme: &Theme) -> container::Style {
     glass(&colors(), 1.0, 1.0)
+}
+
+/// 结果区的卡片：圆角用中等档（它内部还要放滚动区，边太圆会显得挤）
+pub fn panel_card(_theme: &Theme) -> container::Style {
+    let c = colors();
+    let base = c.surface;
+    container::Style {
+        background: Some(gradient_background([
+            (0.0, base.scale_alpha(base.a * 0.72)),
+            (1.0, base.scale_alpha(base.a * 0.44)),
+        ])),
+        text_color: Some(c.text),
+        border: Border {
+            color: c.stroke,
+            width: 1.0,
+            radius: RADIUS_CARD.into(),
+        },
+        shadow: Shadow {
+            color: Color::BLACK.scale_alpha(0.24),
+            offset: Vector::new(0.0, 2.0),
+            blur_radius: 14.0,
+        },
+        snap: false,
+    }
 }
 
 /// 次级面板（键盘底座，浮得低一点，避免和主面板抢视线）
@@ -301,11 +344,14 @@ pub fn key(_theme: &Theme, kind: KeyKind, status: button::Status) -> button::Sty
         KeyKind::Control => c.danger,
         _ => c.text,
     };
-    // 按下变暗、悬停变亮：亮度变化量固定，保证各分组手感一致
+    // 按下变暗、悬停变亮。
+    // ⚠️ `iced::Color` **只有 `scale_alpha`**，没有 `scale_rgb`（第一版写错过）——
+    // 所以亮度变化用 alpha 表达：浅色主题下 alpha 提高即"更实"，深色下效果同理。
+    // 各分组用同一个系数，保证手感一致。
     let bg = match status {
-        button::Status::Hovered => base.scale_alpha(1.42).scale_rgb(1.10),
-        button::Status::Pressed => base.scale_alpha(0.80).scale_rgb(0.86),
-        button::Status::Disabled => base.scale_alpha(base.a * 0.35),
+        button::Status::Hovered => base.scale_alpha(base.a * 1.35),
+        button::Status::Pressed => base.scale_alpha(base.a * 0.62),
+        button::Status::Disabled => base.scale_alpha(base.a * 0.30),
         _ => base,
     };
     button::Style {
@@ -354,9 +400,9 @@ pub fn history_row(_theme: &Theme, error: bool) -> container::Style {
 }
 
 /// 主输入框（玻璃卡片）
-pub fn input(_theme: &Theme, status: text_editor::Status) -> text_editor::Style {
+pub fn input(_theme: &Theme, status: text_edit::Status) -> text_editor::Style {
     let c = colors();
-    let focused = matches!(status, text_editor::Status::Focused { .. });
+    let focused = matches!(status, text_edit::Status::Focused { .. });
     text_editor::Style {
         background: Background::Color(c.surface_alt.scale_alpha(0.42)),
         border: Border {
@@ -381,7 +427,11 @@ pub fn field(_theme: &Theme, status: text_input::Status) -> text_input::Style {
     text_input::Style {
         background: Background::Color(c.surface_alt.scale_alpha(0.36)),
         border: Border {
-            color: if focused { c.accent } else { c.stroke.scale_alpha(1.6) },
+            color: if focused {
+                c.accent
+            } else {
+                c.stroke.scale_alpha(1.6)
+            },
             width: 1.0,
             radius: RADIUS_BUTTON.into(),
         },
@@ -421,20 +471,10 @@ pub fn echo(_theme: &Theme) -> text::Style {
     }
 }
 
-/// 结果文本样式
-pub fn result_text(_theme: &Theme) -> text::Style {
-    text::Style {
-        color: Some(colors().text),
-    }
-}
-
-/// 结果区是否精确（`=` 用成功色、`≈` 用普通色）
-pub fn result_text_precise(_theme: &Theme, precise: bool) -> text::Style {
-    let c = colors();
-    text::Style {
-        color: Some(if precise { c.success } else { c.text }),
-    }
-}
+// 结果文字的颜色**不在这里**定义：数学排版（`mathrender::Style2`）需要按语义
+// （错误 / 精确 / 近似）着色，而样式函数签名是 `Fn(&Theme) -> Style`、拿不到 State。
+// 与其造两个只能二选一的 `text::Style` 函数，不如让调用方直接从 `colors()` 取色 ——
+// 少一层间接，也不会出现"两处配色各改一半"的漂移。
 
 /// 提示 / 占位文本
 pub fn hint(_theme: &Theme) -> text::Style {
@@ -467,7 +507,11 @@ mod tests {
     fn acrylic_switches_backdrop_transparency() {
         let c = Colors::DARK;
         assert_eq!(c.backdrop_for(false).a, 1.0, "无亚克力时底色必须不透明");
-        assert_eq!(c.backdrop_for(true).a, 0.0, "有亚克力时底色必须全透，让桌面透上来");
+        assert_eq!(
+            c.backdrop_for(true).a,
+            0.0,
+            "有亚克力时底色必须全透，让桌面透上来"
+        );
     }
 
     #[test]

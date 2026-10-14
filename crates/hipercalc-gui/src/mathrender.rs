@@ -27,7 +27,7 @@
 //! LineIO 输出（`0.8333333…`、`1.41421356…`）**没有可排版的数学结构**，本模块直接
 //! 原样当普通文本渲染。两种模式走同一入口 [`render`]，由参数区分。
 
-use iced::widget::{Column, Row, Space, column, container, row, rule, text};
+use iced::widget::{Column, Row, Space, container, rule, text};
 use iced::{Alignment, Element, Font, Length, Pixels};
 
 use crate::theme;
@@ -62,7 +62,10 @@ pub enum Node {
 /// 返回 `Seq`，其中每个元素是**顶层**节点（分数、根号、符号、数字…）。
 pub fn parse(input: &str) -> Node {
     let tokens = tokenize(input);
-    let mut p = Parser { toks: tokens, pos: 0 };
+    let mut p = Parser {
+        toks: tokens,
+        pos: 0,
+    };
     let seq = p.parse_seq(Style::Value);
     if seq.len() == 1 {
         seq.into_iter().next().unwrap()
@@ -318,11 +321,6 @@ impl Parser {
     }
 }
 
-/// 组合"分子乘以某物"的容错分支用（仅极少见的畸形输入会走到）
-fn combine_product(_a: Node, b: Node) -> Node {
-    b
-}
-
 /// 标识符 → 显示符号
 fn render_ident(name: &str) -> String {
     match name {
@@ -373,10 +371,35 @@ fn plain<'a, M: 'a>(src: &str, style: Style2) -> Element<'a, M> {
     if let Some(c) = style.color {
         t = t.color(c);
     }
-    if style.monospace {
+    // 数学符号（π、√、∞…）在等宽字体里会掉进"数学斜体"字形，与周围的直立数字
+    // 格格不入（第一版快照里 `π` 明显比其他字符斜）。含这些符号时改用默认字体。
+    if style.monospace && !contains_math_glyph(src) {
         t = t.font(Font::MONOSPACE);
     }
     t.into()
+}
+
+/// 文本里是否含"等宽字体渲染会变形"的数学符号
+fn contains_math_glyph(s: &str) -> bool {
+    s.chars().any(|c| {
+        matches!(
+            c,
+            'π' | '√'
+                | '∛'
+                | '∞'
+                | '≈'
+                | '≤'
+                | '≥'
+                | '≠'
+                | '∑'
+                | '∫'
+                | '·'
+                | '×'
+                | '÷'
+                | 'θ'
+                | 'φ'
+        )
+    })
 }
 
 /// 递归把节点变成 widget。
@@ -391,42 +414,52 @@ fn build<'a, M: 'a>(node: &Node, style: Style2) -> Element<'a, M> {
             r.into()
         }
         Node::Frac(num, den) => {
-            // 竖排：分子 / 横线 / 分母。横线用 rule，宽度由内容自然撑开。
-            let bar = rule::horizontal(Pixels(1.5))
-                .style(theme::math_rule)
-                .width(Length::Fill);
-            let bar_col: Column<'a, M> = column![
-                Space::with_height(Pixels(style.size * 0.10)),
-                bar,
-                Space::with_height(Pixels(style.size * 0.10)),
-            ];
+            // 竖排：分子 / 横线 / 分母。
+            // ⚠️ `Rule` **没有 `.width()` 方法**（第一版写错过）—— 它内部厚度是 `Length`，
+            // 但长度只能由父容器决定。所以把 rule 放进一个定宽容器里，靠容器控制宽度。
             // 分数用小一号字（标准数学排版惯例：分数内的字比正文小）
             let inner_style = Style2 {
                 size: style.size * 0.72,
                 ..style
             };
-            let mut c = Column::new()
+            let num_el = build(num, inner_style);
+            let den_el = build(den, inner_style);
+            // 横线宽度取分子/分母中较长者的近似宽度：用字符数 × 字号估一个
+            // （iced 没有"测量文字宽度"的公开接口，这是务实的近似）
+            let w = frac_bar_width(num, den, inner_style.size);
+            let bar = container(
+                // Rule 没有 `.width()`；放进定宽容器后它会自动撑满容器宽度
+                rule::horizontal(Pixels(1.6)).style(theme::math_rule),
+            )
+            .width(Length::Fixed(w));
+
+            let c = Column::new()
                 .width(Length::Shrink)
                 .align_x(Alignment::Center)
-                .push(build(num, inner_style))
-                .push(bar_col)
-                .push(build(den, inner_style));
-            // 分数要比正文略高一档基线，视觉上才居中
-            c = c.push(Space::with_height(Pixels(0.0)));
+                .push(num_el)
+                .push(Space::new().height(Pixels(style.size * 0.08)))
+                .push(bar)
+                .push(Space::new().height(Pixels(style.size * 0.08)))
+                .push(den_el);
             wrap_inline(c.into(), style)
         }
         Node::Root { degree, inner } => {
-            // 根号：画一个"√"字符 + 被开方式上方加一条横线（顶线）
-            let inner_style = style;
-            let radicand = build(inner, inner_style);
-            let overline = rule::horizontal(Pixels(1.5))
-                .style(theme::math_rule)
-                .width(Length::Fill);
-            let topped: Column<'a, M> = column![
-                radicand,
-                overline,
-            ]
-            .align_x(Alignment::Start);
+            // 根号 = `√` 字符 + 被开方式 + **上方**一条顶线。
+            //
+            // ⚠️ 顶线在**上**、被开方式在**下** —— 第一版把 `Column` 的 push 顺序写反了，
+            // 结果横线跑到数字下面（看起来像下划线）。`Column` 是自上而下排列，
+            // 所以必须先 push 顶线。
+            let radicand = build(inner, style);
+            let top_line = container(
+                // `Rule` 没有 `.width()`；放进定宽容器后它会自动撑满容器宽度
+                rule::horizontal(Pixels(1.6)).style(theme::math_rule),
+            )
+            .width(Length::Fixed(node_width(inner, style.size) + 4.0));
+            let topped = Column::new()
+                .align_x(Alignment::Start)
+                .push(top_line)
+                .push(radicand);
+            // `√` 贴在数字左侧，底端与数字基线对齐
             let mut r = Row::new().align_y(Alignment::End).spacing(0.0);
             if let Some(d) = degree {
                 // n 次根：左上角小字
@@ -438,7 +471,13 @@ fn build<'a, M: 'a>(node: &Node, style: Style2) -> Element<'a, M> {
                     },
                 ));
             }
-            r = r.push(plain("√", Style2 { size: style.size * 1.15, ..style }));
+            r = r.push(plain(
+                "√",
+                Style2 {
+                    size: style.size * 1.15,
+                    ..style
+                },
+            ));
             r = r.push(topped);
             r.into()
         }
@@ -464,6 +503,48 @@ fn build<'a, M: 'a>(node: &Node, style: Style2) -> Element<'a, M> {
 /// 这里保持为一个显式函数，是为了将来若要做精细基线调整时只改一处。
 fn wrap_inline<'a, M: 'a>(el: Element<'a, M>, _style: Style2) -> Element<'a, M> {
     container(el).into()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 宽度估算
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 一个字符的**平均**宽度 ÷ 字号。
+///
+/// iced 没有公开"测量文字宽度"的接口（要拿宽度得走 `Renderer` 内部），
+/// 而分数横线与根号顶线**必须**有个宽度才能画出来。这里用一个经验比例估算：
+/// 0.56 对拉丁字母/数字是偏保守的取值（略宽于真实等宽字体），
+/// 结果是横线稍微长出内容一点点 —— 这比"太短、盖不住分子"的观感好得多。
+const CHAR_WIDTH_RATIO: f32 = 0.56;
+
+/// 估算一个节点占的宽度（像素）
+fn node_width(node: &Node, size: f32) -> f32 {
+    match node {
+        Node::Text(s) => s.chars().count() as f32 * size * CHAR_WIDTH_RATIO,
+        Node::Seq(items) => items.iter().map(|i| node_width(i, size)).sum(),
+        // 分数：取分子/分母较宽者（横线宽度），外加一点内边距
+        Node::Frac(num, den) => {
+            let inner = size * 0.72;
+            let w = node_width(num, inner).max(node_width(den, inner));
+            (w + size * 0.30).max(size * 0.85)
+        }
+        // 根号：`√` 本体 + 被开方式 + 顶线出头
+        Node::Root { inner, degree } => {
+            let d = degree
+                .as_ref()
+                .map(|d| node_width(d, size * 0.55))
+                .unwrap_or(0.0);
+            d + size * 0.78 + node_width(inner, size) + 4.0
+        }
+        // 幂：底数 + 上标（字号更小）
+        Node::Pow(base, exp) => node_width(base, size) + node_width(exp, size * 0.62),
+    }
+}
+
+/// 分数横线宽度：分子与分母中较宽者，再留一点两侧余量（更接近印刷排版）
+fn frac_bar_width(num: &Node, den: &Node, size: f32) -> f32 {
+    let w = node_width(num, size).max(node_width(den, size));
+    (w + size * 0.24).max(size * 0.7)
 }
 
 #[cfg(test)]
@@ -511,7 +592,11 @@ mod tests {
             panic!("应是序列，实际 {n:?}");
         };
         // 开头应有一个 `-` 号，然后是分数(-1, 4)
-        assert_eq!(items[0], Node::Text("-".into()), "首个元素应是负号：{items:?}");
+        assert_eq!(
+            items[0],
+            Node::Text("-".into()),
+            "首个元素应是负号：{items:?}"
+        );
         match &items[1] {
             Node::Frac(num, den) => {
                 assert_eq!(**num, Node::Text("1".into()), "分子应只是 1");
@@ -529,7 +614,10 @@ mod tests {
     #[test]
     fn parses_sqrt_single_and_nested() {
         match parse("sqrt(2)") {
-            Node::Root { degree: None, inner } => {
+            Node::Root {
+                degree: None,
+                inner,
+            } => {
                 assert_eq!(*inner, Node::Text("2".into()));
             }
             other => panic!("应是根号，实际 {other:?}"),
@@ -540,7 +628,10 @@ mod tests {
             panic!("应是序列");
         };
         assert_eq!(
-            items.iter().filter(|i| matches!(i, Node::Root { .. })).count(),
+            items
+                .iter()
+                .filter(|i| matches!(i, Node::Root { .. }))
+                .count(),
             2,
             "应有两个根号：{items:?}"
         );
@@ -611,8 +702,24 @@ mod tests {
     fn never_panics_and_never_loses_text() {
         // 容错护栏：畸形 / 奇怪输入都必须能解析，且不丢字符
         for s in [
-            "1 / 2", "", "(", ")", "/", "1/", "/2", "sqrt(", "sqrt", "*", "^", "^2",
-            "-1 / 4 + (1 / 4)*sqrt(5)", "1e-5", "0.5", "x/y/z", "((1/2))", "2.5e10",
+            "1 / 2",
+            "",
+            "(",
+            ")",
+            "/",
+            "1/",
+            "/2",
+            "sqrt(",
+            "sqrt",
+            "*",
+            "^",
+            "^2",
+            "-1 / 4 + (1 / 4)*sqrt(5)",
+            "1e-5",
+            "0.5",
+            "x/y/z",
+            "((1/2))",
+            "2.5e10",
         ] {
             let _ = parse(s); // 不 panic 即通过
         }
@@ -624,5 +731,43 @@ mod tests {
     fn scientific_notation_stays_one_token() {
         let n = parse("1e-5");
         assert_eq!(n, Node::Text("1e-5".into()), "科学计数法不该被拆开：{n:?}");
+    }
+
+    /// 含数学符号的文本不能走等宽字体（否则 π/√ 会变成斜体衬线字形）
+    #[test]
+    fn math_glyphs_skip_monospace() {
+        assert!(contains_math_glyph("π"));
+        assert!(contains_math_glyph("2π"));
+        assert!(contains_math_glyph("√2"));
+        assert!(contains_math_glyph("1 · 2"));
+        assert!(!contains_math_glyph("0.8333333"));
+        assert!(!contains_math_glyph("1 / 2"));
+        assert!(!contains_math_glyph("sin(x)"));
+    }
+
+    /// 根号顶线的**宽度估算**必须盖住被开方式（否则线短于数字，观感很差）。
+    ///
+    /// 这条测试是针对一个真实 bug 的回归护栏：顶线与被开方式的**上下顺序**
+    /// 曾在渲染代码里被写反（线跑到数字下面）。顺序无法在纯函数里断言，
+    /// 但宽度是能断言的；顺序由 `snap` 快照（`dark-wgpu.png` 里的 `√2 + √3`）把关。
+    #[test]
+    fn root_top_line_covers_radicand() {
+        for s in [
+            "sqrt(2)",
+            "sqrt(12)",
+            "sqrt(123456)",
+            "sqrt(x+y)",
+            "sqrt(2.5)",
+        ] {
+            let Node::Root { inner, .. } = parse(s) else {
+                panic!("{s} 应解析成根号");
+            };
+            let inner_w = node_width(&inner, 24.0);
+            let line_w = node_width(&inner, 24.0) + 4.0;
+            assert!(
+                line_w > inner_w,
+                "{s}: 顶线宽 {line_w} 必须大于被开方式宽 {inner_w}"
+            );
+        }
     }
 }

@@ -271,9 +271,9 @@ impl Session {
         )
     }
 
-/// 变量表的只读视图（内部用；GUI 走 `vars()`）
-pub fn var_map(&self) -> &BTreeMap<String, hipercalc_core::number::Number> {
-    &self.state.evaluator.vars
+    /// 变量表的只读视图（内部用；GUI 走 `vars()`）
+    pub fn var_map(&self) -> &BTreeMap<String, hipercalc_core::number::Number> {
+        &self.state.evaluator.vars
     }
 }
 
@@ -342,7 +342,12 @@ mod imp {
 
     #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn CreatePipe(read: *mut Handle, write: *mut Handle, attr: *mut SecurityAttributes, size: u32) -> i32;
+        fn CreatePipe(
+            read: *mut Handle,
+            write: *mut Handle,
+            attr: *mut SecurityAttributes,
+            size: u32,
+        ) -> i32;
         fn SetStdHandle(which: u32, handle: Handle) -> i32;
         fn GetStdHandle(which: u32) -> Handle;
         fn SetHandleInformation(handle: Handle, mask: u32, flags: u32) -> i32;
@@ -404,7 +409,13 @@ mod imp {
                     let mut buf = [0u8; 4096];
                     loop {
                         let mut n: u32 = 0;
-                        let ok = ReadFile(read_handle, buf.as_mut_ptr(), buf.len() as u32, &mut n, std::ptr::null_mut());
+                        let ok = ReadFile(
+                            read_handle,
+                            buf.as_mut_ptr(),
+                            buf.len() as u32,
+                            &mut n,
+                            std::ptr::null_mut(),
+                        );
                         if ok == 0 || n == 0 {
                             break;
                         }
@@ -506,22 +517,37 @@ mod tests {
     /// 精度、颜色开关…）。测试默认多线程、共享同一进程，任一条用例改了全局值，
     /// 就污染同进程里其它模块的测试。
     ///
-    /// 这不是假设 —— 正是实际踩到的坑：`session` 的用例把显示模式与数制改掉后，
-    /// `solve_aux::tests` 那 5 条三角方程用例（依赖默认的 MathIO + 弧度）全部变红，
-    /// 而它们在 `HEAD` 上是绿的。加了本守卫后恢复。
+    /// 这不是假设 —— 正是实际踩到的坑，而且**踩了两次**：
     ///
-    /// 做法：进入时快照全部全局设置 + 记录会话三模式，离开时还原。
+    /// 1. `session` 的用例把显示模式与数制改掉后，`solve_aux::tests` 那 5 条三角方程用例
+    ///    （依赖默认的 MathIO + 弧度）全部变红，而它们在 `HEAD` 上是绿的。
+    /// 2. 光加"用完还原"还不够 —— `solver_fit::tests::plain_fit_linear_quadratic_cubic`
+    ///    偶发失败（期望 `y = x^2 + x + 1`，实际 `y = x^2 + x + 0x1`）：
+    ///    本模块把数制设成 Hex 的那一瞬间，另一个线程正在读它。
+    ///
+    /// 所以守卫要做**两件事**：
+    ///
+    /// - 抢一把**跨模块的全局锁**（[`crate::lock_tests`]）—— 保证"我改全局量"期间
+    ///   没有别的线程在读；
+    /// - 进出时快照 / 还原全部全局设置 —— 保证用完不留痕。
+    ///
+    /// 只做后者（第一版的写法）挡不住竞态，只做前者则会把污染留给下一条用例。
     struct Isolated {
         settings: settings::Snapshot,
         session: Session,
+        /// 持有到析构为止 —— 字段本身不用，但**不能省**：
+        /// `Drop` 一跑锁就释放了，必须让它活到守卫结束
+        _lock: std::sync::MutexGuard<'static, ()>,
     }
 
     impl Isolated {
         fn new() -> Self {
+            let lock = crate::lock_tests();
             let settings = settings::snapshot();
             Self {
                 settings,
                 session: Session::new(),
+                _lock: lock,
             }
         }
     }

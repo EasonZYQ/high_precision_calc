@@ -1,0 +1,22 @@
+# Cargo 配置 —— 项目级默认值（提交进版本库，对所有开发者生效）
+
+[env]
+# 测试**必须串行**跑：`hipercalc` 的库测试共享一批**进程级全局设置**
+# （精度 / 数制 / 显示模式 / 角度模式 / 计算模式，都是 `AtomicBool` / `AtomicUsize`）。
+#
+# ⚠️ 这不是保守设置，是**正确性要求**。实测过两次真实的偶发失败：
+#
+# 1. `session::tests::modes_roundtrip` 把数制设成 Hex 的瞬间，
+#    另一个线程正在跑的 `solver_fit::tests::plain_fit_linear_quadratic_cubic`
+#    读到了它 ⇒ 期望 `y = x^2 + x + 1`，实际 `y = x^2 + x + 0x1`；
+#    同一条污染还会打到 `parser::func_tests::primality_functions`
+#    （期望 `2305843009213693967`，实际 `0x200000000000000f`）。
+# 2. session 用例改掉显示模式与角度模式后，`solve_aux::tests` 的 5 条三角方程用例全部变红。
+#
+# 这类失败**看运气**（单线程全绿、多线程 5 次里挂 1~4 次），且报错位置离元凶很远
+# —— 只靠"哪条用例自己加锁"是修不干净的（没加锁的读者照样能读到别人的改动）。
+# 代码里另有一把 `crate::lock_tests()` 作为双保险，见 `lib.rs` 的说明。
+#
+# 代价可接受：本仓测试量不大，串行后 `cargo test -p hipercalc --lib` 约 12 秒
+# （并行约 6 秒），换来的是**确定性**。
+RUST_TEST_THREADS = "1"

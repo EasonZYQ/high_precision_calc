@@ -38,6 +38,45 @@ mod solver_triangle;
 mod state;
 mod stats;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 测试用的全局串行锁
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 凡是**读写进程级全局设置**（`settings` 里的精度/数制/显示位数、`calc_mode`、
+/// `trig` 的角度模式…）的测试，都必须先抢这把锁。
+///
+/// ## 为什么必须要它
+///
+/// 这些设置是进程级静态量（`AtomicBool` / `AtomicUsize`），而 `cargo test` 默认
+/// **多线程**跑同一个二进制里的测试。于是会出现这样的交错：
+///
+/// ```text
+/// 线程 A: solver_fit 测试开始，准备读 RESULT_BASE
+/// 线程 B: session::modes_roundtrip 把 RESULT_BASE 设成 Hex
+/// 线程 A: 读到的常数项是 Hex ⇒ 期望 "y = x^2 + x + 1"，实际 "y = x^2 + x + 0x1"
+/// ```
+///
+/// 这种失败**看运气**：单线程跑全绿、多线程偶发失败，而且报错位置离真正的元凶很远
+/// （报在 `solver_fit`，问题出在 `session`）。`Isolated` 守卫解决不了 ——
+/// 它只能保证**自己**用完还原，挡不住别人在自己改动的窗口里读。
+///
+/// ## 用法
+///
+/// ```ignore
+/// let _guard = crate::TEST_LOCK.lock_or_recover();
+/// ```
+///
+/// 用 `lock_or_recover` 而不是 `unwrap`：`Mutex` 中毒说明前一个持锁测试 panic 了，
+/// 此时全局状态已经脏了，但**继续跑下去仍比整批测试一起挂掉更有信息量**。
+#[cfg(test)]
+pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 抢锁（中毒也能继续），见 [`TEST_LOCK`] 的说明
+#[cfg(test)]
+pub(crate) fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 use colored::*;
 use hipercalc_core::number::Number;
 use num_bigint::BigInt;
@@ -70,6 +109,12 @@ pub const MAX_PRECISION: usize = 2000;
 /// 供 GUI 复用的求值会话（见 `session.rs`）。
 /// 这是本 crate 面向**库用法**的入口：REPL 仍是 `run()`，一次性进程式使用。
 pub use session::{Base, LineResult, Session};
+
+/// GUI 需要的少数内部类型（`DisplayMode` 是 `Session::display_mode()` 的返回类型，
+/// 不导出公用就没法写 `match`）。
+pub mod parser_api {
+    pub use crate::parser::DisplayMode;
+}
 
 /// 全部指令（Tab 补全共用；新增指令时同时改这里与 `handle_command`）
 const COMMANDS: &[&str] = &[

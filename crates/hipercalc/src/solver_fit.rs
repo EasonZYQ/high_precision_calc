@@ -851,12 +851,32 @@ mod tests {
     use super::*;
     use crate::parser::{EvalResult, parse_and_eval};
 
+    /// 测试守卫：抢**全局测试锁**并把数制钉死在十进制。
+    ///
+    /// 本模块的输出走 `format_fit_*` → `display::radix_string`，**隐式依赖全局
+    /// `RESULT_BASE`**。而 `session::tests::modes_roundtrip` 会把数制改成 Hex 再改回来 ——
+    /// 两个测试并行时，"改成 Hex"那个瞬间正好被本模块读到，常数项 `1` 就渲染成 `0x1`，
+    /// 期望 `y = x^2 + x + 1` 却得到 `y = x^2 + x + 0x1`。
+    ///
+    /// 这种失败**看运气**（单线程全绿、多线程偶发），而且报错位置离元凶很远。
+    ///
+    /// ⚠️ 不能把 `MutexGuard` 存进 `OnceLock`（`MutexGuard` 不是 `Sync`，静态量编译不过）。
+    /// 所以每处入口自己建一个守卫、**活到函数返回**即可：本模块的测试都通过
+    /// `mathio` / `lineio` / `err` 三个辅助入口，守卫在它们内部就能覆盖整条断言链。
+    fn dec_guard() -> std::sync::MutexGuard<'static, ()> {
+        let g = crate::lock_tests();
+        hipercalc_core::display::set_base(10);
+        g
+    }
+
     /// 跑一行拟合输入，按 `handle_fit` 的规则拼装输出行
     fn run_with(
         input: &str,
         mode: DisplayMode,
         vars: &[(&str, i64)],
     ) -> Result<Vec<String>, String> {
+        // 整个求值过程都在锁内，且数制被钉成十进制（见 `dec_guard` 的说明）
+        let _lock = dec_guard();
         let mut ev = Evaluator::new();
         ev.display_mode = mode;
         for (name, v) in vars {
