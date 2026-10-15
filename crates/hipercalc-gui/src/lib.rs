@@ -9,11 +9,19 @@
 //! | 模块 | 职责 |
 //! | --- | --- |
 //! | [`app`] | 界面主体：`State` / `Message` / `update` / `view` / `subscription` |
+//! | [`evaluator`] | **后台求值线程**：`Session` 独占持有者，UI 永不被求值阻塞 |
 //! | [`theme`] | 品牌主题与**全部**样式函数（配色、圆角、玻璃卡片） |
 //! | [`fonts`] | 打包字体（等线 + 数学衬线）、字体选择、按内容挑字体 |
 //! | [`keypad`] | 虚拟键盘与函数目录的**纯数据 + 纯函数**（可脱离 GUI 单测） |
 //! | [`mathrender`] | 把 MathIO 文本排成真正的数学式（分数、竖排、根号、幂、π） |
 //! | [`backdrop`] | 桌面模糊（DWM 亚克力）；Windows 走手写 Win32 FFI |
+//!
+//! ## 求值为什么在别的线程
+//!
+//! 早期版本在 `update` 里直接 `session.eval(..)`，于是 `100^100^10` 会把 iced 的
+//! 事件循环冻住、Windows 给标题栏挂上「(未响应)」。现在 `Session` 由
+//! [`evaluator`] 里的常驻 worker 独占，UI 只发消息、拿结果 ——
+//! 详见该模块头。
 //!
 //! ## 亚克力的启用时机
 //!
@@ -30,6 +38,7 @@
 
 pub mod app;
 pub mod backdrop;
+pub mod evaluator;
 pub mod fonts;
 pub mod keypad;
 pub mod mathrender;

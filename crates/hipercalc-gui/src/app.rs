@@ -41,8 +41,10 @@ use iced::{Alignment, Background, Color, Element, Length, Pixels, Task};
 use hipercalc::Session;
 use hipercalc::parser_api::DisplayMode;
 use hipercalc::session::{ALL_LANGS, UiLang};
+use hipercalc_core::calc_mode::CalcMode;
 use hipercalc_core::trig::AngleMode;
 
+use crate::evaluator::{Command, Evaluated, Evaluator};
 use crate::keypad::{self, FN_GROUPS, KeyAction, KeyKind, Panel, layout_for};
 use crate::mathrender;
 use crate::theme::{self, MathFont};
@@ -61,6 +63,13 @@ struct Entry {
     error: bool,
     /// 结果是否为精确值（决定 `=` 用成功色还是普通色）
     precise: bool,
+    /// 这一条算完花了多久（worker 侧的实测值，见 [`crate::evaluator`]）。
+    ///
+    /// 界面把它格式化成 `用时：N秒` 贴在结果行**最右侧**（用户要求）。
+    /// 存 `Duration` 而不是格式化后的字符串：语言可能在之后被切换，
+    /// 而"用时"这两个字是**界面文案**、要跟着语言走 ——
+    /// 所以格式化推迟到 `history_entry` 里做。
+    elapsed: std::time::Duration,
 }
 
 /// 函数面板里每个按钮的宽度。
@@ -158,12 +167,25 @@ pub fn window_title(_state: &State) -> String {
 
 /// 应用状态
 pub struct State {
-    /// 求值会话（内含 `AppState`，与 CLI 同一套求值路径）
-    session: Session,
-    /// 输入框内容（多行编辑器 —— 能读光标、能局部插入）
-    input: EditorContent,
+    /// 求值会话句柄。
+    ///
+    /// ⚠️ **它只是"通道"，不是求值器本身**：真正的 `Session` 在
+    /// [`crate::evaluator`] 起的后台线程里，独占持有。这样 `update` 里**不可能**
+    /// 再顺手跑一次同步求值把界面冻住（早期版本正是那样，`100^100^10` 会让
+    /// Windows 给标题栏挂上「(未响应)」）。
+    evaluator: Evaluator,
+    /// worker 手里的会话是否正在算（决定按钮要不要禁用、是否显示「计算中」）
+    busy: bool,
+    /// 在飞的那一次求值的**结果信箱**。
+    ///
+    /// 产品路径其实用不到它（结果经 `Task::perform` → [`Message::Evaluated`] 回来），
+    /// 留着只是为了让单测能"等在飞的那次求值上"（见 [`State::await_pending_for_test`]）。
+    /// 不占什么资源：一个 `Arc<Mutex<Option<_>>>`，每次求值换一个新的。
+    pending: Option<std::sync::Arc<std::sync::Mutex<Option<Evaluated>>>>,
     /// 求值历史，最新在末尾
     history: Vec<Entry>,
+    /// 输入框内容（多行编辑器 —— 能读光标、能局部插入）
+    input: EditorContent,
     /// 深色模式
     pub dark: bool,
     /// 函数弹窗是否展开
@@ -174,10 +196,54 @@ pub struct State {
     show_settings: bool,
     /// 精度输入框的文本（16 进制用不上，只是给 UI 一个缓冲）
     precision_text: String,
+    /// 模式类设置的**界面侧副本**。
+    ///
+    /// worker 独占 `Session`，UI 读不到它的内部状态，所以显示模式 / 角度模式 /
+    /// 计算模式 / 语言 / 精度都在 UI 侧留一份。改设置时**两处一起改**：
+    /// 本副本（让 `view` 立刻画出新选中态）+ 一条 [`Command`] 发给 worker
+    ///（让它手里的 `Session` 真按新设置求值）。两者在同一个 `update` 分支里
+    /// 更新，不会失步。
+    modes: Modes,
     /// 上一条输入（用于按 ↑ 重复）
     last_input: String,
     /// 当前键盘面板（主 / 字母）
     pub panel: Panel,
+    /// Ctrl 键当前是否按下 —— 用来区分 Enter（求值）与 Ctrl+Enter（换行）。
+    ///
+    /// ⚠️ 必须自己跟踪，**不能等 `text_editor` 告诉我们**：`text_editor` 的
+    /// 绑定表把 `Enter` 与 `Ctrl+Enter` **映射成同一个** `Binding::Enter`
+    ///（见 `iced_widget/src/text_editor.rs` 的 `binding()`：
+    /// `Named::Enter => Some(Self::Enter)`，不区分修饰键），
+    /// 所以从 `Action` 上根本分不出 Ctrl 按没按。
+    /// 只能靠键盘订阅里的 `ModifiersChanged` 自己记一份状态。
+    ctrl_held: bool,
+}
+
+/// 模式类设置在**界面侧**的副本（见 [`State::modes`] 的说明）
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Modes {
+    display: DisplayMode,
+    angle: AngleMode,
+    calc: CalcMode,
+    lang: UiLang,
+    precision: usize,
+}
+
+impl Default for Modes {
+    fn default() -> Self {
+        Self {
+            // ⚠️ `Session::new()` 的显示模式是 **LineIO**（`Evaluator::new` 的默认值，
+            // CLI 也一直如此）。GUI 显式用 MathIO —— 图形界面里"分数竖排、根号带顶线"
+            // 才是用户要看的东西；LineIO 只给一串小数，浪费了排版能力。
+            // 用户仍可在工具条上一键切回 LineIO。
+            display: DisplayMode::MathIO,
+            angle: AngleMode::Radian,
+            calc: CalcMode::Fast,
+            lang: UiLang::ZhCn,
+            // `bigfloat::DEFAULT_PRECISION`（80），与 CLI 的初始值同一个来源
+            precision: hipercalc_core::bigfloat::DEFAULT_PRECISION,
+        }
+    }
 }
 
 /// 消息
@@ -191,6 +257,8 @@ pub enum Message {
     Function(usize, usize),
     /// 求值
     Evaluate,
+    /// 后台求值完成（由 [`crate::evaluator`] 的 future 回传）
+    Evaluated(Evaluated),
     /// 切换函数弹窗
     ToggleFuncs,
     /// 关闭函数弹窗（点浮层背景）
@@ -221,6 +289,8 @@ pub enum Message {
     SetLang(UiLang),
     /// 设置面板：切换数学字体（传 [`MathFont::ALL`] 的下标）
     SetMathFont(usize),
+    /// 键盘修饰键状态变化（关键：用来区分 Enter 与 Ctrl+Enter）
+    CtrlChanged(bool),
     /// 占位（订阅里不关心的窗口事件映射到这里，update 里什么都不做）
     Noop,
 }
@@ -228,13 +298,13 @@ pub enum Message {
 impl Default for State {
     fn default() -> Self {
         let mut session = Session::new();
-        // ⚠️ `Session::new()` 的显示模式是 **LineIO**（`Evaluator::new` 的默认值，
-        // CLI 也一直如此）。GUI 显式改成 MathIO —— 图形界面里"分数竖排、根号带顶线"
-        // 才是用户要看的东西；LineIO 只给一串小数，浪费了排版能力。
-        // 用户仍可在工具条上一键切回 LineIO。
-        session.set_display_mode(DisplayMode::MathIO);
+        let modes = Modes::default();
+        // 把 UI 侧的初始模式**同步给 worker**（`Session::new()` 本身是 LineIO，
+        // 而 GUI 默认 MathIO —— 不同步的话界面上高亮着 MathIO、算出来却是小数）
+        session.set_display_mode(modes.display);
+        session.set_precision(modes.precision);
         Self {
-            precision_text: session.precision().to_string(),
+            precision_text: modes.precision.to_string(),
             acrylic_checked: false,
             input: EditorContent::new(),
             history: Vec::new(),
@@ -243,7 +313,11 @@ impl Default for State {
             show_settings: false,
             last_input: String::new(),
             panel: Panel::default(),
-            session,
+            ctrl_held: false,
+            busy: false,
+            pending: None,
+            modes,
+            evaluator: Evaluator::spawn(session),
         }
     }
 }
@@ -257,13 +331,21 @@ impl State {
         match message {
             Message::Noop => {}
             Message::Edit(action) => {
-                // ⚠️ **Enter 不参与求值**（用户的明确要求："在输入栏按 enter 会换行，
-                // 而不是计算"）。iced 的 `text_editor` 默认就把 Enter 映射成
-                // `Edit::Enter` ⇒ 插入一个换行符，正是我们要的行为，
-                // 所以这里**什么都不用挡**，照常 perform 即可。
+                // ── Enter 的语义：**求值**；Ctrl+Enter 才是**换行** ────────────
                 //
-                // 求值只有两个入口：右侧的 `=` 按钮，和键盘上的 `↵`。
-                // 以前那句占位提示写着"按 = 或 Enter 求值"，是**错的**，已改掉。
+                // 用户要求（本轮更新）："输入栏按 enter" 应直接求值 —— 与 Windows
+                // 计算器、Desmos 的习惯一致；想输入多行表达式时按 Ctrl+Enter。
+                //
+                // 实现上的坑：iced 的 `text_editor` 把 `Enter` 与 `Ctrl+Enter`
+                // **映射成同一个** `Binding::Enter`（绑定表里
+                // `Named::Enter => Some(Self::Enter)`，不看修饰键），
+                // 所以从 `Action` 上分不出 Ctrl。只能靠键盘订阅自己记的
+                // [`State::ctrl_held`] 来区分：
+                //   * 未按 Ctrl → 拦截，改为求值（**不**把换行符塞进输入框）；
+                //   * 按了 Ctrl → 照常 `perform`，`text_editor` 插入 `\n`。
+                if matches!(action, Action::Edit(Edit::Enter)) && !self.ctrl_held {
+                    return self.evaluate();
+                }
                 self.input.perform(action);
             }
             Message::Key(r, c) => {
@@ -317,22 +399,36 @@ impl State {
                 self.dark = !self.dark;
                 theme::set_dark(self.dark);
             }
-            Message::SetDisplay(m) => self.session.set_display_mode(m),
-            Message::SetAngle(m) => self.session.set_angle_mode(m),
+            Message::SetDisplay(m) => {
+                self.modes.display = m;
+                self.evaluator.config(Command::SetDisplay(m));
+            }
+            Message::SetAngle(m) => {
+                self.modes.angle = m;
+                self.evaluator.config(Command::SetAngle(m));
+            }
             Message::SetCalc(deep) => {
-                self.session.set_calc_mode(if deep {
-                    hipercalc_core::calc_mode::CalcMode::Deep
-                } else {
-                    hipercalc_core::calc_mode::CalcMode::Fast
-                });
+                let m = if deep { CalcMode::Deep } else { CalcMode::Fast };
+                self.modes.calc = m;
+                self.evaluator.config(Command::SetCalc(m));
             }
             Message::ClearHistory => self.history.clear(),
             Message::ClearInput => self.input = EditorContent::new(),
             Message::SetPanel(p) => self.panel = p,
             Message::SetLang(l) => {
-                // 语言是**进程级**开关，`set_lang` 同时更新 state 里的 base，
-                // 求值产生的提示（错误信息、指令反馈）下一句就跟着变。
-                self.session.set_lang(l);
+                // ⚠️ 语言**只能**在 UI 线程上同步设，不能发给 worker 代劳。
+                //
+                // 原因：语言是**进程级**全局（`i18n` 里的 `AtomicU8`），而界面自己的
+                // 每一处标签都走 `t()` / `t_fmt()` 直接读那个全局值 —— 就在这一帧的
+                // `view` 里读。发给 worker 是**异步**的：worker 要等下一次请求才执行，
+                // 于是用户点完语言按钮后**本帧的界面还是旧语言**，什么时候翻过来
+                // 取决于下一次求值，看起来就像坏掉了。
+                //
+                // 而且让 worker 也去改那个全局值会引入**跨线程写全局**的竞态
+                //（实测：一个用例刚还原成中文，被另一个用例的 worker 延迟改回英文）。
+                // 所以 `evaluator::Command` 里**没有** `SetLang` —— 从类型上就堵住这条路。
+                hipercalc::session::set_ui_lang(l);
+                self.modes.lang = l;
                 // 已有的历史是**当时**算出来的文本，不重算 —— 与"切换显示模式不重算"
                 // 同一套理由：重算会让用户分不清"是结果错了还是我改了设置"。
                 //
@@ -352,14 +448,30 @@ impl State {
                 }
             }
             Message::PrecisionChanged(s) => self.precision_text = s,
+            Message::CtrlChanged(held) => self.ctrl_held = held,
             Message::ApplyPrecision => {
-                if let Ok(n) = self.precision_text.trim().parse::<usize>() {
-                    self.session.set_precision(n);
-                    // 夹过之后回填，让用户看到真实生效的值
-                    self.precision_text = self.session.precision().to_string();
-                } else {
-                    self.precision_text = self.session.precision().to_string();
-                }
+                // 夹取到合法区间。`Session::set_precision` 自己也会夹，
+                // 但 worker 独占会话、UI 读不回来，所以这里用同一套边界先夹一次，
+                // 保证界面上回填的数字与 worker 实际采用的一致。
+                let n = match self.precision_text.trim().parse::<usize>() {
+                    Ok(n) => n.clamp(hipercalc::MIN_PRECISION, hipercalc::MAX_PRECISION),
+                    Err(_) => self.modes.precision,
+                };
+                self.modes.precision = n;
+                self.evaluator.config(Command::SetPrecision(n));
+                // 夹过之后回填，让用户看到真实生效的值
+                self.precision_text = n.to_string();
+            }
+            Message::Evaluated(out) => {
+                self.busy = false;
+                let precise = is_precise(&out.text);
+                self.history.push(Entry {
+                    input: out.input,
+                    output: out.text,
+                    error: out.is_error,
+                    precise,
+                    elapsed: out.elapsed,
+                });
             }
             Message::WindowOpened => {
                 // 窗口已创建，此时才能反查 HWND 并调 DWM
@@ -478,12 +590,12 @@ impl State {
         iced::widget::operation::focus(INPUT_ID)
     }
 
-    /// 求值：跑会话，把结果推进历史，清空输入框
+    /// 求值：把请求**交给后台 worker**，立刻返回一个等待结果的 task。
     ///
     /// ## 多行怎么处理
     ///
-    /// Enter 现在插换行，所以输入框里可能有多行。规则与**交互式命令行一致**：
-    /// 按顺序逐行求值，只把**最后一行**的结果推进历史。
+    /// Enter 现在是求值、Ctrl+Enter 才是换行，所以输入框里可能有多行。规则与
+    /// **交互式命令行一致**：按顺序逐行求值，只把**最后一行**的结果推进历史。
     ///
     /// 为什么不是"整个多行串当一条表达式"：那等于把换行当隐式乘法，用户敲两行
     /// 分开的算式会得到一个奇怪的乘积。为什么不是"每行都进历史"：用户是在
@@ -491,7 +603,22 @@ impl State {
     ///
     /// 副作用是 `A=3` 这种赋值行**在两行之间也能生效**（第 1 行给变量赋值，
     /// 第 2 行用它算结果），这正是命令行用户期待的行为。
+    ///
+    /// ## 为什么这里**不**碰求值器
+    ///
+    /// 这是本轮修复的核心：以前这里直接 `self.session.eval(..)`，跑在 iced 的事件
+    /// 循环线程上 —— `100^100^10` 会把它按在那里几十秒，Windows 判定窗口失去响应
+    /// 并在标题栏写上「(未响应)」。
+    ///
+    /// 现在这里只做三件事：把行拆出来、把请求推给 worker、返回一个
+    /// `Task::perform`。真正的求值（以及它的计时）发生在别的线程，
+    /// 结果通过 [`Message::Evaluated`] 回来。整个 `update` 恒定在微秒级返回。
     fn evaluate(&mut self) -> Task<Message> {
+        // 上一次还在算就先不受理：否则 worker 队列会积压，用户连按几次 =
+        // 排着算好几次同一个式子（而且每次都要等前面的跑完）
+        if self.busy {
+            return Task::none();
+        }
         let lines: Vec<String> = self
             .input_lines()
             .into_iter()
@@ -504,24 +631,18 @@ impl State {
         // 历史里显示的原文 = 用户敲的全部内容（多行保留换行，便于回看）
         let src = lines.join("\n");
         self.last_input = src.clone();
-
-        // 逐行求值；中间行只是"过一下会话"（产生变量、ans 等副作用），
-        // 最后一行才是要展示的那条。
-        let mut r = self.session.eval(&lines[0]);
-        for line in &lines[1..] {
-            r = self.session.eval(line);
-        }
-
-        let precise = is_precise(&r.text);
-        self.history.push(Entry {
-            input: src,
-            output: r.text,
-            error: r.is_error,
-            precise,
-        });
-        // 求值后清空输入框，符合计算器的直觉
+        // 求值后清空输入框，符合计算器的直觉（现在就清 —— 结果回来时用户可能
+        // 已经在敲下一句了，那时再清会把新打的内容一起抹掉）
         self.input = EditorContent::new();
-        Task::none()
+        self.busy = true;
+
+        // ⚠️ `Task::perform` 收的是 `FnOnce() -> impl Future`。我们给它的闭包内部
+        // 会**阻塞**等结果，这正是对的：iced 把 task 放在自己的工作线程池里
+        // 跑，阻塞发生在那条线程，不是事件循环线程。
+        let (slot, wait) = self.evaluator.eval(src, lines);
+        // 留着结果信箱：测试要能"等在飞的那一次求值上"（见 `await_pending_for_test`）
+        self.pending = Some(slot);
+        Task::perform(wait(), Message::Evaluated)
     }
 
     /// 视图
@@ -573,9 +694,10 @@ impl State {
     // ── ① 工具条 ────────────────────────────────────────────────────────────
 
     fn toolbar(&self) -> Element<'_, Message> {
-        let disp = self.session.display_mode();
-        let ang = self.session.angle_mode();
-        let deep = self.session.calc_mode() == hipercalc_core::calc_mode::CalcMode::Deep;
+        // ⚠️ 从 UI 侧副本读，而不是问 `Session` —— 求值器在别的线程上（见 `State::modes`）
+        let disp = self.modes.display;
+        let ang = self.modes.angle;
+        let deep = self.modes.calc == CalcMode::Deep;
 
         // 工具条上的文字都是"拉丁/数学"标签（MathIO、RAD…），走数学字体；
         // 中文标签（快速/死算/清空）走等线。`theme::label` 自动按内容挑。
@@ -664,7 +786,7 @@ impl State {
     // ── ② 结果区 ────────────────────────────────────────────────────────────
 
     fn results(&self) -> Element<'_, Message> {
-        let math = self.session.display_mode() == DisplayMode::MathIO;
+        let math = self.modes.display == DisplayMode::MathIO;
 
         let mut col = Column::new().spacing(14).width(Length::Fill);
         if self.history.is_empty() {
@@ -683,6 +805,19 @@ impl State {
             for e in &self.history {
                 col = col.push(self.history_entry(e, math));
             }
+        }
+
+        // 「计算中…」提示（用户要求："让程序始终响应"）。
+        //
+        // 它不只是装饰：大运算要跑几十秒，用户需要**看得见**"还在算"，否则会以为
+        // 程序又卡死了 —— 而那正是本次要修掉的观感。放在历史最下面（也就是
+        // 视线落点，因为 `anchor_bottom` 会把视图钉在底部）。
+        if self.busy {
+            col = col.push(
+                container(theme::label(t("计算中…")).size(13).style(theme::hint))
+                    .width(Length::Fill)
+                    .padding([4, 9]),
+            );
         }
 
         // `anchor_bottom`：历史是"越往下越新"，滚到底部才符合计算器的直觉。
@@ -710,9 +845,15 @@ impl State {
     fn history_entry<'a>(&'a self, e: &'a Entry, math: bool) -> Element<'a, Message> {
         // 回显也走 `mathrender`：用户敲的 `sqrt(2)/3` 在回显里同样应该显示成
         // 根号 + 分数，而不是一行原始 ASCII —— 与输入框里看到的样子保持一致。
+        //
+        // ⚠️ **回显永远按数学排版，与显示模式无关**（用户要求："根号应当始终渲染"）。
+        // 曾经的 bug：这里传的是 `math`，于是切到 LineIO 后回显也退化成纯文本，
+        // `sqrt(2)/3` 原样显示成 ASCII —— 但**回显是用户自己敲的表达式**，
+        // 它天然就是数学式，跟"结果用十进制还是分数显示"是两码事。
+        // 显示模式只该影响**结果**的呈现（MathIO 排版 / LineIO 小数）。
         let echo_text: Element<'a, Message> = mathrender::render(
             &e.input,
-            math,
+            echo_renders_math(e.error),
             mathrender::Style2 {
                 size: 15.0,
                 color: Some(theme::colors().text_dim),
@@ -759,7 +900,24 @@ impl State {
             },
         );
 
-        container(column![echo, result].spacing(5))
+        // ── 耗时贴结果行**最右侧**（用户要求："计时放在运算结果的最右侧"）──
+        //
+        // 用 `Space(Length::Fill)` 把结果推到左边、耗时压到右边 ——
+        // 这是 iced 里唯一的"两端对齐"写法（没有 `justify_content: space-between`）。
+        //
+        // ⚠️ 结果元素必须能伸能缩：`mathrender` 的根是 `Row`，宽度默认
+        // `Length::Shrink`，所以它只占自己需要的宽度，`Space` 吃掉剩下的全部余量，
+        // 耗时自然落到最右端。若结果被撑成 `Fill`，`Space` 就没有余量可分，
+        // 耗时会紧贴在结果后面而不是靠右。
+        let timing = elapsed_text(e.elapsed);
+        let result_line = row![
+            result,
+            Space::new().width(Length::Fill).height(Length::Shrink),
+            theme::label(timing).size(12).style(theme::hint),
+        ]
+        .align_y(Alignment::Center);
+
+        container(column![echo, result_line].spacing(5))
             .width(Length::Fill)
             .padding([7, 9])
             .style(move |t| theme::history_row(t, e.error))
@@ -788,12 +946,9 @@ impl State {
                 .padding([4, 10])
                 .style(|t, s| theme::mode_chip(t, s, false))
                 .on_press(Message::ApplyPrecision),
-            theme::label(t_fmt(
-                "当前 {0} 位",
-                &[&self.session.precision().to_string()]
-            ))
-            .size(13)
-            .style(theme::hint),
+            theme::label(t_fmt("当前 {0} 位", &[&self.modes.precision.to_string()]))
+                .size(13)
+                .style(theme::hint),
         ]
         .spacing(8)
         .align_y(Alignment::Center);
@@ -802,7 +957,7 @@ impl State {
         // 语言名用**各语言自己的写法**（"简体中文" / "繁體中文" / "English"），
         // 而不是翻译成当前语言 —— 语言选单里这样才是惯例：看不懂当前语言的人
         // 也能找到自己的那一项。
-        let cur_lang = self.session.lang();
+        let cur_lang = self.modes.lang;
         let mut lang_row = Row::new().spacing(6).align_y(Alignment::Center);
         lang_row = lang_row.push(self.setting_label(t("语言 / Language"), SETTING_LABEL_W));
         for l in ALL_LANGS.iter() {
@@ -910,11 +1065,19 @@ impl State {
         // 一条 22px 高的细线（截图上只看得到色块，看不到文字）——
         // 而 editor 那边有 `Height::Fixed(56)` 撑着，落差全由按钮承担了。
         // 实测：宽度对、高度塌，是要单独看像素才能发现的一类问题。
-        let go = button(text("=").size(22).font(theme::font_math()))
+        //
+        // 计算中时给 `=` 去掉 `on_press`（等价于禁用）：不然用户会一直点，
+        // 而 `evaluate` 里那条 `busy` 守卫会把后续点击全部静默丢掉 ——
+        // 用户看到的是"点了没反应"。按钮画成不可按，意图就清楚了。
+        // 同时把字形换成 `…`，与历史区那条「计算中…」互相印证。
+        let go_glyph = if self.busy { "…" } else { "=" };
+        let mut go = button(text(go_glyph).size(22).font(theme::font_math()))
             .width(Length::Fixed(56.0))
             .height(Length::Fixed(INPUT_HEIGHT))
-            .style(|t, s| theme::key(t, KeyKind::Equals, s))
-            .on_press(Message::Evaluate);
+            .style(|t, s| theme::key(t, KeyKind::Equals, s));
+        if !self.busy {
+            go = go.on_press(Message::Evaluate);
+        }
 
         let clear = button(text("C").size(18).font(theme::font_math()))
             .width(Length::Fixed(46.0))
@@ -1078,12 +1241,27 @@ impl State {
                 };
                 let face = self.key_face(k.label, k.kind);
                 r = r.push(
-                    button(container(face).width(Length::Fill).center_x(Length::Fill))
-                        .width(w)
-                        .height(Length::Fixed(KEY_HEIGHT))
-                        .padding([0, 2])
-                        .style(move |t, s| theme::key(t, k.kind, s))
-                        .on_press(Message::Key(ri, ci)),
+                    // ⚠️ **`button` 的内容默认贴在左上角**，不是居中。
+                    // `iced_widget::button` 的 `layout` 走 `layout::padded`，
+                    // 而 `padded` 把内容 `move_to((padding.left, padding.top))` ——
+                    // 完全没有垂直居中的步骤（button 也没有 `center_y` / `vertical_alignment`
+                    // 这类 API，翻遍 `button.rs` 只有 `width` / `height` / `padding`）。
+                    //
+                    // 所以只看宽度的 `container(face).width(Fill).center_x(Fill)` 会让键面
+                    // **偏上**：容器撑满宽度但高度只有文字高，button 把它钉在顶部。
+                    // 修法：容器**宽高都填满**并四向居中，内容才会落在键面正中心。
+                    button(
+                        container(face)
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .center_x(Length::Fill)
+                            .center_y(Length::Fill),
+                    )
+                    .width(w)
+                    .height(Length::Fixed(KEY_HEIGHT))
+                    .padding([0, 2])
+                    .style(move |t, s| theme::key(t, k.kind, s))
+                    .on_press(Message::Key(ri, ci)),
                 );
             }
             rows = rows.push(r);
@@ -1188,16 +1366,61 @@ fn is_precise(text: &str) -> bool {
     text.starts_with("= ") || text.starts_with('=')
 }
 
-/// 订阅：监听窗口事件，在 `Opened` 时触发亚克力探测。
+/// 表达式回显是否按数学排版。
+///
+/// **恒为真**（除非这行是错误）—— 原因见 `history_entry` 的注释：回显是用户
+/// 自己敲的表达式，天生就是数学式，**不随显示模式（MathIO / LineIO）变化**。
+/// 抽成函数是为了能单测这条约定（用户要求："根号应当始终渲染"）。
+fn echo_renders_math(error: bool) -> bool {
+    !error
+}
+
+/// 把实测耗时格式化成展示文本，**口径与 CLI 完全一致**。
+///
+/// CLI 的 `Timing::elapsed_text`（`crates/hipercalc/src/lib.rs`）是：
+///
+/// ```text
+/// 整秒；不足 1 秒显示 `用时：<1秒`；关闭计时显示时返回空串
+/// ```
+///
+/// 这里照抄它的两条规则：
+/// - **只报整秒**、向下取整（`1.99 秒` 显示 `用时：1秒`）——
+///   用户要的是量级（`100^100^10` 是"几十秒"还是"零点几秒"），不是毫秒精度；
+/// - **不足 1 秒显示 `<1秒`**，而不是 `0秒` —— 后者会让人以为"没计时"。
+///
+/// 文案过 `i18n`（`用时：{0}秒` / `用时：<1秒` 两条词条已在词典里），
+/// 所以切到 English 会变成 `Time: 3s`。
+fn elapsed_text(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 1 {
+        t("用时：<1秒")
+    } else {
+        t_fmt("用时：{0}秒", &[&secs.to_string()])
+    }
+}
+
+/// 订阅：窗口事件（亚克力探测）+ 键盘修饰键状态（区分 Enter / Ctrl+Enter）。
 ///
 /// 用 `window::events()` 而不是别的钩子 —— iced 0.14 没有"窗口就绪回调"，
 /// 事件流是唯一能在**窗口已经存在**之后拿到控制权的办法。
+///
+/// 键盘那条 [`iced::keyboard::listen`] 是为了 `Ctrl` 的按下/松开：
+/// `text_editor` 自己会把 `Enter` 与 `Ctrl+Enter` 都当成"插入换行"，
+/// 拿不到修饰键信息（见 `Message::Edit` 分支的注释），
+/// 所以只能另开一路订阅跟踪 `ModifiersChanged`。
 pub fn subscription(_state: &State) -> iced::Subscription<Message> {
-    iced::window::events().map(|(_id, ev)| match ev {
+    let window_events = iced::window::events().map(|(_id, ev)| match ev {
         iced::window::Event::Opened { .. } => Message::WindowOpened,
         // 其余窗口事件本项目暂时不关心，映射成一个不会被处理的占位
         _ => Message::Noop,
-    })
+    });
+
+    let ctrl = iced::keyboard::listen().map(|ev| match ev {
+        iced::keyboard::Event::ModifiersChanged(m) => Message::CtrlChanged(m.control()),
+        _ => Message::Noop,
+    });
+
+    iced::Subscription::batch([window_events, ctrl])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1212,6 +1435,56 @@ impl State {
     /// 直接设置输入框文本（测试用：跳过键盘模拟）
     pub fn set_input_for_test(&mut self, text: &str) {
         self.input = EditorContent::with_text(text);
+    }
+
+    /// **同步求值**（测试用）。
+    ///
+    /// 产品路径是异步的（[`State::evaluate`] 返回 `Task`，结果稍后由
+    /// [`Message::Evaluated`] 送回来）。但集成测试（`tests/` 目录，尤其是快照）
+    /// 里没有 iced 的事件循环 —— `Task` 交出去就没人跑，历史永远空着。
+    ///
+    /// 所以这里提供一条"等结果"的**同步**入口：输入 → 阻塞取结果 → 灌进历史。
+    /// 走的是**同一个 worker、同一条通道**（[`Evaluator::eval_blocking`]），
+    /// 所以快照画的确实是从真实求值路径来的内容，不是造出来的假数据。
+    ///
+    /// ⚠️ 唯一的差别是耗时会显示成真实值（测试里通常是 `<1秒`），
+    /// 这让快照的右边栏也顺带获得了视觉覆盖。
+    pub fn evaluate_blocking_for_test(&mut self) {
+        let lines: Vec<String> = self
+            .input_lines()
+            .into_iter()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        if lines.is_empty() {
+            return;
+        }
+        let src = lines.join("\n");
+        self.last_input = src.clone();
+        self.input = EditorContent::new();
+        let out = self.evaluator.eval_blocking(src, lines);
+        let _ = self.update(Message::Evaluated(out));
+    }
+
+    /// 等**在飞的那一次**求值回来，并按正常路径写进历史（测试用）。
+    ///
+    /// 单测没法跑 iced 的 `Task`，所以 `update(Message::Evaluate)` 之后历史是空的。
+    /// 这个方法给出"补等一次"的能力：**走的仍是真实回写路径**
+    /// （[`Message::Evaluated`]），只是把等待从执行器搬到了测试线程。
+    ///
+    /// 没有在飞的请求时什么也不做（幂等），可以放心多调。
+    pub fn await_pending_for_test(&mut self) {
+        let Some(slot) = self.pending.take() else {
+            return;
+        };
+        // 自旋等结果信箱被搬运线程填上（产品路径里这一步由 iced 执行器完成）
+        let out = loop {
+            if let Some(v) = slot.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+                break v;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        };
+        let _ = self.update(Message::Evaluated(out));
     }
 
     /// 渲染视图（测试用）
@@ -1231,8 +1504,12 @@ impl State {
     }
 
     /// 设置显示模式（测试用）
+    ///
+    /// 走**完整路径**（UI 副本 + 发给 worker 的命令），而不是只改 `self.modes` ——
+    /// 否则测试会通过、真实界面却还是按旧模式算（这正是要防的失真）。
     pub fn set_display_mode_for_test(&mut self, m: DisplayMode) {
-        self.session.set_display_mode(m);
+        self.modes.display = m;
+        self.evaluator.config(Command::SetDisplay(m));
     }
 
     /// 历史条数（测试用）
@@ -1267,7 +1544,8 @@ mod tests {
         assert!(s.dark, "默认应是深色模式");
         assert!(s.history.is_empty());
         assert!(!s.show_funcs);
-        assert_eq!(s.session.display_mode(), DisplayMode::MathIO);
+        assert_eq!(s.modes.display, DisplayMode::MathIO);
+        assert!(!s.busy, "刚启动时不该处于「计算中」");
     }
 
     #[test]
@@ -1275,7 +1553,7 @@ mod tests {
         let mut s = State::default();
         s.insert("1+1");
         assert_eq!(s.input_text(), "1+1");
-        let _ = s.update(Message::Evaluate);
+        s.evaluate_blocking_for_test();
         assert_eq!(s.history.len(), 1, "应记下一条历史");
         assert!(
             s.history[0].output.contains('2'),
@@ -1288,8 +1566,10 @@ mod tests {
     #[test]
     fn empty_input_does_not_evaluate() {
         let mut s = State::default();
+        // 空输入连单都派不出去（`evaluate` 直接 `Task::none()`）
         let _ = s.update(Message::Evaluate);
         assert!(s.history.is_empty(), "空输入不该产生历史");
+        assert!(!s.busy, "空输入不该进入「计算中」");
     }
 
     /// 错误输入标记为错误，且**错误文本要原样保留**（不能被数学排版吃掉空格）。
@@ -1297,7 +1577,7 @@ mod tests {
     fn error_input_marks_entry_as_error() {
         let mut s = State::default();
         s.insert("1+");
-        let _ = s.update(Message::Evaluate);
+        s.evaluate_blocking_for_test();
         assert_eq!(s.history.len(), 1);
         assert!(s.history[0].error, "`1+` 应标为错误：{:?}", s.history[0]);
     }
@@ -1325,7 +1605,7 @@ mod tests {
     fn error_text_is_prose_not_math() {
         let mut s = State::default();
         s.insert("1+");
-        let _ = s.update(Message::Evaluate);
+        s.evaluate_blocking_for_test();
         let e = &s.history[0];
 
         assert!(e.error);
@@ -1352,6 +1632,34 @@ mod tests {
         );
     }
 
+    /// 表达式回显**始终**按数学排版 —— 与显示模式无关（用户要求："根号应当
+    /// 始终渲染"）。
+    ///
+    /// 回归背景：曾经把显示模式也传给了回显，于是切到 LineIO 后回显跟着退化成
+    /// 纯文本，`sqrt(2)` 原样显示成 ASCII。这条测试把"回显不受模式影响"的约定
+    /// 钉在 `echo_renders_math` 上。
+    #[test]
+    fn echo_renders_math_regardless_of_display_mode() {
+        // 正常行：永远走数学排版
+        assert!(echo_renders_math(false), "非错误行的回显必须按数学排版");
+        // 错误行：退回纯文本（否则散文里的空格会被吃掉，见 error_text_is_prose_not_math）
+        assert!(!echo_renders_math(true), "错误行的回显必须退回纯文本");
+
+        // 端到端再验一遍：同一条 `sqrt(2)`，MathIO 与 LineIO 下回显都能解析出根号
+        //（`parse` 只看输入文本，与模式无关 —— 这正是"始终渲染"的实现基础）
+        for mode in [DisplayMode::MathIO, DisplayMode::LineIO] {
+            let mut s = State::default();
+            s.set_display_mode_for_test(mode);
+            s.insert("sqrt(2)");
+            s.evaluate_blocking_for_test();
+            let e = &s.history[0];
+            assert!(!e.error, "{mode:?} 下 sqrt(2) 不该报错");
+            assert_eq!(e.input, "sqrt(2)", "回显原文应与用户输入一致");
+            let flat = flatten_node(&mathrender::parse(&e.input));
+            assert_eq!(flat, "√(2)", "{mode:?} 下回显应能解析成根号：{flat}");
+        }
+    }
+
     /// 把数学节点树拍平成字符串（测试断言用）
     fn flatten_node(n: &mathrender::Node) -> String {
         use mathrender::Node;
@@ -1365,6 +1673,128 @@ mod tests {
             },
             Node::Pow(a, b) => format!("{}^{}", flatten_node(a), flatten_node(b)),
         }
+    }
+
+    // ── 耗时（用户要求："添加计时功能，对标 CLI 版本"） ───────────────────────
+
+    /// 耗时文本的口径必须与 CLI 的 `Timing::elapsed_text` **逐条对齐**：
+    /// 整秒向下取整、不足 1 秒显示 `<1秒`、文案过 i18n。
+    ///
+    /// 这条测试是"对标 CLI"这件事的唯一凭据 —— 口径一旦漂移（比如改成显示毫秒、
+    /// 或把 0 秒显示成 `0秒`），CLI 与 GUI 的同一个运算就会给出不同的数字。
+    #[test]
+    fn elapsed_text_matches_cli_convention() {
+        use std::time::Duration;
+        let _ = State::default().update(Message::SetLang(UiLang::ZhCn));
+
+        // 不足 1 秒 → `<1秒`（**不是** `0秒`：后者会让人以为没计时）
+        for d in [
+            Duration::ZERO,
+            Duration::from_millis(1),
+            Duration::from_millis(999),
+            Duration::from_micros(1),
+        ] {
+            let s = elapsed_text(d);
+            assert!(
+                s.contains("<1"),
+                "{d:?} 应显示 <1秒，实际 {s:?}（对齐 CLI 的 elapsed_text）"
+            );
+        }
+
+        // 整秒向下取整：1.99 秒 = `用时：1秒`（不是 2 秒）
+        assert!(elapsed_text(Duration::from_millis(1000)).contains('1'));
+        assert!(elapsed_text(Duration::from_millis(1999)).contains('1'));
+        assert_eq!(
+            elapsed_text(Duration::from_millis(1999)),
+            elapsed_text(Duration::from_millis(1000)),
+            "1.99 秒与 1.00 秒都应取整成 1 秒（向下取整，不四舍五入）"
+        );
+        assert!(elapsed_text(Duration::from_secs(2)).contains('2'));
+        assert!(elapsed_text(Duration::from_secs(125)).contains("125"));
+    }
+
+    /// 耗时文案跟着界面语言走（`用时：{0}秒` / `用时：<1秒` 两条词条都在词典里）
+    #[test]
+    fn elapsed_text_follows_language() {
+        use std::time::Duration;
+        let _ = State::default().update(Message::SetLang(UiLang::ZhCn));
+        let zh = elapsed_text(Duration::from_secs(3));
+        assert!(zh.contains("用时") && zh.contains('3'), "简体：{zh:?}");
+
+        let _ = State::default().update(Message::SetLang(UiLang::En));
+        let en = elapsed_text(Duration::from_secs(3));
+        assert!(!en.contains('用'), "英文下不该残留中文：{en:?}");
+        assert!(en.contains('3'), "英文下应保留秒数：{en:?}");
+        let en_sub = elapsed_text(Duration::ZERO);
+        assert!(!en_sub.contains('用'), "英文下 <1 秒也要翻译：{en_sub:?}");
+
+        let _ = State::default().update(Message::SetLang(UiLang::ZhCn));
+    }
+
+    /// 求值走后台之后，**`update` 必须立刻返回**（不阻塞）。
+    ///
+    /// 这是本轮修复的核心承诺。怎么在单测里验"不阻塞"？
+    /// 用一个**必然很慢**的算式（`5000!`），断言 `update` 的调用本身在
+    /// 一个很紧的预算内返回 —— 若哪天有人把 `session.eval` 又挪回 `update`，
+    /// 这里会立刻超时失败。
+    ///
+    /// 另外顺带验证 `busy` 生命周期：派单后立刻为 `true`，结果回来后为 `false`。
+    #[test]
+    fn update_returns_immediately_even_for_slow_input() {
+        use std::time::Instant;
+        let mut s = State::default();
+        s.insert("5000!");
+        let t = Instant::now();
+        let _task = s.update(Message::Evaluate);
+        let took = t.elapsed();
+        assert!(
+            took < std::time::Duration::from_millis(50),
+            "update 必须立刻返回（求值在后台），实际花了 {took:?}"
+        );
+        assert!(s.busy, "派单后应标记为「计算中」");
+        assert!(s.input_text().is_empty(), "派单时就该清空输入框");
+        assert!(
+            s.history.is_empty(),
+            "结果还没回来，不该有历史（有的话说明同步算了）"
+        );
+    }
+
+    /// 计算中时**不收新单**：连按求值不会积压（否则 worker 会排着算好几次）
+    #[test]
+    fn evaluate_is_ignored_while_busy() {
+        let mut s = State {
+            busy: true,
+            ..State::default()
+        };
+        s.insert("1+1");
+        let _ = s.update(Message::Evaluate);
+        assert!(s.busy, "仍应保持计算中");
+        assert_eq!(s.input_text(), "1+1", "计算中不该清空/改动输入框");
+    }
+
+    /// 结果回来后才 push 历史（`Message::Evaluated` 是唯一的写入点）
+    #[test]
+    fn evaluated_message_pushes_history() {
+        let mut s = State {
+            busy: true,
+            ..State::default()
+        };
+        let _ = s.update(Message::Evaluated(Evaluated {
+            input: "1+1".into(),
+            text: "= 2".into(),
+            is_error: false,
+            elapsed: std::time::Duration::from_secs(3),
+        }));
+        assert!(!s.busy, "结果回来应解除「计算中」");
+        assert_eq!(s.history.len(), 1);
+        assert_eq!(s.history[0].input, "1+1");
+        assert_eq!(s.history[0].output, "= 2");
+        assert!(s.history[0].precise, "`= ` 前缀应识别为精确值");
+        assert_eq!(
+            s.history[0].elapsed,
+            std::time::Duration::from_secs(3),
+            "耗时必须原样带进历史"
+        );
     }
 
     /// 虚拟键盘点击必须真的改到输入内容
@@ -1436,28 +1866,59 @@ mod tests {
 
     // ── 阶段五新增行为 ────────────────────────────────────────────────────────
 
-    /// **Enter 是换行、不是求值**（用户的明确要求）。
+    /// **Enter = 求值；Ctrl+Enter = 换行**（用户本轮明确要求）。
     ///
-    /// 这条测试是整个阶段五里最容易悄悄坏掉的一条：如果哪天有人"顺手"在
-    /// `Message::Edit` 里给 Enter 加个求值分支，用户在输入框里就没法换行了，
-    /// 而且界面上完全看不出异常（照样插入换行？不，会变成求值）。
+    /// 这条测试盯住两个方向，缺一不可：
+    /// 1. 裸 Enter **不能**在输入框里留下换行符，而要触发一次求值；
+    /// 2. Ctrl+Enter 才插入换行，编辑器行数从 1 变 2。
     ///
-    /// iced 的默认行为就是 `Edit::Enter` → 插入换行，所以这里断言的是
-    /// **"我们不去拦它"** —— 编辑器的行数必须从 1 变 2。
+    /// ⚠️ 为什么必须靠 `ctrl_held` 这个自记的标志：`text_editor` 的绑定表把
+    /// `Enter` 与 `Ctrl+Enter` 映射成**同一个** `Edit::Enter`（不看修饰键），
+    /// 从 `Action` 上分不出来。若哪天有人"顺手"删掉那条订阅，
+    /// Ctrl+Enter 就会退化成求值 —— 而界面上很难一眼看出。
+    /// ⚠️ 求值是**异步**的，所以这条测试里凡是要"看到结果"的地方，
+    /// 都在 `Edit::Enter` 之后补一次等待（`Message::Evaluated` 走真实回写路径）。
+    /// 这样测的既是"Enter 会派单"，也是"派单后结果真能回来"。
     #[test]
-    fn enter_inserts_newline_instead_of_evaluating() {
+    fn enter_evaluates_and_ctrl_enter_newlines() {
+        // ── 裸 Enter：应求值，不产生换行 ──────────────────────────────────
         let mut s = State::default();
+        assert!(!s.ctrl_held);
+        s.insert("1+1");
+        let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
+        assert!(s.busy, "裸 Enter 应直接派单求值");
+        assert!(
+            !s.input_text().contains('\n'),
+            "裸 Enter 不该在输入框里留下换行：{:?}",
+            s.input_text()
+        );
+        s.await_pending_for_test();
+        assert_eq!(s.history.len(), 1, "结果回来后应有一条历史");
+
+        // ── Ctrl+Enter：应插入换行，不产生历史 ─────────────────────────────
+        let mut s = State::default();
+        let _ = s.update(Message::CtrlChanged(true));
+        assert!(s.ctrl_held);
         s.insert("1+1");
         let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
         let _ = s.update(Message::Edit(Action::Edit(Edit::Insert('2'))));
 
-        assert!(
-            s.history.is_empty(),
-            "按 Enter 不该产生历史（更不该求值）：{:?}",
-            s.history
+        assert!(s.history.is_empty(), "Ctrl+Enter 不该求值：{:?}", s.history);
+        assert_eq!(
+            s.input_lines().len(),
+            2,
+            "Ctrl+Enter 应插入换行，编辑器变成两行"
         );
-        assert_eq!(s.input_lines().len(), 2, "Enter 应插入换行，编辑器变成两行");
         assert_eq!(s.input_text(), "1+1\n2", "两行内容应原样保留");
+
+        // ── 松开 Ctrl 后，Enter 又回到求值 ────────────────────────────────
+        // 此时输入框里是两行 `1+1` / `2`，求值会**整体走一遍**、只出一条历史
+        //（末行结果）—— 所以历史从 0 变 1，正好与上面"Ctrl+Enter 不产生历史"对照。
+        let _ = s.update(Message::CtrlChanged(false));
+        assert!(!s.ctrl_held);
+        let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
+        s.await_pending_for_test();
+        assert_eq!(s.history.len(), 1, "松开 Ctrl 后 Enter 应重新求值");
     }
 
     /// 多行输入求值时：**只把最后一行的结果推进历史，但中间行要真的"过一遍会话"**。
@@ -1476,10 +1937,12 @@ mod tests {
     #[test]
     fn multiline_evaluate_only_reports_last_line() {
         let mut s = State::default();
+        // 多行要靠 **Ctrl+Enter** 敲出来（裸 Enter 现在是求值）
+        let _ = s.update(Message::CtrlChanged(true));
         s.insert("5!/2");
         let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
         s.insert("ans*2");
-        let _ = s.update(Message::Evaluate);
+        s.evaluate_blocking_for_test();
 
         assert_eq!(s.history.len(), 1, "两行只该出一条历史");
         let e = &s.history[0];
@@ -1500,12 +1963,13 @@ mod tests {
     #[test]
     fn multiline_ans_accumulates_line_by_line() {
         let mut s = State::default();
+        let _ = s.update(Message::CtrlChanged(true));
         s.insert("2+3");
         let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
         s.insert("ans*10");
         let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
         s.insert("ans*10");
-        let _ = s.update(Message::Evaluate);
+        s.evaluate_blocking_for_test();
 
         assert_eq!(s.history.len(), 1);
         let e = &s.history[0];
@@ -1520,11 +1984,12 @@ mod tests {
     #[test]
     fn multiline_evaluate_skips_blank_lines() {
         let mut s = State::default();
+        let _ = s.update(Message::CtrlChanged(true));
         s.insert("1+1");
         let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
         let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
         s.insert("3+4");
-        let _ = s.update(Message::Evaluate);
+        s.evaluate_blocking_for_test();
 
         assert_eq!(s.history.len(), 1);
         assert!(
@@ -1542,6 +2007,7 @@ mod tests {
     #[test]
     fn input_text_joins_lines_with_newline_not_space() {
         let mut s = State::default();
+        let _ = s.update(Message::CtrlChanged(true));
         s.insert("1+1");
         let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
         s.insert("2+2");
@@ -1645,12 +2111,17 @@ mod tests {
     // ── 设置：语言 ────────────────────────────────────────────────────────────
 
     /// 语言切换必须真的落到会话上（求值提示语言跟着变）
+    ///
+    /// ⚠️ `Session` 现在在后台线程上、UI 读不到，所以这里断言的是 **UI 侧副本**
+    ///（`State::modes.lang`）—— 而副本与外发命令在同一个 `update` 分支里一起改，
+    /// 所以"副本对"等价于"命令发出去了"。真正"命令到得了 worker"由
+    /// `crate::evaluator::tests::config_reaches_worker_session` 那条端到端测试兜住。
     #[test]
     fn set_lang_reaches_session() {
         let mut s = State::default();
         for l in ALL_LANGS {
             let _ = s.update(Message::SetLang(l));
-            assert_eq!(s.session.lang(), l, "会话语言应切到 {l:?}");
+            assert_eq!(s.modes.lang, l, "会话语言应切到 {l:?}");
         }
         // 还原成中文（默认），避免污染同进程其它测试的文案断言
         let _ = s.update(Message::SetLang(UiLang::ZhCn));
@@ -1677,7 +2148,7 @@ mod tests {
     fn changing_lang_keeps_history_intact() {
         let mut s = State::default();
         s.insert("1+1");
-        let _ = s.update(Message::Evaluate);
+        s.evaluate_blocking_for_test();
         let before = s.history[0].output.clone();
         let _ = s.update(Message::SetLang(UiLang::En));
         assert_eq!(s.history[0].output, before, "切语言不该改动已算出的历史");
@@ -1715,6 +2186,9 @@ mod tests {
             "三角",
             "微积分",
             "平方根",
+            "用时：<1秒",
+            "用时：{0}秒",
+            "计算中…",
             "HiPerCalc — 超高精度计算器",
         ];
 
@@ -1865,12 +2339,12 @@ mod tests {
     fn ans_from_keyboard_evaluates() {
         let mut s = State::default();
         s.insert("5!/2");
-        let _ = s.update(Message::Evaluate);
+        s.evaluate_blocking_for_test();
         assert!(!s.history[0].error, "前置算式应成功：{:?}", s.history[0]);
 
         // 用键盘上的 `A`（字母面板）拼出 `Ans` 与手打等价，这里直接打字验证
         s.insert("Ans*2");
-        let _ = s.update(Message::Evaluate);
+        s.evaluate_blocking_for_test();
         let e = &s.history[1];
         assert!(!e.error, "`Ans*2` 不该报错：{:?}", e);
         assert!(
@@ -1884,14 +2358,11 @@ mod tests {
     fn mode_chips_change_session() {
         let mut s = State::default();
         let _ = s.update(Message::SetDisplay(DisplayMode::LineIO));
-        assert_eq!(s.session.display_mode(), DisplayMode::LineIO);
+        assert_eq!(s.modes.display, DisplayMode::LineIO);
         let _ = s.update(Message::SetAngle(AngleMode::Degree));
-        assert_eq!(s.session.angle_mode(), AngleMode::Degree);
+        assert_eq!(s.modes.angle, AngleMode::Degree);
         let _ = s.update(Message::SetCalc(true));
-        assert_eq!(
-            s.session.calc_mode(),
-            hipercalc_core::calc_mode::CalcMode::Deep
-        );
+        assert_eq!(s.modes.calc, CalcMode::Deep);
         // 还原，避免污染同进程其它测试
         let _ = s.update(Message::SetDisplay(DisplayMode::MathIO));
         let _ = s.update(Message::SetAngle(AngleMode::Radian));
@@ -1933,7 +2404,7 @@ mod tests {
         let mut s = State::default();
         let _ = s.update(Message::PrecisionChanged("1".into()));
         let _ = s.update(Message::ApplyPrecision);
-        assert_eq!(s.session.precision(), hipercalc::MIN_PRECISION);
+        assert_eq!(s.modes.precision, hipercalc::MIN_PRECISION);
         assert_eq!(
             s.precision_text,
             hipercalc::MIN_PRECISION.to_string(),

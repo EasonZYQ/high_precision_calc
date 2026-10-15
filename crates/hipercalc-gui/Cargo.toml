@@ -27,7 +27,11 @@ hipercalc-core = { path = "../hipercalc-core", version = "0.1" }
 hipercalc = { path = "../hipercalc", version = "1.3.0" }
 
 # GUI 框架。用默认 feature 集（wgpu 渲染 + tiny-skia 软件兜底 + crisp 文字）。
-iced.workspace = true
+#
+# 额外开 `canvas`：根号必须用**矢量路径**画（√ 字符的字形顶钩够不到顶线，
+# 字符 + 顶线的组合在视觉上「上下分离」，见 `mathrender.rs` 的 `Radical`）。
+# canvas 不在 iced 的默认 feature 里，所以要显式打开。
+iced = { workspace = true, features = ["canvas"] }
 
 [dev-dependencies]
 # 离屏（headless）渲染 + 快照：用来在**没有显示器**的环境里验证界面长什么样，

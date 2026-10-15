@@ -27,8 +27,9 @@
 //! LineIO 输出（`0.8333333…`、`1.41421356…`）**没有可排版的数学结构**，本模块直接
 //! 原样当普通文本渲染。两种模式走同一入口 [`render`]，由参数区分。
 
-use iced::widget::{Column, Row, Space, container, rule, text};
-use iced::{Alignment, Element, Font, Length, Pixels};
+use iced::widget::canvas::{Frame, Geometry, LineCap, LineJoin, Path, Stroke};
+use iced::widget::{Canvas, Column, Row, Space, container, rule, text};
+use iced::{Alignment, Element, Font, Length, Padding, Pixels, Point, Rectangle, Renderer};
 
 use crate::theme;
 
@@ -485,25 +486,67 @@ pub fn build<'a, M: 'a>(node: &Node, style: Style2) -> Element<'a, M> {
             wrap_inline(c.into(), style)
         }
         Node::Root { degree, inner } => {
-            // 根号 = `√` 字符 + 被开方式 + **上方**一条顶线。
+            // 根号 = **矢量路径** 画的根号（√ 折线 + 顶线，连成一条折线）+ 被开方式。
             //
-            // ⚠️ 顶线在**上**、被开方式在**下** —— 第一版把 `Column` 的 push 顺序写反了，
-            // 结果横线跑到数字下面（看起来像下划线）。`Column` 是自上而下排列，
-            // 所以必须先 push 顶线。
+            // ## 为什么不再用 `√` 字符 + 一条 `Rule`
+            //
+            // 第一版是"`√` 字符 + 上面一条横线"拼出来的。快照里能看出**上下分离**：
+            // 横线悬在被开方式上方，而 `√` 字符的顶钩够不到横线（用户反馈：
+            // "仔细看渲染的根号发现上下有点分离"）。
+            //
+            // 根因是字体度量：`√` 字形的墨迹顶只到 x-height / cap-height 附近，
+            // 而横线贴在行盒**顶部**，两者之间必然空一截。而且这个空隙**随字体变化**
+            //（Cambria / Georgia / Times 的 `√` 各不相同），改不好、也测不准。
+            //
+            // 所以改用 `canvas` 把根号画成**一条连续折线**（印刷排版里根号本就是
+            // 装饰性符号，不是靠字体的 `√` 字形）。这样才能保证：
+            //   * 顶钩与顶线**严丝合缝**（同一路径，不可能分离）；
+            //   * 顶线长度**精确等于**被开方式宽度（由布局给的尺寸算）；
+            //   * 换任何数学字体，根号形状都不变。
+            //
+            // ## 布局
+            //
+            // 根号是"底图"，被开方式是"前景"，两者**叠起来**（`stack!`）：
+            //   * 底图：`Canvas`，宽度 = 根号钩宽 + 被开方式宽，画 √ 折线 + 顶线；
+            //   * 前景：被开方式，**左移进钩子右侧**（左 padding = 钩宽），
+            //     并**下移**到顶线以下（上 padding = 顶线位置）。
+            // 用叠加而不是 `Row`，是因为被开方式必须落在顶线**正下方**、
+            // 而 `Row` 的横向排布做不到"压到前一个元素下面"。
             let radicand = build(inner, style);
-            let top_line = container(
-                // `Rule` 没有 `.width()`；放进定宽容器后它会自动撑满容器宽度
-                rule::horizontal(Pixels(1.6)).style(theme::math_rule),
-            )
-            .width(Length::Fixed(node_width(inner, style.size) + 4.0));
-            let topped = Column::new()
+            let radicand_w = node_width(inner, style.size);
+            let color = style.color.unwrap_or_else(|| theme::colors().text);
+            // 整个根号的高度：比被开方式略高一点，顶线压在上沿、钩子下探一点。
+            let height = style.size * 1.32;
+            // 钩宽（√ 折线占的横向宽度）—— 随字号缩放，保证不同字号下比例一致。
+            // 与 `node_width` 里的 `root_hook_width` 是同一个来源，别各写各的。
+            let hook_w = root_hook_width(style.size);
+
+            let sign = Canvas::new(Radical {
+                hook_w,
+                color,
+                thickness: (style.size * 0.065).clamp(1.0, 2.0),
+            })
+            .width(Length::Fixed(hook_w + radicand_w))
+            .height(Length::Fixed(height));
+
+            // 前景：被开方式，右移到钩子右侧、下移到顶线以下。
+            let laid_out = container(radicand)
+                .width(Length::Fixed(hook_w + radicand_w))
+                .height(Length::Fixed(height))
+                .padding(Padding {
+                    // 上边距 = 顶线到被开方式上沿的间隙（让字不贴着线）
+                    top: height - style.size * 1.0,
+                    // 左边距 = 钩宽：把被开方式推到钩子右边
+                    left: hook_w,
+                    right: 0.0,
+                    bottom: 0.0,
+                })
                 .align_x(Alignment::Start)
-                .push(top_line)
-                .push(radicand);
-            // `√` 贴在数字左侧，底端与数字基线对齐
+                .align_y(Alignment::End);
+
             let mut r = Row::new().align_y(Alignment::End).spacing(0.0);
             if let Some(d) = degree {
-                // n 次根：左上角小字
+                // n 次根：左上角小字（如 `∛`）
                 r = r.push(build(
                     d,
                     Style2 {
@@ -512,14 +555,7 @@ pub fn build<'a, M: 'a>(node: &Node, style: Style2) -> Element<'a, M> {
                     },
                 ));
             }
-            r = r.push(plain(
-                "√",
-                Style2 {
-                    size: style.size * 1.15,
-                    ..style
-                },
-            ));
-            r = r.push(topped);
+            r = r.push(iced::widget::stack![sign, laid_out]);
             r.into()
         }
         Node::Pow(base, exp) => {
@@ -535,6 +571,86 @@ pub fn build<'a, M: 'a>(node: &Node, style: Style2) -> Element<'a, M> {
             ));
             r.into()
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 根号（矢量绘制）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 根号符号的 `canvas` 程序：把 `√` 折线与顶线画成**一条连续折线**。
+///
+/// 这样顶钩与顶线是同一条路径的两段，**结构上**不可能分离 —— 这正是"用 `√` 字符
+/// 拼横线"做不到的（用户反馈的"上下有点分离"就是那个拼法的固有缺陷）。
+///
+/// 形状（坐标系：左上角为原点，y 向下）：
+///
+/// ```text
+///  (0, mid)            (hook_w, near_top)                     (w, near_top)
+///      ●───────────────────●──────────────────────────────────────●   ← 顶线
+///       \                 /
+///        \               /
+///         ●─────────────●
+///     (hook_w*0.28, bottom)  ...  (下探的钩子尖)
+/// ```
+///
+/// 实际上是标准书写式根号：左侧一个"对勾"（下探 → 上行 → 转平 → 顶线右行）。
+struct Radical {
+    /// 钩子（左侧 `√` 折线）占的横向宽度
+    hook_w: f32,
+    /// 线条颜色
+    color: iced::Color,
+    /// 线宽
+    thickness: f32,
+}
+
+impl<Message> iced::widget::canvas::Program<Message> for Radical {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &iced::Theme,
+        bounds: Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+
+        let w = bounds.width.max(1.0);
+        let h = bounds.height.max(1.0);
+        // 顶线离顶端的间隙：让线身完全落在画布内（半线宽 + 1px 余量）
+        let line_y = self.thickness * 0.5 + 0.5;
+        // 钩子尖（最低点）抬高一个半线宽，避免超出画布下沿被裁
+        let bottom_y = h - self.thickness * 0.5;
+
+        // 钩子的三个关键点：
+        //   A：左端起点（中偏下）
+        //   B：下探的最低点（钩子尖）
+        //   C：抬起头、准备接顶线的位置
+        let a = Point::new(self.thickness * 0.5, line_y + h * 0.42);
+        let b = Point::new(self.hook_w * 0.30, bottom_y);
+        let c = Point::new(self.hook_w - self.thickness * 0.5, line_y);
+        let d = Point::new(w - self.thickness * 0.5, line_y);
+
+        let path = Path::new(|p| {
+            p.move_to(a);
+            p.line_to(b);
+            p.line_to(c);
+            p.line_to(d);
+        });
+
+        frame.stroke(
+            &path,
+            Stroke::default()
+                .with_color(self.color)
+                .with_width(self.thickness)
+                // 尖角处用圆角接头，观感更接近印刷根号
+                .with_line_join(LineJoin::Round)
+                .with_line_cap(LineCap::Round),
+        );
+
+        vec![frame.into_geometry()]
     }
 }
 
@@ -558,6 +674,14 @@ fn wrap_inline<'a, M: 'a>(el: Element<'a, M>, _style: Style2) -> Element<'a, M> 
 /// 结果是横线稍微长出内容一点点 —— 这比"太短、盖不住分子"的观感好得多。
 const CHAR_WIDTH_RATIO: f32 = 0.56;
 
+/// 根号钩子（左侧 `√` 折线）占的横向宽度 ÷ 字号。
+///
+/// 渲染（`build` 里的 `Radical`）与宽度估算（`node_width`）**必须**用同一个值，
+/// 否则根号在序列里占的宽度与实际画出来的对不上。抽成函数就是为了防止两处写岔。
+fn root_hook_width(size: f32) -> f32 {
+    size * 0.62
+}
+
 /// 估算一个节点占的宽度（像素）
 fn node_width(node: &Node, size: f32) -> f32 {
     match node {
@@ -569,13 +693,16 @@ fn node_width(node: &Node, size: f32) -> f32 {
             let w = node_width(num, inner).max(node_width(den, inner));
             (w + size * 0.30).max(size * 0.85)
         }
-        // 根号：`√` 本体 + 被开方式 + 顶线出头
+        // 根号：钩宽（`√` 折线占的横向空间）+ 被开方式宽 + 顶线右侧出头一点
         Node::Root { inner, degree } => {
             let d = degree
                 .as_ref()
                 .map(|d| node_width(d, size * 0.55))
                 .unwrap_or(0.0);
-            d + size * 0.78 + node_width(inner, size) + 4.0
+            // ⚠️ 必须与 `build` 里 `Radical` 的布局一致：钩宽 = `size * 0.62`。
+            // 两处不一致的话，根号在 `Seq` 里占的宽度会与实际画出来的对不上，
+            // 后面的元素会盖上来或留出过大空隙。
+            d + root_hook_width(size) + node_width(inner, size) + 3.0
         }
         // 幂：底数 + 上标（字号更小）
         Node::Pow(base, exp) => node_width(base, size) + node_width(exp, size * 0.62),
@@ -875,13 +1002,19 @@ mod tests {
         assert!(!contains_math_glyph("sin(x)"));
     }
 
-    /// 根号顶线的**宽度估算**必须盖住被开方式（否则线短于数字，观感很差）。
+    /// 根号的**几何不变量**：钩宽是渲染与测宽的共同来源，且总宽必须容得下
+    /// 「钩 + 被开方式」。
     ///
-    /// 这条测试是针对一个真实 bug 的回归护栏：顶线与被开方式的**上下顺序**
-    /// 曾在渲染代码里被写反（线跑到数字下面）。顺序无法在纯函数里断言，
-    /// 但宽度是能断言的；顺序由 `snap` 快照（`dark-wgpu.png` 里的 `√2 + √3`）把关。
+    /// 背景：根号曾经是「`√` 字符 + 一条 `Rule`」拼的，字符字形顶钩够不到横线 ⇒
+    /// 视觉上"上下分离"（用户反馈）。现在改成 `canvas` 画的**单条折线**
+    ///（`√` 折线 + 顶线连成一条路径），路径内部不可能分离 —— 但由此引入一个新约束：
+    /// **渲染用的钩宽**与**测宽用的钩宽**必须是同一个数，否则根号在序列里
+    /// 占的宽度与实际画出来的对不上（后面的元素会盖上来）。
+    /// 所以这里钉死 `root_hook_width` 与渲染代码共用同一函数。
+    ///
+    /// 分离本身无法在纯函数里断言（要靠肉眼 / 快照），这里守的是**宽度一致性**。
     #[test]
-    fn root_top_line_covers_radicand() {
+    fn root_geometry_is_consistent() {
         for s in [
             "sqrt(2)",
             "sqrt(12)",
@@ -892,11 +1025,26 @@ mod tests {
             let Node::Root { inner, .. } = parse(s) else {
                 panic!("{s} 应解析成根号");
             };
-            let inner_w = node_width(&inner, 24.0);
-            let line_w = node_width(&inner, 24.0) + 4.0;
+            let size = 24.0;
+            let inner_w = node_width(&inner, size);
+            let hook = root_hook_width(size);
+            let total = node_width(&parse(s), size);
+            // 总宽 = 钩宽 + 被开方式宽 + 右侧出头（与 `node_width` 的公式一致）
+            let expected = hook + inner_w + 3.0;
             assert!(
-                line_w > inner_w,
-                "{s}: 顶线宽 {line_w} 必须大于被开方式宽 {inner_w}"
+                (total - expected).abs() < 0.01,
+                "{s}: 总宽 {total} 应等于 钩{hook} + 内容{inner_w} + 3.0"
+            );
+            // 钩宽必须为正、且随字号线性缩放
+            assert!(hook > 0.0, "{s}: 钩宽必须为正");
+            assert!(
+                (root_hook_width(size * 2.0) - hook * 2.0).abs() < 0.01,
+                "钩宽应随字号线性缩放"
+            );
+            // 总宽必须**严格大于**被开方式宽 —— 否则被开方式会顶到根号外面
+            assert!(
+                total > inner_w,
+                "{s}: 根号总宽 {total} 必须大于被开方式宽 {inner_w}"
             );
         }
     }

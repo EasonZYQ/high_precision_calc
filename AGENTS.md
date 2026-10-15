@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**已可用**：计算 / 历史 / Desmos 式双面板虚拟键盘 / 函数弹窗 / 数学排版与实时预览 / 内置字体 / 深浅双主题 / 全界面多语言）。**含 307 项单元测试**（hipercalc 196 + core 22 + GUI 78 单测 + 10 快照 + 1 doctest，其中 1 项 `perf_scan` 默认 ignore），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
+`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**已可用**：计算 / **后台求值（界面永不卡死）** / **耗时显示（对标 CLI）** / 历史 / Desmos 式双面板虚拟键盘 / 函数弹窗 / 数学排版与实时预览 / 内置字体 / 深浅双主题 / 全界面多语言）。**含 322 项单元测试**（hipercalc 196 + core 22 + GUI 93 单测 + 10 快照 + 1 doctest，其中 1 项 `perf_scan` 默认 ignore），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
 
 ## 硬性要求（用户指定）
 
@@ -59,7 +59,8 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
 
   | 文件 | 职责 |
   | --- | --- |
-  | `app.rs` | 状态 / 消息 / update / view；**所有业务逻辑都在 `update` 里**，`view` 只读状态 |
+  | `app.rs` | 状态 / 消息 / update / view；**所有业务逻辑都在 `update` 里**，`view` 只读状态。求值与 UI 通过 `evaluator` 通信，`update` 本体永不阻塞 |
+  | `evaluator.rs` | **后台求值线程**：常驻 worker 独占 `Session`，`mpsc` 收发 `Request::{Eval, Config}`；`Evaluator::eval` 返回 `(信箱, 等待闭包)` 供 `Task::perform`。⚠️ 刻意不含 `SetLang`（语言必须在 UI 线程同步设） |
   | `keypad.rs` | 虚拟键盘布局 `LAYOUT`（主面板）+ `LAYOUT_ABC`（字母面板）+ 函数目录 `FN_GROUPS` + 插入行为 `splice`/`cursor_back_for`（纯数据 + 纯函数，可脱 GUI 单测） |
   | `mathrender.rs` | MathIO 文本 → 真正的数学排版（分数竖排、根号顶线、幂上标）。**解析与渲染分离**，解析层是纯函数 |
   | `fonts.rs` | **内置字体**（`assets/fonts/`，见下节）+ 数学字体选择（进程级）+ `font_for` / `label` 的自适应分派 |
@@ -136,12 +137,57 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
   而 `Format` **只有 `color` / `font` 两个字段**（无字号、无回调）
   ⇒ **画不出根号顶线**。输入框内联数学排版在 iced 0.14 里做不到，
   现在是"编辑器 + 下方实时预览"两层（见 `app.rs::input_area` 的长注释）。
+- **根号必须用 `canvas` 矢量画，别用"`√` 字符 + 一条 `Rule`"拼**：
+  `√` 字形的墨迹顶够不到行盒顶部 ⇒ 顶钩与顶线**上下分离**（用户实际反馈过），
+  且空隙随字体变化、测不准。现在 `mathrender::Radical` 是一条连续折线
+  （路径内部不可能分离），顶线宽度精确等于被开方式宽。
+  ⚠️ **`canvas` 不在 iced 默认 feature 里** ⇒ Cargo.toml 要显式
+  `iced = { workspace = true, features = ["canvas"] }`。
+- **`button` 的内容默认贴左上角，不是居中**：`iced_widget::button` 的 `layout` 走
+  `layout::padded`，把内容 `move_to((padding.left, padding.top))`，而 `button` **没有**
+  `center_y` / `vertical_alignment` 之类 API。键面要包
+  `container(..).width(Fill).height(Fill).center_x(Fill).center_y(Fill)` 才落在正中心
+  （否则键上字符肉眼可见**偏上**）。
+- **`text_editor` 把 `Enter` 与 `Ctrl+Enter` 映射成同一个 `Edit::Enter`**（绑定表不看修饰键）
+  ⇒ 想区分只能靠键盘订阅跟踪 `ModifiersChanged`、自己记一个 `ctrl_held`。
+  本项目约定：**Enter = 求值，Ctrl+Enter = 换行**。
+- **`iced::widget::canvas::mouse` 是私有模块** ⇒ `Cursor` 要从 `iced::mouse::Cursor` 拿；
+  `Canvas` 程序签名是 `Program<Message>`，`draw` 返回 `Vec<Geometry<Renderer>>`。
 - **`iced::application(..).title(..)` 收的是闭包** `Fn(&State) -> String`，不是字符串；
   而且**只在建窗口时读一次**，运行时无法改标题。
+- **release 构建靠 `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`
+  隐藏控制台**（写在 `main.rs` 顶部）。debug 下保留控制台，`eprintln!` 与 panic 回溯才看得见。
 - **`render` 这类"返回 widget"的函数若要借用局部变量**：先 `parse` 出**拥有所有权的 AST**，
   再 `build`。直接返回会 `cannot return value referencing local variable`（`mathrender::build` 就是为此 `pub`）。
 - **`.cargo/config.toml` 设了 `RUST_TEST_THREADS = "1"`**：GUI 的明暗/语言/字体都是**进程级**
   全局量，并行跑测试会互相污染（快照测试另有 `SERIAL: Mutex<()>` 兜底）。
+
+### 求值必须在别的线程（否则窗口「未响应」）
+
+- **红线：`State::update` 本体里绝不允许同步阻塞**。原先 `update` 直接 `session.eval(..)`，
+  跑在事件循环线程上 ⇒ 输入 `100^100^10`（10^(10^20) 量级）时冻结几十秒，
+  Windows 直接把窗口标题标成「**(未响应)**」。
+- **正确做法**：`Session` 挪进常驻后台 worker 独占（`evaluator.rs`），UI 只通过 `mpsc`
+  发 `Request::{Eval, Config}`。UI 侧的 `Evaluator::eval` 返回 `(信箱, 等待闭包)`，
+  闭包喂给 `Task::perform` —— **iced 把 task 丢进线程池执行，在那里阻塞是对的**。
+- **`Config` 与 `Eval` 必须走同一条队列**：worker 顺序处理 ⇒ "切了模式紧接着算"时，
+  求值**已经按新模式**算，用户不必再算一次。
+- **`Command` 里刻意不含 `SetLang`**：界面文案是在**当帧 `view`** 里读 `i18n` 全局量的，
+  语言必须在 **UI 线程同步**设（走 `hipercalc::session::set_ui_lang`）。若让 worker 异步设，
+  界面不会立刻变（按钮"有时不灵"），测试还会跨用例污染
+  （一个用例刚还原中文，被另一个用例的 worker 延迟改回英文，报 `"Fast" != "快速"`）。
+- **`busy` 标志防积压**：求值中再按 `=` 直接忽略，结果区显示「计算中…」，`=` 变 `…` 且禁用。
+- **降级不静默**：worker 若已退出（`send` 失败），走 `block_for` 返回错误结果，而不是死锁。
+
+### 耗时显示（对标 CLI）
+
+- 口径**逐字对齐** CLI 的 `Timing::elapsed_text`：**整秒向下取整**；不足 1 秒显示
+  `用时：<1秒`（不是 `0秒`）；文案过 `t()` / `t_fmt()`。
+- **计时覆盖"逐行 eval"整段**（大头在结果格式化：方程通式、根收集、因式分解，不是 parse）。
+- **贴在结果行最右侧**：iced 没有 `justify_content: space-between`，
+  `row![result, Space(Length::Fill), timing]` 是**唯一**的两端对齐写法。
+- **`Entry` 存 `Duration` 而非格式化字符串**：语言可能在算完后才切换，而「用时」是**界面文案**，
+  格式化必须推迟到 `view` 里做。
 
 ### 视觉：WinUI3 / 亚克力 / liquid glass
 
@@ -167,10 +213,13 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
 
 ### 验证手段（用户硬性要求："制作时应当进行截图验证"）
 
-- **主力手段是 `iced_test` 的离屏快照**：`tests/snapshot.rs`，5 张基线落在
+- **主力手段是 `iced_test` 的离屏快照**：`tests/snapshot.rs`，9 张基线落在
   `crates/hipercalc-gui/tests/snapshots/*.png`（文件名实际会带 `-wgpu` 后缀）。
+  README 里引用的图在 `crates/hipercalc-gui/docs/`（由基线复制、改语义化文件名而来）——
+  **README 一律放真实截图，不写 ASCII 示意图**（用户明确要求）。改界面要两边一起更新。
   - 渲染入口：`Simulator::with_size(Settings::default(), size, element)` 再 `.snapshot(&theme)`。
-    **视口尺寸必须固定**且与 `main.rs` 的 `window::Settings.size` 一致。
+    **视口尺寸必须固定**（现为 880×780，与 `main.rs` 的 940×860 不一致 —— 历史遗留，
+    快照只要求自身稳定）。
   - ⚠️ `iced_test::Settings` 在 crate 根**没有** re-export（它其实是 `iced_core::Settings`），
     要从 `iced_test::core` 拿；`Snapshot` 只在 `iced_test::simulator` 模块里。
   - **`matches_image` 在文件不存在时会自己创建并返回 `true`** ⇒
@@ -196,7 +245,7 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
 cargo build              # 只建两个出货 crate（workspace 设了 default-members）
 cargo run                # 交互式 REPL（rustyline）
 cargo test               # 218 项单元测试（hipercalc 196 + core 22，其中 1 项 perf_scan 默认 ignore）
-cargo test -p hipercalc-gui    # GUI：78 单测 + 10 快照（快照首次跑会自己建基线）
+cargo test -p hipercalc-gui    # GUI：93 单测 + 10 快照测试（快照首次跑会自己建基线）
 cargo build -p hipercalc-gui   # 图形界面（唯一会编 iced 的命令，首次约 5.5 分钟）
 ```
 
@@ -210,7 +259,7 @@ cargo build -p hipercalc-gui   # 图形界面（唯一会编 iced 的命令，�
   `cargo test` 结尾自带 `finished in X.XXs`（纯测试耗时），需要连编译一起看时用 `time cargo test`。
   多轮验证（反复跑测试、跑全语料扫描）要写清**总耗时**。
   原因：不看时间就发现不了"某次改动把求解拖慢了十倍"，也无法判断某个预算是真有必要的。
-- 已有 `#[cfg(test)]` 单元测试（**218 项**：hipercalc 196 + core 22，`cargo test` 全绿；GUI 另有 78 单测 + 10 快照，需显式 `-p hipercalc-gui`），
+- 已有 `#[cfg(test)]` 单元测试（**218 项**：hipercalc 196 + core 22，`cargo test` 全绿；GUI 另有 93 单测 + 10 快照测试，需显式 `-p hipercalc-gui`），
   其余验证靠管道喂输入人工核对结果：  
   `Write-Output "1+2*3", "x^2-4=0", "x+y=5,2x-y=1", "sin(pi/6)", "/exit" | cargo run`
 - **⚠️ 对拍用的二进制一定要放在 `target-t/` 下，不要放 `change_logs/`**：同一份 exe 放在 `change_logs/`

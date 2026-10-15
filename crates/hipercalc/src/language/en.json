@@ -341,6 +341,7 @@
   "输入表达式，按 = 或键盘右下角的 ↵ 求值": "Type an expression, then press = or the ↵ key on the keypad",
   "输入表达式，例如 sqrt(2)/3、x^2-4=0、int(x^2,x,0,1)": "Type an expression, e.g. sqrt(2)/3, x^2-4=0, int(x^2,x,0,1)",
   "预览": "Preview",
+  "计算中…": "Computing…",
   "主键盘": "Main",
   "字母键盘": "ABC",
   "虚拟键盘": "Keypad",

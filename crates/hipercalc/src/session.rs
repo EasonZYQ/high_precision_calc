@@ -48,6 +48,31 @@ pub fn translate_fmt(template: &str, args: &[&str]) -> String {
     crate::i18n::fmt(template, args)
 }
 
+/// 切换界面语言（`i18n::set` 的公开门面）。
+///
+/// ## 为什么界面需要这个"绕过 Session 直接设"的入口
+///
+/// 语言是**进程级**全局（`i18n` 里一个 `AtomicU8`），而界面的每一处标签都走
+/// [`translate`] 直接读它 —— 就在**当帧的 `view`** 里读。
+///
+/// 而 [`Session::set_lang`] 需要 `&mut Session`。GUI 的 `Session` 已经交给后台
+/// 求值线程了（见 `hipercalc-gui` 的 `evaluator` 模块），UI 线程手上没有它 ——
+/// 只能发一条消息过去让 worker 代劳。但那是**异步**的：用户点完语言按钮，
+/// worker 要等到下一次请求才更新那个全局值，于是**本帧的界面还是旧语言**，
+/// 什么时候翻过来取决于下一次求值 —— 表现出来就是"语言按钮有时不灵"。
+///
+/// 所以语言必须在 UI 线程上同步生效。这个函数就是那条路径：它只碰那个全局值，
+/// 不碰任何会话状态，因此可以脱离 `&mut Session` 调用。
+///
+/// ⚠️ 正因如此，**调用方不要**再让求值线程去设一次语言：跨线程写同一个全局值
+/// 会让"最终是什么语言"取决于线程调度。GUI 的 `evaluator::Command` 里因此
+/// 刻意**没有** `SetLang` 这一项。
+///
+/// 与 [`translate`] 同一套克制原则：只转发"设语言"这一个能力，不公开整个 `i18n`。
+pub fn set_ui_lang(lang: UiLang) {
+    crate::i18n::set(lang);
+}
+
 /// 一条输入行的求值结果
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineResult {

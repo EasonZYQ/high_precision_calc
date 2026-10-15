@@ -45,6 +45,14 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
 
 /// 造一个"已经算过几题"的状态，让快照能体现真实内容
 /// （空界面看不出分数竖排、根号、颜色语义对不对）。
+///
+/// ⚠️ 用 `evaluate_blocking_for_test` 而**不是** `update(Message::Evaluate)`：
+/// 求值现在是**异步**的（跑在后台 worker 上，结果由 `Message::Evaluated` 送回来），
+/// 而这里没有 iced 的事件循环替我们跑那个 `Task` —— 交了 `Task` 就没人执行，
+/// 历史会一直是空的。同步入口走的是同一个 worker、同一条通道，
+/// 所以下面画出来的仍然是真实求值结果。
+///
+/// 这也让每条历史右侧的耗时获得了视觉覆盖（测试里通常显示 `<1秒`）。
 fn populated_state() -> State {
     let mut s = State::default();
     // 覆盖几类典型结果：
@@ -60,7 +68,7 @@ fn populated_state() -> State {
         "1+",
     ] {
         s.set_input_for_test(input);
-        let _ = s.update(Message::Evaluate);
+        s.evaluate_blocking_for_test();
     }
     s
 }
@@ -94,7 +102,11 @@ fn light_theme_snapshot() {
     );
 }
 
-/// 纯 LineIO（小数）模式：数学排版应退化为等宽文本，且不误判结构
+/// 纯 LineIO（小数）模式：**结果**退化为等宽小数文本；
+/// 但**表达式回显仍要渲染根号/分数**（用户要求："根号应当始终渲染"）。
+///
+/// 这条快照同时是"回显不随显示模式退化"的视觉证据：能看到
+/// `› √2 + √3` 的回显是排好版的根号，而下面的结果是 `≈ 3.14626437…`。
 #[test]
 fn lineio_snapshot() {
     let _guard = lock();
@@ -255,7 +267,11 @@ fn snap(state: &State) -> iced_test::simulator::Snapshot {
 }
 
 /// 键盘区必须真的可点 —— 用真实的按键消息走完整回路
-/// （比"看一眼快照"强：它会真的走 Message → update → session.eval）。
+/// （比"看一眼快照"强：它会真的走 Message → update → worker 求值）。
+///
+/// ⚠️ 求值现在是异步的，`update` 只把请求交给后台 worker 就返回。
+/// 这里没有事件循环去跑那个 `Task`，所以拿到 `Task` 之后**主动等一次结果**
+/// —— 用 `Message::Evaluated` 走和真实界面**完全同一条**写历史的路。
 #[test]
 fn keypad_is_clickable_through_simulator() {
     let _guard = lock();
@@ -289,8 +305,16 @@ fn keypad_is_clickable_through_simulator() {
         let (r, c) = pos_of(label);
         let _ = state.update(Message::Key(r, c));
     }
+    // 点键盘上那个求值键（`↵`）。它会走 `KeyAction::Evaluate` → `State::evaluate`
+    // → 后台 worker，所以这里先断言"已经派单"，再等结果回来
     let (r, c) = pos_of_action(KeyAction::Evaluate);
     let _ = state.update(Message::Key(r, c));
+    assert_eq!(
+        state.history_len_for_test(),
+        0,
+        "求值在后台，此刻还没有历史"
+    );
+    state.await_pending_for_test();
 
     assert_eq!(state.history_len_for_test(), 1, "点 `↵` 后应完成一次求值");
     let out = state.last_output_for_test();

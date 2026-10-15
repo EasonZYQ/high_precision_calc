@@ -3,6 +3,17 @@
 //! 界面实现全在库里（见 `lib.rs` 与 `app.rs`）—— 分成 lib + bin 两半
 //! 是为了让 `tests/` 下的集成测试能驱动界面（快照、点击模拟）。
 
+// ⚠️ **Windows 上不弹控制台窗口**。
+//
+// 不带这个属性时，bin 走的是「控制台子系统」，双击 exe 会先弹一个黑框
+//（GUI 程序的观感直接崩掉）。`windows_subsystem = "windows"` 把它切成
+//「窗口子系统」，控制台不再出现。
+//
+// **只在非 debug 构建生效**：debug 下保留控制台，`eprintln!`（比如 DWM 亚克力
+// 探测失败的报告）与 panic 回溯源才看得见 —— 开发时看不到输出会很痛苦。
+// 这是 Rust 官方推荐的写法（`cfg_attr` + `not(debug_assertions)`）。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use hipercalc_gui::{app, fonts, theme};
 use iced::window;
 
