@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**已可用**：计算 / 历史 / 虚拟键盘 / 函数弹窗 / 数学排版 / 深浅双主题）。**含 234 项单元测试**（hipercalc 194 + core 22 + GUI 40 单测 + 6 快照，其中 1 项 `perf_scan` 默认 ignore，另 1 项 doctest），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
+`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**已可用**：计算 / 历史 / Desmos 式双面板虚拟键盘 / 函数弹窗 / 数学排版与实时预览 / 内置字体 / 深浅双主题 / 全界面多语言）。**含 307 项单元测试**（hipercalc 196 + core 22 + GUI 78 单测 + 10 快照 + 1 doctest，其中 1 项 `perf_scan` 默认 ignore），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
 
 ## 硬性要求（用户指定）
 
@@ -53,21 +53,52 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
   而且 GUI 的依赖树（iced → wgpu / naga / winit，**新增 354 个包、合计 399**）比命令行重得多，
   分开才能让命令行保持"零额外依赖、秒级构建"。
 - **crate 是 lib + bin 双形态**：界面实现在库里（`lib.rs` 导出 `app` / `keypad` / `mathrender` /
-  `theme` / `backdrop`），`main.rs` 只负责起事件循环。**拆两半的唯一目的是让 `tests/` 能驱动界面**
+  `fonts` / `theme` / `backdrop`），`main.rs` 只负责起事件循环。**拆两半的唯一目的是让 `tests/` 能驱动界面**
   —— 集成测试编译的是库，看不到 bin 里的东西。
 - **模块分工**（各管一件事，改动时不要越界）：
 
   | 文件 | 职责 |
   | --- | --- |
   | `app.rs` | 状态 / 消息 / update / view；**所有业务逻辑都在 `update` 里**，`view` 只读状态 |
-  | `keypad.rs` | 虚拟键盘布局 `LAYOUT` + 函数目录 `FN_GROUPS` + 插入行为 `splice`/`cursor_back_for`（纯数据 + 纯函数，可脱 GUI 单测） |
+  | `keypad.rs` | 虚拟键盘布局 `LAYOUT`（主面板）+ `LAYOUT_ABC`（字母面板）+ 函数目录 `FN_GROUPS` + 插入行为 `splice`/`cursor_back_for`（纯数据 + 纯函数，可脱 GUI 单测） |
   | `mathrender.rs` | MathIO 文本 → 真正的数学排版（分数竖排、根号顶线、幂上标）。**解析与渲染分离**，解析层是纯函数 |
+  | `fonts.rs` | **内置字体**（`assets/fonts/`，见下节）+ 数学字体选择（进程级）+ `font_for` / `label` 的自适应分派 |
   | `theme.rs` | 色板令牌 + 全部样式函数 + 圆角定额。深/浅两套 WinUI3 令牌 |
   | `backdrop.rs` | Windows DWM 亚克力（含 `EnumWindows` + PID 反查 HWND）；非 Windows 是空实现 |
 
 - **`Session` 是 GUI 与 CLI 的公共求值入口**（`crates/hipercalc/src/session.rs`）：
   GUI **不直接调** `run_line` / `handle_command`，一律走 `Session::eval(&str) -> LineResult`。
   这样两条前端走同一条求值路径，行为不会漂移。改求值行为时**两处都要回归**。
+
+### 界面文案必须过 `t()`（漏了会"看着像做了其实没做"）
+
+- `Session::eval` 返回的文本（错误信息、`/help` 回显）由 `hipercalc` 在**输出边界**自动翻译；
+  但 **GUI 自身那些硬编码的中文标签根本不经过那条路**。
+- 所以界面里每一处会显示给用户的中文都必须写成 `theme::label(t("…"))`，
+  其中 `t` 是 `app.rs` 顶部的本地助手（转发 `hipercalc::session::translate`，
+  插值版是 `t_fmt`）。**漏一处**就是切成 English 后那一处还留着中文。
+- **词典键一律用完整、有辨识度的界面文案**：`i18n::t` 是**子串最长优先**匹配，
+  短键会在别处的输出文本里到处替换。反例：`函数` → `functions` 这条**已存在**
+  （CLI 的 `/set` 颜色分类用，小写复数才对），所以界面按钮改用 `展开函数面板` 长键。
+- 新增界面文案时：① 在 `app.rs::tests::ui_labels_follow_language` 的 `UI_STRINGS`
+  里登记；② 往 `crates/hipercalc/src/language/{en,zh-TW}.json` 各加一条
+  —— **两份键集必须严格一致**，`i18n::tests` 会拦。
+- ⚠️ **窗口标题只在启动时跟随语言**：iced 0.14 只在建窗口时能设标题，
+  运行时**没有** `set_title`（`iced_runtime::window` 里只有 resize / minimize / maximize / move_to）。
+
+### 内置字体（`assets/fonts/`，约 20MB，用户明确要求"打进仓库"）
+
+- **`iced::Settings { fonts: .. }` 必须在建窗口之前给**（`main.rs`）。装晚了文字会
+  **静默**退回默认字体 —— 不报错，只是观感不对。
+- iced 内部用 `fontdb`；`load_font_source` 会**把 `.ttc` 集合里的每个 face 单独注册**
+  ⇒ `.ttc` 里的 `Cambria Math` 能按族名取到（实测确认）。
+- 中文一律**等线**（`FAMILY_CJK = "DengXian"`）；符号/字母用**当前数学字体**
+  （5 选 1，设置里可切，进程级 `AtomicU8`）。分派入口是 `fonts::font_for(s)`
+  （含 CJK 走等线、否则走数学字体），`theme::label(s)` 是它的包装。
+- ⚠️ `theme::label` 的返回类型**三个参数都要给全**（`Text<'a, Theme, Renderer>`），
+  且生命周期与输入绑定。泛型消息参数 `M` / `Text<'static, ..>` 两种写法都编译不过
+  （`Text` 里没有消息参数；`'static` 太严会被 `borrowed data escapes` 拒）。
+- 换字体**不重算历史**：历史存的是文本，渲染时才取字体，下一帧整屏一起换。
 
 ### Iced 0.14 API 陷阱（全部实测踩过，写代码前先看这里）
 
@@ -98,6 +129,19 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
 - **`Grid::columns(n)` 是整行等高**：换行后第一行会被撑到很高。要"自动换行 + 行高自然"
   得**手动 `chunks(COLS)` 切行**、每行一个 `Row`。注意 `chunks` 会丢原始下标，
   全局下标要自己算 `chunk_i * COLS + j`（有单测钉死）。
+- **`text_editor` 没有 `on_focus` / `on_blur` 回调**（只有 `is_focused()` 查询）⇒
+  要实现"点完按钮光标还在"只能**主动 focus**：给它 `.id(INPUT_ID)`，
+  再发 `iced::widget::operation::focus(INPUT_ID)`。
+- **`text_editor` 没有自绘扩展点**：它自己排版自己那串文本，唯一开放的是 `Highlighter`，
+  而 `Format` **只有 `color` / `font` 两个字段**（无字号、无回调）
+  ⇒ **画不出根号顶线**。输入框内联数学排版在 iced 0.14 里做不到，
+  现在是"编辑器 + 下方实时预览"两层（见 `app.rs::input_area` 的长注释）。
+- **`iced::application(..).title(..)` 收的是闭包** `Fn(&State) -> String`，不是字符串；
+  而且**只在建窗口时读一次**，运行时无法改标题。
+- **`render` 这类"返回 widget"的函数若要借用局部变量**：先 `parse` 出**拥有所有权的 AST**，
+  再 `build`。直接返回会 `cannot return value referencing local variable`（`mathrender::build` 就是为此 `pub`）。
+- **`.cargo/config.toml` 设了 `RUST_TEST_THREADS = "1"`**：GUI 的明暗/语言/字体都是**进程级**
+  全局量，并行跑测试会互相污染（快照测试另有 `SERIAL: Mutex<()>` 兜底）。
 
 ### 视觉：WinUI3 / 亚克力 / liquid glass
 
@@ -151,7 +195,8 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
 ```powershell
 cargo build              # 只建两个出货 crate（workspace 设了 default-members）
 cargo run                # 交互式 REPL（rustyline）
-cargo test               # 208 项单元测试（hipercalc 185 + core 22 + 1 doctest，其中 1 项 perf_scan 默认 ignore）
+cargo test               # 218 项单元测试（hipercalc 196 + core 22，其中 1 项 perf_scan 默认 ignore）
+cargo test -p hipercalc-gui    # GUI：78 单测 + 10 快照（快照首次跑会自己建基线）
 cargo build -p hipercalc-gui   # 图形界面（唯一会编 iced 的命令，首次约 5.5 分钟）
 ```
 
@@ -165,7 +210,7 @@ cargo build -p hipercalc-gui   # 图形界面（唯一会编 iced 的命令，�
   `cargo test` 结尾自带 `finished in X.XXs`（纯测试耗时），需要连编译一起看时用 `time cargo test`。
   多轮验证（反复跑测试、跑全语料扫描）要写清**总耗时**。
   原因：不看时间就发现不了"某次改动把求解拖慢了十倍"，也无法判断某个预算是真有必要的。
-- 已有 `#[cfg(test)]` 单元测试（**208 项**：hipercalc 185 + core 22 + 1 doctest，`cargo test` 全绿；GUI 目前 0 项），
+- 已有 `#[cfg(test)]` 单元测试（**218 项**：hipercalc 196 + core 22，`cargo test` 全绿；GUI 另有 78 单测 + 10 快照，需显式 `-p hipercalc-gui`），
   其余验证靠管道喂输入人工核对结果：  
   `Write-Output "1+2*3", "x^2-4=0", "x+y=5,2x-y=1", "sin(pi/6)", "/exit" | cargo run`
 - **⚠️ 对拍用的二进制一定要放在 `target-t/` 下，不要放 `change_logs/`**：同一份 exe 放在 `change_logs/`

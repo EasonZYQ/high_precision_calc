@@ -1733,7 +1733,9 @@ fn colorize_impl(
             } else if CONSTANTS.contains(&word.as_str()) {
                 flush_plain!();
                 result.push_str(&word.color(colors.constant).bold().to_string());
-            } else if word == "ans" {
+            } else if word.eq_ignore_ascii_case("ans") {
+                // 与 parser 一致：`Ans` / `ANS` 也是 ans（语法着色跟着走，免得
+                // 键盘打出来的 `Ans` 在回显里是"没被识别的变量"配色）
                 flush_plain!();
                 result.push_str(&word.color(colors.number).to_string());
             } else {

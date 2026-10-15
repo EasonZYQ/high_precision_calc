@@ -141,6 +141,98 @@ fn empty_state_snapshot() {
     );
 }
 
+// ── 阶段五新增界面 ───────────────────────────────────────────────────────────
+
+/// 输入框下方的**实时数学预览**：敲 `sqrt(2)/3`，预览行应排出根号与分数。
+///
+/// 这是用户明确要求的"输入栏里根号应当渲染，类似 desmos"。快照里能直接看到
+/// 预览行有没有出现、根号顶线有没有画对、位置是不是在输入框正下方。
+#[test]
+fn input_preview_snapshot() {
+    let _guard = lock();
+    let mut state = populated_state();
+    state.set_dark_for_test(true);
+    // 留一段"正在输入"的内容，让预览行有东西可排
+    state.set_input_for_test("sqrt(2)/3 + x^2");
+    // 顺带把主面板也切到字母面板，一张图同时看两处新东西
+    let _ = state.update(Message::SetPanel(hipercalc_gui::keypad::Panel::Abc));
+
+    let snapshot = snap(&state);
+    let path = format!("{SNAP_DIR}/preview.png");
+    assert!(
+        snapshot.matches_image(&path).expect("快照比对/写入失败"),
+        "预览行界面与基线不一致：{path}"
+    );
+}
+
+/// 字母面板（Desmos 的第二块键盘）：应打出 `123` 返回键与三行字母。
+///
+/// 同时把界面语言切成英文 —— 一张图能同时验证"面板切换"与"语言切换"两件事：
+/// 工具条上的中文标签（快速/死算/清空）应变成英文。
+///
+/// ⚠️ 语言与字体一样是**进程级**的（存在 `i18n` 的全局里），所以要还原。
+#[test]
+fn abc_panel_and_english_snapshot() {
+    let _guard = lock();
+    let mut state = populated_state();
+    state.set_dark_for_test(true);
+    state.set_input_for_test("sin(theta)");
+    let _ = state.update(Message::SetPanel(hipercalc_gui::keypad::Panel::Abc));
+    let _ = state.update(Message::SetLang(hipercalc::session::UiLang::En));
+
+    let snapshot = snap(&state);
+    let path = format!("{SNAP_DIR}/abc-en.png");
+    assert!(
+        snapshot.matches_image(&path).expect("快照比对/写入失败"),
+        "字母面板界面与基线不一致：{path}"
+    );
+
+    // 还原中文，免得后面的测试渲染出英文文案（进程级开关）
+    let _ = state.update(Message::SetLang(hipercalc::session::UiLang::ZhCn));
+}
+
+/// 设置面板展开态：三行（精度 / 语言 / 数学字体）都要在一张图里看清楚。
+///
+/// 用户在阶段五明确要求"设置里添加语言选择"与"在设置里添加这些全部字体，
+/// 供用户选择"—— 这条快照就是这两项的视觉证据。
+#[test]
+fn settings_panel_snapshot() {
+    let _guard = lock();
+    let mut state = populated_state();
+    state.set_dark_for_test(true);
+    let _ = state.update(Message::ToggleSettings);
+
+    let snapshot = snap(&state);
+    let path = format!("{SNAP_DIR}/settings.png");
+    assert!(
+        snapshot.matches_image(&path).expect("快照比对/写入失败"),
+        "设置面板界面与基线不一致：{path}"
+    );
+}
+
+/// 切换数学字体后**整屏文字都要跟着换**（历史里已算好的结果也要换）。
+///
+/// 字体是进程级开关，渲染时才取 —— 所以不必重算历史。这张快照用来肉眼确认
+/// "换了字体之后旧的分数/根号也变了样子"，而不是只有设置按钮变了。
+#[test]
+fn math_font_switch_snapshot() {
+    let _guard = lock();
+    let mut state = populated_state();
+    state.set_dark_for_test(true);
+    // 挑一个与默认 Cambria Math 差别最明显的（Georgia 的 x-height 大得多）
+    let _ = state.update(Message::SetMathFont(2));
+
+    let snapshot = snap(&state);
+    let path = format!("{SNAP_DIR}/font-georgia.png");
+    assert!(
+        snapshot.matches_image(&path).expect("快照比对/写入失败"),
+        "换字体后的界面与基线不一致：{path}"
+    );
+    // ⚠️ 字体是进程级开关，还原默认，免得后面的测试渲染出这种字体。
+    //（`SERIAL` 锁保证同时只有一个测试在跑，所以这里改完再还原是安全的。）
+    let _ = state.update(Message::SetMathFont(0));
+}
+
 /// 把状态渲染成一张离屏快照。
 ///
 /// 视口尺寸**必须固定**：`Simulator::new` 用的是 `window::Settings::default().size`，
@@ -167,7 +259,7 @@ fn snap(state: &State) -> iced_test::simulator::Snapshot {
 #[test]
 fn keypad_is_clickable_through_simulator() {
     let _guard = lock();
-    use hipercalc_gui::keypad::LAYOUT;
+    use hipercalc_gui::keypad::{KeyAction, LAYOUT};
 
     /// 按键面上文字定位按键下标
     fn pos_of(label: &str) -> (usize, usize) {
@@ -178,16 +270,29 @@ fn keypad_is_clickable_through_simulator() {
             .unwrap_or_else(|| panic!("键盘里应有按键 {label}"))
     }
 
+    /// 按 `KeyAction` 定位按键下标。
+    ///
+    /// ⚠️ 求值键**不能按 `=` 找**了：改成 Desmos 布局之后，它的键面是 `↵`
+    /// （与 Windows 计算器、Desmos 一致），`=` 只在输入框右侧那个按钮上。
+    /// 用 `KeyAction::Evaluate` 找才稳 —— 键面文字以后还会改，动作不会。
+    fn pos_of_action(a: KeyAction) -> (usize, usize) {
+        LAYOUT
+            .iter()
+            .enumerate()
+            .find_map(|(ri, row)| row.iter().position(|k| k.action == a).map(|ci| (ri, ci)))
+            .unwrap_or_else(|| panic!("键盘里应有动作 {a:?} 的键"))
+    }
+
     let mut state = State::default();
-    // 依次点 `1` `÷` `2` `=`，等价于输入 `1/2`
+    // 依次点 `1` `÷` `2` `↵`，等价于输入 `1/2` 并求值
     for label in ["1", "÷", "2"] {
         let (r, c) = pos_of(label);
         let _ = state.update(Message::Key(r, c));
     }
-    let (r, c) = pos_of("=");
+    let (r, c) = pos_of_action(KeyAction::Evaluate);
     let _ = state.update(Message::Key(r, c));
 
-    assert_eq!(state.history_len_for_test(), 1, "点 `=` 后应完成一次求值");
+    assert_eq!(state.history_len_for_test(), 1, "点 `↵` 后应完成一次求值");
     let out = state.last_output_for_test();
     assert!(
         out.contains("1 / 2") || out.contains("0.5"),

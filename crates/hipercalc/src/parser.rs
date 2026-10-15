@@ -1004,7 +1004,23 @@ impl Parser {
                 break;
             }
         }
-        let ident: String = self.input[start..self.pos].iter().collect();
+        let ident_raw: String = self.input[start..self.pos].iter().collect();
+
+        // `ans` 的**大小写不敏感**归一：`Ans` / `ANS` / `aNs` 一律当 `ans`。
+        //
+        // 必须在这里（刚读完标识符、任何后续判定之前）做，理由有两条：
+        // 1. 虚拟键盘上那个键面写的是 `Ans`（与 Windows 计算器一致），敲进去就是 `Ans`；
+        // 2. 若不拦截，`Ans` 会掉进后面的分支 —— 它满足"全大写标识符"的规则，
+        //    被当成一个名叫 `ANS` 的**存储变量**，报 `未定义变量: A`（实测如此）。
+        //    全小写的 `ans` 却正常，两边行为不一致，用户会以为 `Ans` 键是坏的。
+        //
+        // ⚠️ 只特判 `ans` 这**一个**名字，不做整体 `to_lowercase()`：
+        // 那会把 `AB`、`PI_VAR` 这类存储变量名一起小写掉，破坏既有语义。
+        let ident: String = if ident_raw.eq_ignore_ascii_case("ans") {
+            "ans".to_string()
+        } else {
+            ident_raw
+        };
 
         self.skip_whitespace();
 

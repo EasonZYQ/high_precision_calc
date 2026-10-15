@@ -19,6 +19,35 @@ use hipercalc_core::trig::AngleMode;
 use hipercalc_core::{bigfloat, calc_mode, display};
 use std::collections::BTreeMap;
 
+/// 界面语言（`session` 的公开门面之一）。
+///
+/// `i18n` 模块本身是私有的（`mod i18n;`），但语言是**必须**让界面切的东西
+/// （用户明确要求"设置里添加语言选择"）。所以在这里转发一下 ——
+/// 比把整个 `i18n` 模块公开出去更克制：GUI 只需要知道"有哪些语言、现在哪个"。
+pub use crate::i18n::Lang as UiLang;
+
+/// 全部可选语言（顺序即设置面板里的显示顺序）
+pub const ALL_LANGS: [UiLang; 3] = crate::i18n::Lang::ALL;
+
+/// 翻译界面文案（`i18n::t` 的公开门面）。
+///
+/// 界面（GUI）自己的标签 —— "键盘"、"函数"、"预览"、"工作精度" —— 也应当跟随
+/// 语言选择。这些文案**不在**求值输出里，走不到 `LineResult.text` 那条已翻译的
+/// 路，所以得由界面显式调一次。
+///
+/// 与 [`Session::lang_native_name`] 同理：转发一个函数，比把整个 `i18n` 模块
+/// 公开出去克制得多 —— 界面只需要"把这句话换成当前语言"这一个能力。
+pub fn translate(s: &str) -> String {
+    crate::i18n::t(s)
+}
+
+/// 带占位符的界面文案翻译（`i18n::fmt` 的公开门面）。
+///
+/// 用于 `当前 {0} 位` 这类需要插值的标签。位置参数按 `{0}`/`{1}` 填。
+pub fn translate_fmt(template: &str, args: &[&str]) -> String {
+    crate::i18n::fmt(template, args)
+}
+
 /// 一条输入行的求值结果
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineResult {
@@ -217,6 +246,14 @@ impl Session {
     pub fn set_lang(&mut self, lang: Lang) {
         i18n::set(lang);
         self.state.lang_base = lang;
+    }
+
+    /// 某种语言的**母语名**（"简体中文" / "繁體中文" / "English"）。
+    ///
+    /// 写 `Session` 上的方法而不是让界面自己 match：语言名单改由
+    /// `hipercalc` 说了算，界面只负责显示，免得两边各维护一份翻译表。
+    pub fn lang_native_name(lang: UiLang) -> &'static str {
+        lang.native_name()
     }
 
     /// 当前结果数制
@@ -613,6 +650,43 @@ mod tests {
             assert!(vars.iter().any(|(k, _)| k == "A"), "变量 A 应存在：{vars:?}");
             assert!(s.del_var("A"), "删除刚建的变量应成功");
             assert!(!s.vars().iter().any(|(k, _)| k == "A"), "A 应已被删除");
+        });
+    }
+
+    #[test]
+    fn ans_is_case_insensitive() {
+        // 虚拟键盘上那个键面印的是 `Ans`（与 Windows 计算器一致）。
+        // 改动前它会被当成一个名叫 `ANS` 的存储变量，报 `未定义变量: A`，
+        // 而全小写的 `ans` 却正常 —— 用户会以为键盘上那个键是坏的。
+        with_session!(s => {
+            for spelling in ["ans", "Ans", "ANS", "aNs", "anS"] {
+                // ⚠️ 每轮都要**重置 ans**：`ans+1` 自己会把 ans 改掉（60 → 61 → 62…），
+                // 不重置的话第二轮的期望值就不对了（第一版就栽在这里）。
+                s.eval("5!/2"); // ans = 60
+                let r = s.eval(&format!("{spelling}+1"));
+                assert!(
+                    !r.is_error,
+                    "`{spelling}` 应等价于 ans，实际报错：{}",
+                    r.text
+                );
+                assert!(r.text.contains("61"), "`{spelling}+1` 应为 61：{}", r.text);
+            }
+        });
+    }
+
+    /// 大小写归一**只针对 `ans` 这一个名字**，不能殃及存储变量。
+    #[test]
+    fn ans_normalization_does_not_swallow_other_names() {
+        with_session!(s => {
+            // `AN` / `S` 与 `ans` 只差大小写，但它们是独立的变量名，必须仍然报未定义
+            for name in ["AN", "S", "aNs_2", "ans_2"] {
+                let r = s.eval(name);
+                assert!(
+                    r.is_error,
+                    "`{name}` 不该被当成 ans（它是另一个标识符）：{}",
+                    r.text
+                );
+            }
         });
     }
 

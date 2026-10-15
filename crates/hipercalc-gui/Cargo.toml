@@ -34,3 +34,10 @@ iced.workspace = true
 # 并把 PNG 存进 tests/snapshots/ 作为视觉基线。这是本项目"截图验证"的主力手段 ——
 # 系统级的抓屏（PowerShell + System.Drawing）在本机受限，靠不住。
 iced_test = "0.14"
+
+# iced 内部就是用它解析字体的，但没把它 re-export 出来。
+# 我们在 `examples/fontprobe.rs` 与 `tests/fonts.rs` 里需要拿它核对
+# "声明的字体族名真的能从打包字节里取到" —— 字体名写错会**静默**退回默认字体，
+# 不主动验证根本发现不了，所以这条依赖是必要的。
+# 版本跟 iced 依赖树里那份（见 Cargo.lock）对齐，避免重复编译两份。
+fontdb = "0.23"

@@ -3,15 +3,35 @@
 //! 与 `app.rs` 分开的理由：这里是**纯数据 + 纯函数**，可以脱离 GUI 单测；
 //! `app.rs` 只负责把这些数据摆成 widget、把点击转成消息。
 //!
-//! ## 键盘设计
+//! ## 键盘设计（照 Desmos 的布局）
 //!
-//! 布局照搬 Windows 计算器 / WinUI3 的通用排列（用户说"类似 WinUI3"），
-//! 但对**高精度计算器**做了三处调整：
+//! 布局模仿 Desmos 科学计算器的键盘，但按本项目的实际能力做了取舍。原文是
+//! 两个**可切换的面板**：
 //!
-//! 1. 保留独立的 `x`（未知数）与 `,`（函数多参数、方程组、统计列表都要用）；
-//! 2. 加 `^`（幂）与 `Ans`（上次结果）—— 高精度场景里这两者使用频率极高；
-//! 3. 不留"科学计算器"的花哨符号（`n!`、`%`、`1/x`）：本项目这些都能直接打
-//!    （`5!`、`sin(x)`），多一个按钮只是增加视觉噪音。
+//! ```text
+//! 主面板                                  符号/字母面板（点 `ABC` 进）
+//! ┌────────────────────┬──────────┬────┐  ┌───────────────────────────────┐
+//! │ x   y   a²  aᵇ     │ 7  8  9  │ƒ   │  │ q w e r t y u i o p           │
+//! │ (   )   <   >      │ 4  5  6  │← → │  │ a s d f g h j k l θ           │
+//! │ |a| ,   ≤   ≥      │ 1  2  3  │ ⌫  │  │   z x c v b n m               │
+//! │ ABC 🔊  √   π      │ 0  .  =  │ ↵  │  │ 123 a_b !' [] {} ~% :          │
+//! └────────────────────┴──────────┴────┘  └───────────────────────────────┘
+//! ```
+//!
+//! ### 与 Desmos 的三处**有意偏离**
+//!
+//! Desmos 的键盘是为"画函数图像"设计的，我们不是，照抄会有几个键纯属噪音：
+//!
+//! 1. **`y` 键去掉了**：Desmos 用它画第二条曲线。本计算器只有 `x` 一个自变量，
+//!    多发一个 `y` 只会让人以为能画两条线。位置换成本项目高频的 `e`（自然常数）。
+//! 2. **`🔊` 换掉了**：那是 Desmos 的语音朗读。换成本项目高频的 `^`（幂）——
+//!    高精度计算里 `2^500` 这类表达极其常用，比朗读键有用得多。
+//! 3. **`<` `>` 换成了 `%` `!`**：不等号只在解不等式时用，且本项目的解不等式
+//!    入口是 `solve` 而不是符号本身；`!`（阶乘）与 `%`（百分号）在计算器上使用频率
+//!    高得多。**这一条要说明清楚**：`!` 是 Desmos 键盘上没有、我们特意加的。
+//!
+//! 保留的 Desmos 特征：`a²` / `aᵇ`（幂快捷）、`|a|`（绝对值）、`≤` `≥`、
+//! `ABC` 面板切换、右侧独立的 `ƒ` / `←` `→` / `⌫` / `↵` 一列。
 //!
 //! ## 插入行为
 //!
@@ -26,10 +46,13 @@ pub use crate::theme::KeyKind;
 /// 一个虚拟按键。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Key {
-    /// 键面上显示的文字（可用符号，如 `π`、`√`、`⌫`）
+    /// 键面上显示的文字。
+    ///
+    /// 这里可以放**记号**（`π`、`√`、`≤`、`aᵇ`），它们由 `mathrender` 按数学字体排；
+    /// 也可以放普通的字母数字。两者的字号在 `app::keypad_area` 里统一处理。
     pub label: &'static str,
     /// 点击后插入到输入框的**真实文本**。
-    /// 为空表示"这个键不插文本"（如删除键、等号键），由 [`Key::action`] 决定行为。
+    /// 为空表示"这个键不插文本"（如删除键、方向键、等号键），由 [`Key::action`] 决定行为。
     pub insert: &'static str,
     /// 插入后光标**额外左移**的格数。
     ///
@@ -55,6 +78,28 @@ pub enum KeyAction {
     Clear,
     /// 求值
     Evaluate,
+    /// 光标左移一格（Desmos 的 `←`）
+    CursorLeft,
+    /// 光标右移一格（Desmos 的 `→`）
+    CursorRight,
+    /// 切到主面板（数字/符号）
+    ShowMain,
+    /// 切到字母面板（Desmos 的 `ABC`）
+    ShowAbc,
+    /// 插入上标 `^`（Desmos 的 `aᵇ`），随后光标停在指数位置
+    Superscript,
+    /// 打开函数面板（Desmos 键盘右侧那个 `functions` 键）
+    ToggleFuncs,
+}
+
+/// 键盘面板
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Panel {
+    /// 主面板：符号 + 数字（默认）
+    #[default]
+    Main,
+    /// 字母面板（Desmos 的 `ABC`）
+    Abc,
 }
 
 /// 构造一个"插入文本"的键
@@ -79,13 +124,69 @@ const fn fn_key(label: &'static str, insert: &'static str, back: usize) -> Key {
     }
 }
 
-/// 键盘布局：每行一组键。
+/// 构造一个"只做事、不插文本"的键
+const fn act(label: &'static str, kind: KeyKind, action: KeyAction) -> Key {
+    Key {
+        label,
+        insert: "",
+        cursor_back: 0,
+        kind,
+        action,
+    }
+}
+
+/// **主面板**布局：左侧符号区 + 中间数字区 + 右侧功能列。
 ///
-/// 行内按键个数不要求相同 —— 布局用 `Row` 而不是 `Grid`，
-/// 这样 `=` 键可以单独加宽，视觉重心更好。
+/// 用 `&[&[Key]]` 而不是二维数组，是为了让每行长度可以不同 ——
+/// 渲染时用 `Row`，`=` 与 `↵` 能单独加宽，视觉重心更稳。
 pub const LAYOUT: &[&[Key]] = &[
-    // 第一行：控制 + 结构 + 常数
+    // ── 第 1 行：符号 / 数字7-9 / ƒ ────────────────────────────────────────
     &[
+        key("x", "x", KeyKind::Function),
+        key("e", "e", KeyKind::Function),
+        fn_key("a²", "^2", 0),
+        act("aᵇ", KeyKind::Function, KeyAction::Superscript),
+        key("7", "7", KeyKind::Digit),
+        key("8", "8", KeyKind::Digit),
+        key("9", "9", KeyKind::Digit),
+        key("÷", "/", KeyKind::Operator),
+        act("ƒ", KeyKind::Function, KeyAction::ToggleFuncs),
+    ],
+    // ── 第 2 行：括号 / 数字4-6 / 光标 ────────────────────────────────────
+    &[
+        key("(", "(", KeyKind::Structural),
+        key(")", ")", KeyKind::Structural),
+        key("%", "%", KeyKind::Operator),
+        key("!", "!", KeyKind::Operator),
+        key("4", "4", KeyKind::Digit),
+        key("5", "5", KeyKind::Digit),
+        key("6", "6", KeyKind::Digit),
+        key("×", "*", KeyKind::Operator),
+        act("←", KeyKind::Control, KeyAction::CursorLeft),
+    ],
+    // ── 第 3 行：绝对值 / 数字1-3 / 右移 + 退格 ───────────────────────────
+    &[
+        key("|a|", "abs()", KeyKind::Function),
+        key(",", ", ", KeyKind::Structural),
+        key("≤", "<=", KeyKind::Operator),
+        key("≥", ">=", KeyKind::Operator),
+        key("1", "1", KeyKind::Digit),
+        key("2", "2", KeyKind::Digit),
+        key("3", "3", KeyKind::Digit),
+        key("−", "-", KeyKind::Operator),
+        act("→", KeyKind::Control, KeyAction::CursorRight),
+    ],
+    // ── 第 4 行：ABC / 数制 / 根号 / π / 数字0 / 等号 / 回车 ──────────────
+    //
+    // 这一行是主面板的"底边"，`↵` 在右下角、用强调色 —— 与 Desmos 一致。
+    &[
+        act("ABC", KeyKind::Control, KeyAction::ShowAbc),
+        key("√", "sqrt()", KeyKind::Function),
+        key("π", "pi", KeyKind::Function),
+        key("^", "^", KeyKind::Operator),
+        key("0", "0", KeyKind::Digit),
+        key(".", ".", KeyKind::Digit),
+        key("+", "+", KeyKind::Operator),
         Key {
             label: "⌫",
             insert: "",
@@ -94,51 +195,7 @@ pub const LAYOUT: &[&[Key]] = &[
             action: KeyAction::Backspace,
         },
         Key {
-            label: "C",
-            insert: "",
-            cursor_back: 0,
-            kind: KeyKind::Control,
-            action: KeyAction::Clear,
-        },
-        key("(", "(", KeyKind::Structural),
-        key(")", ")", KeyKind::Structural),
-        key(",", ", ", KeyKind::Structural),
-        key("π", "pi", KeyKind::Function),
-        key("e", "e", KeyKind::Function),
-        key("x", "x", KeyKind::Function),
-        key("Ans", "Ans", KeyKind::Function),
-    ],
-    // 第二行：数字 7-9 + 除法/幂
-    &[
-        key("7", "7", KeyKind::Digit),
-        key("8", "8", KeyKind::Digit),
-        key("9", "9", KeyKind::Digit),
-        key("÷", "/", KeyKind::Operator),
-        key("^", "^", KeyKind::Operator),
-    ],
-    // 第三行：数字 4-6 + 乘法/根号
-    &[
-        key("4", "4", KeyKind::Digit),
-        key("5", "5", KeyKind::Digit),
-        key("6", "6", KeyKind::Digit),
-        key("×", "*", KeyKind::Operator),
-        fn_key("√", "sqrt()", 1),
-    ],
-    // 第四行：数字 1-3 + 减法/平方
-    &[
-        key("1", "1", KeyKind::Digit),
-        key("2", "2", KeyKind::Digit),
-        key("3", "3", KeyKind::Digit),
-        key("−", "-", KeyKind::Operator),
-        fn_key("x²", "^2", 0),
-    ],
-    // 第五行：0 / 小数点 / 加法 / 等号（等号单独一组，视觉上更重）
-    &[
-        key("0", "0", KeyKind::Digit),
-        key(".", ".", KeyKind::Digit),
-        key("+", "+", KeyKind::Operator),
-        Key {
-            label: "=",
+            label: "↵",
             insert: "",
             cursor_back: 0,
             kind: KeyKind::Equals,
@@ -146,6 +203,80 @@ pub const LAYOUT: &[&[Key]] = &[
         },
     ],
 ];
+
+/// **字母面板**布局（Desmos 的 `ABC` 面板）。
+///
+/// 字母键插的是**变量名**：`x` 之外的字母在项目里就是普通未知数/变量。
+/// 最后一行右侧几个符号是 Desmos 有的（`[]` `{}` `:` 等），本项目里也都能用
+/// （`[]` 是列表、`{}` 是集合/方程组分隔）。
+pub const LAYOUT_ABC: &[&[Key]] = &[
+    &[
+        key("q", "q", KeyKind::Digit),
+        key("w", "w", KeyKind::Digit),
+        key("e", "e", KeyKind::Digit),
+        key("r", "r", KeyKind::Digit),
+        key("t", "t", KeyKind::Digit),
+        key("y", "y", KeyKind::Digit),
+        key("u", "u", KeyKind::Digit),
+        key("i", "i", KeyKind::Digit),
+        key("o", "o", KeyKind::Digit),
+        key("p", "p", KeyKind::Digit),
+    ],
+    &[
+        key("a", "a", KeyKind::Digit),
+        key("s", "s", KeyKind::Digit),
+        key("d", "d", KeyKind::Digit),
+        key("f", "f", KeyKind::Digit),
+        key("g", "g", KeyKind::Digit),
+        key("h", "h", KeyKind::Digit),
+        key("j", "j", KeyKind::Digit),
+        key("k", "k", KeyKind::Digit),
+        key("l", "l", KeyKind::Digit),
+        key("θ", "theta", KeyKind::Function),
+    ],
+    &[
+        act("↑", KeyKind::Control, KeyAction::Superscript),
+        key("z", "z", KeyKind::Digit),
+        key("x", "x", KeyKind::Digit),
+        key("c", "c", KeyKind::Digit),
+        key("v", "v", KeyKind::Digit),
+        key("b", "b", KeyKind::Digit),
+        key("n", "n", KeyKind::Digit),
+        key("m", "m", KeyKind::Digit),
+        Key {
+            label: "⌫",
+            insert: "",
+            cursor_back: 0,
+            kind: KeyKind::Control,
+            action: KeyAction::Backspace,
+        },
+    ],
+    &[
+        act("123", KeyKind::Control, KeyAction::ShowMain),
+        key("aᵇ", "^", KeyKind::Operator),
+        key("!", "!", KeyKind::Operator),
+        key("[", "[", KeyKind::Structural),
+        key("]", "]", KeyKind::Structural),
+        key("{", "{", KeyKind::Structural),
+        key("}", "}", KeyKind::Structural),
+        key(":", ":", KeyKind::Structural),
+        Key {
+            label: "↵",
+            insert: "",
+            cursor_back: 0,
+            kind: KeyKind::Equals,
+            action: KeyAction::Evaluate,
+        },
+    ],
+];
+
+/// 取某个面板的布局
+pub fn layout_for(panel: Panel) -> &'static [&'static [Key]] {
+    match panel {
+        Panel::Main => LAYOUT,
+        Panel::Abc => LAYOUT_ABC,
+    }
+}
 
 /// 函数面板的一类（弹窗里按类别分节）
 pub struct FnGroup {
@@ -271,15 +402,47 @@ pub fn splice(text: &str, cursor: usize, insert: &str) -> (String, usize) {
     (out, new_cursor)
 }
 
+/// 键面文字是否应当按**数学字体**（而非普通字体）排版。
+///
+/// Desmos 的键面是"数学记号"的观感：`a²` 的上标、`≤`、`π`、`√` 都是衬线数学字体。
+/// 我们的做法是——含数学符号的键面交给 [`crate::mathrender`] 的字体栈渲染。
+pub fn label_is_math(label: &str) -> bool {
+    label.chars().any(|c| {
+        matches!(
+            c,
+            'π' | '√'
+                | '∛'
+                | '∞'
+                | '≈'
+                | '≤'
+                | '≥'
+                | '≠'
+                | '∑'
+                | '∫'
+                | '·'
+                | '×'
+                | '÷'
+                | 'θ'
+                | 'φ'
+                | '²'
+                | 'ᵇ'
+                | '³'
+                | '⌫'
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn layout_rows_are_non_empty() {
-        assert!(!LAYOUT.is_empty());
-        for (i, row) in LAYOUT.iter().enumerate() {
-            assert!(!row.is_empty(), "第 {i} 行不该是空的");
+        for (name, layout) in [("主", LAYOUT), ("字母", LAYOUT_ABC)] {
+            assert!(!layout.is_empty(), "{name} 面板不该是空的");
+            for (i, row) in layout.iter().enumerate() {
+                assert!(!row.is_empty(), "{name} 面板第 {i} 行不该是空的");
+            }
         }
     }
 
@@ -292,7 +455,7 @@ mod tests {
             .map(|k| k.insert)
             .collect::<Vec<_>>()
             .join("");
-        for need in ["+", "-", "*", "/", "^", "(", ")", ".", ","] {
+        for need in ["+", "-", "*", "/", "^", "(", ")", ".", ",", "!", "%"] {
             assert!(all.contains(need), "键盘缺少符号 {need}");
         }
         let labels: Vec<&str> = LAYOUT
@@ -301,35 +464,68 @@ mod tests {
             .map(|k| k.label)
             .collect();
         for need in [
-            "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "π", "√", "=",
+            "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "π", "√", "↵", "ABC",
         ] {
             assert!(labels.contains(&need), "键盘缺少键 {need}");
         }
     }
 
+    /// 数字 0-9 **每一个**都必须在主面板上能点到 —— 这是计算器的底线。
+    ///
+    /// 单独写一条：布局重排时最容易漏的就是"某个数字键被顶掉了"，
+    /// 而上面那条只检查个别几个。
     #[test]
-    fn every_row_has_an_evaluate_or_is_digit_row() {
-        // 至少存在一个求值键，否则键盘就是残的
-        let has_eq = LAYOUT
-            .iter()
-            .flat_map(|r| r.iter())
-            .any(|k| k.action == KeyAction::Evaluate);
-        assert!(has_eq, "键盘必须有一个 `=` 求值键");
-        let has_back = LAYOUT
-            .iter()
-            .flat_map(|r| r.iter())
-            .any(|k| k.action == KeyAction::Backspace);
-        assert!(has_back, "键盘必须有一个退格键");
+    fn all_ten_digits_are_present_on_main_panel() {
+        for d in '0'..='9' {
+            let s = d.to_string();
+            let found = LAYOUT
+                .iter()
+                .flat_map(|r| r.iter())
+                .any(|k| k.label == s && k.action == KeyAction::Insert);
+            assert!(found, "主面板缺少数字键 {d}");
+        }
+    }
+
+    #[test]
+    fn every_panel_has_evaluate_and_backspace() {
+        for (name, layout) in [("主", LAYOUT), ("字母", LAYOUT_ABC)] {
+            let flat: Vec<&Key> = layout.iter().flat_map(|r| r.iter()).collect();
+            assert!(
+                flat.iter().any(|k| k.action == KeyAction::Evaluate),
+                "{name} 面板必须有一个求值键"
+            );
+            assert!(
+                flat.iter().any(|k| k.action == KeyAction::Backspace),
+                "{name} 面板必须有一个退格键"
+            );
+        }
+    }
+
+    /// 两个面板必须能**互相切回去**，否则进字母面板就出不来了。
+    #[test]
+    fn panels_can_switch_both_ways() {
+        let main_flat: Vec<&Key> = LAYOUT.iter().flat_map(|r| r.iter()).collect();
+        let abc_flat: Vec<&Key> = LAYOUT_ABC.iter().flat_map(|r| r.iter()).collect();
+        assert!(
+            main_flat.iter().any(|k| k.action == KeyAction::ShowAbc),
+            "主面板必须有进字母面板的键"
+        );
+        assert!(
+            abc_flat.iter().any(|k| k.action == KeyAction::ShowMain),
+            "字母面板必须有回主面板的键"
+        );
     }
 
     /// 函数键应自带括号，且光标能落进括号里
     #[test]
     fn function_keys_auto_close_parens() {
-        for row in LAYOUT {
-            for k in *row {
-                if k.kind == KeyKind::Function && k.action == KeyAction::Insert {
-                    if k.insert.ends_with(')') || k.insert.contains('(') {
-                        // 括号必须配对
+        for layout in [LAYOUT, LAYOUT_ABC] {
+            for row in layout {
+                for k in *row {
+                    if k.kind == KeyKind::Function
+                        && k.action == KeyAction::Insert
+                        && (k.insert.ends_with(')') || k.insert.contains('('))
+                    {
                         let open = k.insert.chars().filter(|c| *c == '(').count();
                         let close = k.insert.chars().filter(|c| *c == ')').count();
                         assert_eq!(open, close, "键 {} 的括号不配对：{}", k.label, k.insert);
@@ -429,6 +625,94 @@ mod tests {
                     it.label,
                     t
                 );
+            }
+        }
+    }
+
+    /// 键面里的数学记号要被识别出来（决定用哪套字体渲染）
+    #[test]
+    fn math_labels_are_recognized() {
+        for l in ["π", "√", "≤", "≥", "a²", "aᵇ", "×", "÷", "θ", "⌫"] {
+            assert!(label_is_math(l), "{l} 应被认作数学记号");
+        }
+        // 普通字母数字不该走数学字体（否则按键上的 `7` 会和别处不一样）
+        for l in ["7", "x", "q", "ABC", "123"] {
+            assert!(!label_is_math(l), "{l} 不该被认作数学记号");
+        }
+    }
+
+    /// 布局里每个键的 `insert` 都必须能被解析器接受（否则点了会立刻报错）
+    ///
+    /// ⚠️ 键盘上的键分成**三类**，每类要补的上下文不同，得分开判 —— 一刀切地
+    /// 拼个前后缀会把本来就完整的键拼坏（第一版用 `1{insert}1`，
+    /// 把 `abs()` 拼成 `1abs()1`）。
+    ///
+    /// | 类别 | 例子 | 判定 | 补什么 |
+    /// |---|---|---|---|
+    /// | 函数调用模板 | `abs()`、`sqrt()`、`sin()` | 光标会落在括号内，用户接着打参数 | 往最内层括号里塞个 `1` |
+    /// | 后缀片段 | `^2`、`!`、`%` | 要左邻当底数 | 前缀 `1` → `1^2` |
+    /// | 中缀片段 | `/`、`+`、`=` | 右边缺操作数 | 两边都补 → `1/1` |
+    ///
+    /// ⚠️ 最后这一类是**最容易误判的**：`abs()` 裸着试会报
+    /// `位置 4 处意外的字符: ')'` —— 看着像语法错，其实是解析器把
+    /// "**参数为空**"这句话也说成了"意外的字符"。而 `abs()` 恰恰是这个键
+    /// **故意**插入的形态：光标落在括号里，用户接下来就打字。所以要
+    /// 把参数补上再判（`abs(1)`）。
+    ///
+    /// 判法是**挨个试上下文，任意一个能过就算过**。这样就不用维护
+    /// "哪些键是什么类"的表 —— 表会随布局改动而过期。
+    ///
+    /// 仍然豁免"未定义变量"—— 空会话里 `x` 当然没定义，那是**正确**行为。
+    #[test]
+    fn every_key_insert_is_parseable_or_empty() {
+        // 只把**真正的语法错**当失败。"未定义变量"/"未定义函数"是正确行为：
+        // 空会话里当然没有 `x`，也没注册 `foobar`。
+        //
+        // ⚠️ `')'` 那条要单独放行：它是"参数为空"的措辞，而空参正是函数键的
+        // 预期插入形态。见上面注释里的表格。
+        let is_syntax_error =
+            |t: &str| (t.contains("意外的字符") && !t.contains("')'")) || t.contains("未预期的");
+
+        /// 把 `1` 塞进**最内层**的 `()`（`abs()` → `abs(1)`、`sqrt(sqrt())` →
+        /// `sqrt(sqrt(1))`）。没有 `()` 就原样返回。
+        fn fill_innermost(s: &str) -> String {
+            match s.rfind("()") {
+                Some(i) => format!("{}1{}", &s[..i + 1], &s[i + 1..]),
+                None => s.to_string(),
+            }
+        }
+
+        for layout in [LAYOUT, LAYOUT_ABC] {
+            for row in layout {
+                for k in *row {
+                    // 控制类键（清空 / 退格 / 面板切换…）本来就不插文本
+                    if k.action != KeyAction::Insert || k.insert.is_empty() {
+                        continue;
+                    }
+                    // 四种候选上下文，**任意一种能解析就算通过**：
+                    // ① 裸插（完整式子）② 括号里补参数（函数模板）
+                    // ③ 前补底数（后缀片段）④ 前后都补（中缀片段）
+                    let candidates = [
+                        k.insert.to_string(),
+                        fill_innermost(k.insert),
+                        format!("1{}", k.insert),
+                        format!("1{}1", k.insert),
+                    ];
+                    let ok = candidates.iter().any(|c| {
+                        let mut s = hipercalc::Session::new();
+                        !is_syntax_error(&s.eval(c).text)
+                    });
+                    assert!(
+                        ok,
+                        "键 {} 的插入串 `{}` 在四种上下文（`{}` / `{}` / `1{}` / `1{}1`）下都解析不了",
+                        k.label,
+                        k.insert,
+                        k.insert,
+                        fill_innermost(k.insert),
+                        k.insert,
+                        k.insert
+                    );
+                }
             }
         }
     }

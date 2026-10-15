@@ -221,8 +221,22 @@ impl Parser {
         // 后缀：`^指数`
         while matches!(self.peek(), Some(Tok::Caret)) {
             self.pos += 1;
-            let exp = self.parse_primary()?;
-            base = Node::Pow(Box::new(base), Box::new(exp));
+            match self.parse_primary() {
+                Some(exp) => base = Node::Pow(Box::new(base), Box::new(exp)),
+                // ⚠️ **指数缺失**（用户正打到 `x^`、`2^`）时不能连底数一起丢掉。
+                //
+                // 原来这里写的是 `let exp = self.parse_primary()?;` —— `?` 直接把
+                // 整个 `parse_atom` 变成 `None`，调用处于是把**已经解析好的底数也扔了**，
+                // 退回 `raw_token()`。实测症状：输入框里打 `x^` 的瞬间 `x` 消失，
+                // 打完数字才回来 —— 打字过程中字符"闪掉"是很容易被当成 bug 的。
+                //
+                // 正确做法：保留底数，并把还没打出来的指数位置留成一个空的 `Pow`，
+                // 这样预览里能看到"上标框是空的"，与 Desmos 一致。
+                None => {
+                    base = Node::Pow(Box::new(base), Box::new(Node::Text(String::new())));
+                    break;
+                }
+            }
         }
         // 隐式乘法：`(1 / 3)*sqrt(2)` 里 `*` 是显式的；但数学模式也可能产出
         // 紧贴形式（如 `2sqrt(3)`），这里一并支持，避免两段被拆散
@@ -260,7 +274,25 @@ impl Parser {
                         }
                     }
                     // 已知数学常数与函数名：渲染成对应符号
-                    _ => Some(Node::Text(render_ident(&name))),
+                    // ⚠️ **不能**把函数名后面的 `(...)` 单独当普通括号组解析 ——
+                    // 那样括号会被当成"纯分组"而**丢掉**，`sin(theta)` 会被排成
+                    // `sintheta`（实测就是如此：预览行里函数名与参数粘成一坨）。
+                    // 所以函数名后面若跟着 `(`，这里要**自己吃下整个调用**并保留括号。
+                    _ => {
+                        let name = render_ident(&name);
+                        if matches!(self.peek(), Some(Tok::LParen)) {
+                            let (inner, consumed) = self.parse_call_args();
+                            debug_assert!(consumed, "已经 peek 到 LParen，必然能吃下");
+                            let mut seq = Vec::with_capacity(inner.len() + 2);
+                            seq.push(Node::Text(name));
+                            seq.push(Node::Text("(".into()));
+                            seq.extend(inner);
+                            seq.push(Node::Text(")".into()));
+                            Some(Node::Seq(seq))
+                        } else {
+                            Some(Node::Text(name))
+                        }
+                    }
                 }
             }
             Tok::LParen => {
@@ -327,6 +359,10 @@ fn render_ident(name: &str) -> String {
         "pi" => "π".into(),
         "inf" => "∞".into(),
         "INF" => "∞".into(),
+        // `theta` → `θ`：虚拟键盘的字母面板上**有**一个 `θ` 键，它插进去的正是
+        // `theta`（ASCII 好让解析器认）。那预览行就该把它显示成 `θ` ——
+        // 否则用户点 `θ` 键、预览里冒出来一串 `theta`，像是键坏了。
+        "theta" => "θ".into(),
         _ => name.to_string(),
     }
 }
@@ -403,7 +439,12 @@ fn contains_math_glyph(s: &str) -> bool {
 }
 
 /// 递归把节点变成 widget。
-fn build<'a, M: 'a>(node: &Node, style: Style2) -> Element<'a, M> {
+///
+/// 公开是为了让调用方**先 parse 再 build**，从而摆脱 `&str` 的生命周期约束：
+/// [`render`] 的返回值会借用入参（它内部要 `src.to_string()`），
+/// 入参若是局部变量就没法把结果返回出去。分成两步后，
+/// [`Node`] 拥有自己的字符串，借它渲染出来的 widget 生命周期就自由了。
+pub fn build<'a, M: 'a>(node: &Node, style: Style2) -> Element<'a, M> {
     match node {
         Node::Text(s) => plain(s, style),
         Node::Seq(items) => {
@@ -550,6 +591,95 @@ fn frac_bar_width(num: &Node, den: &Node, size: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **数学模式下空格会被吃掉** —— 这是设计如此（`2 x` 与 `2x` 应排得一样），
+    /// 但**调用方必须知道**：凡是要原样显示的文本（错误信息、提示语）
+    /// **不能**走数学排版，否则空格没了、`' '` 会挤成 `''`。
+    ///
+    /// 这条测试的作用就是把"吃掉空格"钉成**已知的、被依赖的行为**，
+    /// 免得以后有人"顺手"改成保留空格、把分数的判据改坏（`1 / 2` 会变成
+    /// 带空格的分数节点，`Node::Frac` 里的 `Text` 会多出前后空格）。
+    #[test]
+    fn math_mode_drops_spaces_by_design() {
+        // 分数两侧的空格不影响识别
+        match parse("1 / 2") {
+            Node::Frac(n, d) => {
+                assert_eq!(*n, Node::Text("1".into()), "分子不该带空格");
+                assert_eq!(*d, Node::Text("2".into()), "分母不该带空格");
+            }
+            other => panic!("应是分数，实际 {other:?}"),
+        }
+
+        // 错误信息里的 `' '`（引号包着一个空格）会被排成两个紧挨的引号 ——
+        // 正是这个现象让界面上的错误信息看起来像 `..."`。
+        // 所以错误信息必须走纯文本（见 `app::history_entry`）。
+        let node = parse("错误: 位置 2 处意外的字符: ' '");
+        let flat = flatten(&node);
+        assert!(
+            !flat.contains(' '),
+            "数学排版应吃掉空格，实际排出了：{flat:?}"
+        );
+    }
+
+    /// **函数调用的括号必须保住**（阶段五在预览行里发现的真 bug）。
+    ///
+    /// 症状：输入框里打 `sin(theta)`，下面的预览行排成 `sintheta` ——
+    /// 函数名与参数粘在一起。原因是 `Ident("sin")` 生成 `Text("sin")` 之后，
+    /// 后面那个 `(` 被 `parse_primary` 当**普通分组括号**吃掉了，而分组的括号
+    /// 是**不渲染**的（`(x)` 就是要显示成 `x`），于是 `(` `)` 双双消失。
+    ///
+    /// 单看 `sqrt` 是发现不了这个 bug 的 —— `sqrt` 有自己的分支，压根不走这条路。
+    /// 所以这条测试特意用 `sin` / `log` / 普通字母函数来覆盖**默认分支**。
+    #[test]
+    fn function_call_keeps_its_parentheses() {
+        for (src, want) in [
+            ("sin(theta)", "sin(θ)"),
+            ("sin(x)", "sin(x)"),
+            ("log(2)", "log(2)"),
+            // 纯分组括号仍应**不带**括号（这是分组该有的样子）
+            ("(x)", "x"),
+            ("(1/2)", "1/2"),
+        ] {
+            let got = flatten(&parse(src));
+            assert_eq!(got, want, "`{src}` 应排成 `{want}`，实际 `{got}`");
+        }
+    }
+
+    /// 纯文本模式必须**一个字符都不动**（错误信息、LineIO 都靠它）
+    #[test]
+    fn plain_mode_preserves_every_character() {
+        // `plain` 直接包 `text(src)`，不经 tokenizer，所以只要比对源码文本即可
+        for src in [
+            "错误: 位置 2 处意外的字符: ' '",
+            "≈ 0.8333333333",
+            "= 1 / 2",
+            "未定义变量: x",
+        ] {
+            // 构造出来不该 panic，且内容（除字体/颜色外）不回炉重排
+            let _: Element<()> = plain(
+                src,
+                Style2 {
+                    size: 15.0,
+                    color: None,
+                    monospace: false,
+                },
+            );
+        }
+    }
+
+    /// 把节点树拍平成字符串（测试断言用）
+    fn flatten(n: &Node) -> String {
+        match n {
+            Node::Text(s) => s.clone(),
+            Node::Seq(items) => items.iter().map(flatten).collect(),
+            Node::Frac(a, b) => format!("{}/{}", flatten(a), flatten(b)),
+            Node::Root { degree, inner } => match degree {
+                Some(d) => format!("{}({})", flatten(d), flatten(inner)),
+                None => format!("√({})", flatten(inner)),
+            },
+            Node::Pow(a, b) => format!("{}^{}", flatten(a), flatten(b)),
+        }
+    }
 
     #[test]
     fn parses_simple_fraction() {
