@@ -357,6 +357,8 @@ pub enum Message {
     SetLang(UiLang),
     /// 设置面板：切换数学字体（传 [`MathFont::ALL`] 的下标）
     SetMathFont(usize),
+    /// 桌面模糊探测完成（`backdrop::probe` 的回传）
+    AcrylicProbed(bool),
     /// 键盘修饰键状态变化（关键：用来区分 Enter 与 Ctrl+Enter）
     CtrlChanged(bool),
     /// 占位（订阅里不关心的窗口事件映射到这里，update 里什么都不做）
@@ -377,6 +379,20 @@ impl Default for State {
         // 最后一个 `false` = **不写盘**（见 `State::persist` 字段的说明）
         Self::with_session(session, modes, GuiPrefs::default(), false)
     }
+}
+
+/// 产品路径的入口：构造 + **启动时探测桌面模糊**。
+///
+/// 探测走 Task（[`backdrop::probe`]）：一来 `EnumWindows` 反查需要窗口
+/// **已经创建**（这里拿不到 HWND），二来探测是阻塞的 FFI 调用，
+/// 不该占 UI 线程 —— 丢进 Task 后 runtime 会在线程池里跑。
+pub fn boot() -> (State, Task<Message>) {
+    let s = State::load();
+    let dark = s.dark;
+    (
+        s,
+        Task::perform(crate::backdrop::probe(dark), Message::AcrylicProbed),
+    )
 }
 
 impl State {
@@ -634,6 +650,21 @@ impl State {
                     precise,
                     elapsed: out.elapsed,
                 });
+            }
+            Message::AcrylicProbed(ok) => {
+                // ⚠️ 探测**只能在窗口创建之后**做，而且要在它出现在
+                // `EnumWindows` 里之后（`backdrop::probe` 里有 150ms 的等待）。
+                if !self.acrylic_checked {
+                    self.acrylic_checked = true;
+                    theme::set_acrylic(ok);
+                    if !ok {
+                        eprintln!(
+                            "[hipercalc-gui] 未启用 DWM 亚克力（远程桌面/旧系统不支持时正常）；                                   界面改用不透明底色 + 氛围光。设置里的'玻璃强度'仍可调。"
+                        );
+                    } else {
+                        eprintln!("[hipercalc-gui] DWM 亚克力已启用");
+                    }
+                }
             }
             Message::WindowOpened => {
                 // 窗口已创建，此时才能反查 HWND 并调 DWM

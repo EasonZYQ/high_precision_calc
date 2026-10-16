@@ -26,7 +26,7 @@ fn main() -> iced::Result {
         ..iced::Settings::default()
     };
 
-    iced::application(app::State::load, app::State::update, app::State::view)
+    iced::application(app::boot, app::State::update, app::State::view)
         // `.title()` 收的是**闭包** `Fn(&State) -> String`（不是字符串），
         // 所以这里传函数名即可。标题按**启动时的语言**算 —— 语言存在设置文件里，
         // `State::load` 在建窗口之前就恢复了它（`iced::application` 的构造函数

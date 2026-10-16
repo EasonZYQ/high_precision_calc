@@ -241,6 +241,30 @@ mod imp {
     }
 }
 
+/// 探测并启用桌面模糊（**异步版**：在 runtime 线程里跑，给窗口一点时间出现在
+/// `EnumWindows` 的列表里，再反查句柄）。
+///
+/// ## 为什么不挂在 `window::Event::Opened` 上
+///
+/// 实测那一版**根本没生效**：`window::events()` 订阅从没发出过 `Opened` ——
+/// 控制台里连 `[hipercalc-gui]` 的报告都没有。于是亚克力从头到尾没被尝试，
+/// 界面永远停在"氛围底"那档。
+///
+/// 用启动 Task 延迟 150ms 再探测，可靠性高得多：那时窗口必然已在任务列表里。
+pub async fn probe(dark_titlebar: bool) -> bool {
+    // 150ms 是实测出的下限：太短（<50ms）时窗口还没进 EnumWindows 的列表，
+    // 反查会空手而归。UI 线程完全不受影响 —— 这个 future 跑在 runtime 的
+    // 线程池里，睡一个 worker 150ms 无妨（iced 默认是多线程调度器）。
+    // ⚠️ 不用 `tokio::time::sleep`：gui crate 没直接依赖 tokio，不想为这一处
+    // 把它引进来；`std::thread::sleep` 在 async 块里同样成立。
+    #[cfg(windows)]
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    #[cfg(not(windows))]
+    let _ = dark_titlebar;
+    #[allow(unreachable_code)]
+    imp::enable(dark_titlebar)
+}
+
 #[cfg(not(windows))]
 mod imp {
     /// 非 Windows 平台：iced 自身的 `window::Settings::blur` 已覆盖 macOS/Linux，
