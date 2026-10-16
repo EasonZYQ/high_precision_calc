@@ -391,5 +391,16 @@
   "逆矩阵": "inverse matrix",
   "转置": "transpose",
   "解三角形": "solve triangle",
-  "HiPerCalc — 超高精度计算器": "HiPerCalc — High-Precision Calculator"
+  "HiPerCalc — 超高精度计算器": "HiPerCalc — High-Precision Calculator",
+  "主题": "Theme",
+  "深色": "Dark",
+  "浅色": "Light",
+  "玻璃质感": "Glass",
+  "玻璃已开启": "Glass on",
+  "玻璃已关闭": "Glass off",
+  "长结果": "Long results",
+  "自动换行": "Wrap",
+  "横向滚动": "Scroll",
+  "结果太长看不清时怎么办": "what to do when a result is too long to read",
+  "{0}%": "{0}%"
 }

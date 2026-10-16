@@ -26,6 +26,12 @@ use std::collections::BTreeMap;
 /// 比把整个 `i18n` 模块公开出去更克制：GUI 只需要知道"有哪些语言、现在哪个"。
 pub use crate::i18n::Lang as UiLang;
 
+/// GUI 专属偏好（深色 / 玻璃强度 / 行布局）的公开门面。
+///
+/// 定义在 [`crate::state`]（状态文件的格式由那里说了算），这里只是把它
+/// 交给 `hipercalc-gui` 使用 —— GUI 不该、也不需要认识 `state` 模块的其余部分。
+pub use crate::state::GuiPrefs;
+
 /// 全部可选语言（顺序即设置面板里的显示顺序）
 pub const ALL_LANGS: [UiLang; 3] = crate::i18n::Lang::ALL;
 
@@ -49,7 +55,6 @@ pub fn translate_fmt(template: &str, args: &[&str]) -> String {
 }
 
 /// 切换界面语言（`i18n::set` 的公开门面）。
-///
 /// ## 为什么界面需要这个"绕过 Session 直接设"的入口
 ///
 /// 语言是**进程级**全局（`i18n` 里一个 `AtomicU8`），而界面的每一处标签都走
@@ -71,6 +76,17 @@ pub fn translate_fmt(template: &str, args: &[&str]) -> String {
 /// 与 [`translate`] 同一套克制原则：只转发"设语言"这一个能力，不公开整个 `i18n`。
 pub fn set_ui_lang(lang: UiLang) {
     crate::i18n::set(lang);
+}
+
+/// 把一项设置写回状态文件（**键级更新**：只替换给定的键，文件其余内容原样保留）。
+///
+/// GUI 用它保存自己那部分设置（深色 / 玻璃 / 行布局，以及会与 CLI 共享的
+/// 显示模式 / 角度 / 精度 / 语言）。之所以不能直接调 [`Session::persist`]：
+/// 那个走的是 CLI 的"整份重写"，而 GUI 线程手上没有会话里的变量表
+///（`Session` 在后台求值线程里独占）。键级更新让两边都只碰自己的键，
+/// 谁也不会抹掉对方 —— 详见 `state::update_keys` 与 `state::foreign_lines`。
+pub fn save_prefs(pairs: &[(&str, String)]) -> std::io::Result<()> {
+    state::update_keys(pairs)
 }
 
 /// 一条输入行的求值结果
@@ -314,6 +330,41 @@ impl Session {
     /// 设置显示的有效数字位数
     pub fn set_display_digits(&mut self, n: usize) {
         bigfloat::set_display_digits(n);
+    }
+
+    /// 从 `~/.hipercalc_state` 恢复一个会话，连同 GUI 偏好一起返回。
+    ///
+    /// ## 为什么需要它（用户明确要求："打开时应当从用户配置里读取信息"）
+    ///
+    /// 状态文件是 CLI 与 GUI **共用**的一份配置（显示模式、角度、精度、语言、
+    /// `/let` 变量，以及 GUI 的深色/玻璃/行布局）。命令行启动时会恢复它，
+    /// GUI 若走 [`Session::new`]（刻意不读盘）就会"忘了用户上次的设置"。
+    ///
+    /// 文件不存在或不可读时与 [`Session::new`] 完全等价（不报错、用默认值）。
+    ///
+    /// ⚠️ 刻意**不**应用 `timing`：那是 CLI 的耗时行开关，GUI 有自己的耗时显示
+    ///（贴在结果行右侧），把 `calc_mode::set_timing` 打开只会让 result.text
+    /// 里多出一行"用时：…"污染历史。
+    pub fn restored() -> (Self, GuiPrefs) {
+        let prefs = GuiPrefs::load();
+        let mut s = Self::new();
+        if let Some((modes, vars, _colors, lang)) = state::load() {
+            s.set_display_mode(modes.display);
+            s.set_angle_mode(modes.angle);
+            s.set_calc_mode(modes.calc);
+            s.set_precision(modes.prec);
+            // 显示侧的几个开关与 CLI 保持一致（GUI 设置面板里没有这几项，
+            // 但用户可能是在命令行里调的 —— "读配置"就该读到它们）
+            s.set_display_digits(modes.digits);
+            bigfloat::set_sci_allowed(modes.sci);
+            bigfloat::set_group_enabled(modes.group);
+            if let Some(l) = lang {
+                s.set_lang(l);
+            }
+            // `/let` 变量直接灌进会话（否则 GUI 里 `A` 会是"未定义变量"）
+            s.state.evaluator.vars = vars.into_iter().collect();
+        }
+        (s, prefs)
     }
 
     /// 把当前会话写进 CLI 的状态文件（GUI 退出时调用，让命令行与 GUI 设置保持一致）

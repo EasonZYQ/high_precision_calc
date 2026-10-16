@@ -25,7 +25,7 @@
 
 use num_traits::Signed;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::i18n::Lang;
 use crate::parser::{self, DisplayMode, EvalResult, Evaluator};
@@ -34,6 +34,148 @@ use hipercalc_core::calc_mode::{self, CalcMode};
 use hipercalc_core::display;
 use hipercalc_core::number::Number;
 use hipercalc_core::trig::AngleMode;
+
+/// `save()` 自己会写的键。其余行（GUI 的偏好、用户手写的键）一律[原样保留](foreign_lines)。
+const OWN_KEYS: [&str; 11] = [
+    "display=", "angle=", "calc=", "lang=", "timing=", "prec=", "digits=", "sci=", "group=",
+    "var:", "color:",
+];
+
+/// 从旧文件里挑出**不属于本模块**的行，原样带回。
+///
+/// ## 为什么必须有
+///
+/// CLI 与 GUI **共用**这一份状态文件（用户明确要求）。CLI 的 [`save`] 会把整份文件
+/// 重写一遍 —— 若不做这一步，用户每用一次命令行就会把 GUI 里设置的
+/// 深色 / 玻璃 / 行布局偏好抹掉。这类"互相清空对方设置"的问题**极难排查**
+///（症状只是"设置有时会自己变回去"）。
+///
+/// 注释行与空行**不带回**：`save()` 自己会重写文件头的注释，
+/// 重复带会让注释越攒越多。
+fn foreign_lines(path: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter(|l| {
+            let t = l.trim();
+            if t.is_empty() || t.starts_with('#') {
+                return false;
+            }
+            !OWN_KEYS.iter().any(|k| t.starts_with(k))
+        })
+        .map(|l| l.to_string())
+        .collect()
+}
+
+/// GUI 专属偏好。
+///
+/// CLI **不解释**这几个键，但保存时会[原样保留](foreign_lines) —— 于是两个前端
+/// 可以共用一份状态文件而互不干扰。
+///
+/// 放在 `state.rs` 而不是 `hipercalc-gui`：状态文件的格式应当由**一个地方**说了算，
+/// 两个 crate 各写一半是最容易漂移的做法。GUI 侧只通过 `hipercalc::session`
+/// 的门面读写它。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GuiPrefs {
+    /// 深色模式（默认深色 —— 与 `theme::DARK` 的静态初值一致）
+    pub dark: bool,
+    /// 玻璃（liquid glass）强度：`0.0` = 关闭（不透明纯色），`1.0` = 最强
+    pub glass: f32,
+    /// 长结果的处理方式：`true` = 自动换行，`false` = 横向滚动
+    pub wrap: bool,
+}
+
+impl Default for GuiPrefs {
+    fn default() -> Self {
+        Self {
+            dark: true,
+            // 0.6 是"看得出玻璃、又不至于糊成一片"的中间值（滑条默认落在这里）
+            glass: 0.6,
+            wrap: true,
+        }
+    }
+}
+
+impl GuiPrefs {
+    /// 从状态文件读（键缺失或文件不存在时用默认值）
+    pub fn load() -> Self {
+        match state_path() {
+            Some(p) => Self::load_at(&p),
+            None => Self::default(),
+        }
+    }
+
+    /// 同 [`GuiPrefs::load`]，但路径由调用方给（单测用临时文件）。
+    pub fn load_at(path: &Path) -> Self {
+        let mut p = Self::default();
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return p;
+        };
+        for line in text.lines() {
+            let line = line.trim();
+            if let Some(v) = line.strip_prefix("dark=") {
+                p.dark = v.trim() != "off";
+            } else if let Some(v) = line.strip_prefix("glass=")
+                && let Ok(f) = v.trim().parse::<f32>()
+            {
+                p.glass = f.clamp(0.0, 1.0);
+            } else if let Some(v) = line.strip_prefix("wrap=") {
+                p.wrap = v.trim() != "off";
+            }
+        }
+        p
+    }
+
+    /// 转成可写进状态文件的键值对
+    pub fn to_keys(self) -> Vec<(&'static str, String)> {
+        vec![
+            ("dark", if self.dark { "on" } else { "off" }.to_string()),
+            ("glass", format!("{:.2}", self.glass)),
+            ("wrap", if self.wrap { "on" } else { "off" }.to_string()),
+        ]
+    }
+}
+
+/// **键级更新**：只替换给定的几个键，文件里其余内容（注释、变量表、其它键）
+/// 原样保留。文件不存在时新建（只含给定的键 + 一行注释头）。
+///
+/// 这是 GUI 侧写配置的入口（见 [`GuiPrefs`]）。与 [`save`] 的分工：
+/// - `save` 是 CLI 的"整份重写"（它持有变量表与颜色表，那些只有它知道）；
+/// - `update_keys` 是"我只改我关心的那几个键"，不需要读懂文件的其余部分。
+pub fn update_keys(pairs: &[(&str, String)]) -> std::io::Result<()> {
+    let path = state_path()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "未找到用户主目录"))?;
+    update_keys_at(&path, pairs)
+}
+
+/// [`update_keys`] 的实现（路径由调用方给，单测用临时文件跑）。
+fn update_keys_at(path: &Path, pairs: &[(&str, String)]) -> std::io::Result<()> {
+    let old = std::fs::read_to_string(path).unwrap_or_default();
+
+    let keys: Vec<String> = pairs.iter().map(|(k, _)| format!("{k}=")).collect();
+
+    let mut out = String::new();
+    if old.trim().is_empty() {
+        out.push_str("# HiPerCalc 设置（自动生成）：GUI 与命令行共用这一份文件\n");
+        out.push_str("# 删除本文件即可恢复默认设置\n");
+    } else {
+        // 旧内容：跳过本次要改的键，其余原样保留（含 `#` 注释与空行）
+        for line in old.lines() {
+            let t = line.trim_start();
+            if keys.iter().any(|k| t.starts_with(k.as_str())) {
+                continue;
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    // 新值（放在末尾：这几个键是"当前值"，放尾部比夹在中间好找）
+    for (k, v) in pairs {
+        out.push_str(&format!("{k}={v}\n"));
+    }
+    std::fs::write(path, out)
+}
 
 /// 状态文件路径（与 `.hipercalc_history` 同目录）
 pub fn state_path() -> Option<PathBuf> {
@@ -280,6 +422,12 @@ pub fn save(
     for (cat, name) in colors {
         out.push_str(&format!("color:{}={}\n", cat, name));
     }
+    // ⚠️ **保留本模块不认识的键**（GUI 的 `dark=` / `glass=` / `wrap=`，以及用户手写的键）。
+    // 不这么做的话，每跑一次命令行就会把 GUI 里设的偏好抹掉 —— 见 `foreign_lines` 的说明。
+    for line in foreign_lines(&path) {
+        out.push_str(&line);
+        out.push('\n');
+    }
     std::fs::write(path, out)
 }
 
@@ -295,6 +443,126 @@ pub fn current_calc_mode() -> CalcMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 建一个临时文件路径（测试结束由系统回收，不写用户主目录）
+    fn tmp_path(tag: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "hipercalc-state-test-{tag}-{}-{}.txt",
+            std::process::id(),
+            // 同一进程内不同用例用不同名字，避免互相覆盖
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        ));
+        p
+    }
+
+    /// ⚠️ **本文件最重要的一条不变量**：GUI 写自己那几个键时，
+    /// CLI 的键（变量表、颜色、模式…）必须**一个字都不能变**。
+    ///
+    /// 反过来说也一样（CLI 的 `save` 走 [`foreign_lines`]）。这条守不住，
+    /// 症状就是"用一次命令行，GUI 的深色设置被抹掉；进一次 GUI，命令行的
+    /// `/let` 变量全没了" —— 而且没人会想到是保存逻辑干的。
+    #[test]
+    fn update_keys_preserves_foreign_lines() {
+        let path = tmp_path("preserve");
+        std::fs::write(
+            &path,
+            "# 注释\n\
+             display=mathio\n\
+             var:A=E:1 / 2\n\
+             color:number=cyan\n\
+             dark=off\n",
+        )
+        .unwrap();
+
+        // GUI 只改自己的三个键
+        let prefs = GuiPrefs {
+            dark: true,
+            glass: 0.25,
+            wrap: false,
+        };
+        update_keys_at(&path, &prefs.to_keys()).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        // ① 别人的东西原样还在
+        assert!(text.contains("var:A=E:1 / 2"), "变量行必须保留：\n{text}");
+        assert!(
+            text.contains("color:number=cyan"),
+            "颜色行必须保留：\n{text}"
+        );
+        assert!(
+            text.contains("display=mathio"),
+            "CLI 的模式行必须保留：\n{text}"
+        );
+        assert!(text.contains("# 注释"), "注释行必须保留：\n{text}");
+        // ② 自己的三个键是新值，且**没有重复行**
+        assert_eq!(
+            text.matches("dark=").count(),
+            1,
+            "不该出现两条 dark：\n{text}"
+        );
+        assert!(text.contains("dark=on"));
+        assert!(text.contains("glass=0.25"));
+        assert!(text.contains("wrap=off"));
+        // ③ 读回来与写进去的一致
+        assert_eq!(GuiPrefs::load_at(&path), prefs);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 文件不存在时能新建（首次启动的路径），且带一行注释头
+    #[test]
+    fn update_keys_creates_missing_file() {
+        let path = tmp_path("create");
+        assert!(!path.exists());
+        let prefs = GuiPrefs::default();
+        update_keys_at(&path, &prefs.to_keys()).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with('#'), "新建文件应有注释头：\n{text}");
+        assert_eq!(GuiPrefs::load_at(&path), prefs);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// CLI 的 `save()` 必须把**自己不认识的键**原样带回去（GUI 偏好靠它活命）
+    #[test]
+    fn save_keeps_gui_keys() {
+        let path = tmp_path("save-keeps");
+        std::fs::write(&path, "dark=off\nglass=0.10\nwrap=off\nvar:K=E:7\n").unwrap();
+
+        let kept = foreign_lines(&path);
+        assert!(
+            kept.iter().any(|l| l == "dark=off"),
+            "GUI 的 dark 键应被保留：{kept:?}"
+        );
+        assert!(
+            kept.iter().any(|l| l == "glass=0.10"),
+            "GUI 的 glass 键应被保留：{kept:?}"
+        );
+        assert!(
+            kept.iter().any(|l| l == "wrap=off"),
+            "GUI 的 wrap 键应被保留：{kept:?}"
+        );
+        // 自己的键不该被当成"外来行"重复带一遍（否则文件会越写越长）
+        assert!(
+            !kept.iter().any(|l| l.starts_with("var:")),
+            "变量行属于本模块，不该被带回来：{kept:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 缺键 / 坏值时退回默认（状态文件是可以手改的，不能因为一个错字就崩）
+    #[test]
+    fn gui_prefs_tolerate_bad_input() {
+        let path = tmp_path("bad");
+        std::fs::write(&path, "glass=abc\ndark=maybe\n").unwrap();
+        let p = GuiPrefs::load_at(&path);
+        assert_eq!(p.glass, GuiPrefs::default().glass, "glass 坏值应退回默认");
+        assert!(p.dark, "dark 只要不是 off 就算开");
+        let _ = std::fs::remove_file(&path);
+    }
 
     /// 求值一个表达式串（用于回放校验）
     fn eval(expr: &str) -> Number {

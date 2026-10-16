@@ -15,7 +15,7 @@
 //!     ├─ busy = true
 //!     └─ 把 Request 推进 mpsc 队列  ────────▶  Session::eval(..) 逐行
 //!                                               │ Instant::now() 计时
-//!   Task::perform(阻塞等回传)  ◀───────────────┘ 把 Evaluated 发回请求自带的通道
+//!   Task::perform(fut)  ◀──── oneshot ─────────┘ 算完 send(Evaluated)
 //!     └─ push 历史 / busy = false
 //! ```
 //!
@@ -35,18 +35,52 @@
 //! UI 线程就会**卡在 lock 上** —— 换了个地方冻结而已，而且更隐蔽
 //!（连接口都还是"非阻塞"的样子）。独占 + 消息传递是这个场景唯一干净的解法。
 //!
+//! ## ⚠️ 走过的弯路：`Task::perform` 收的是 **future**，不是"产生 future 的闭包"
+//!
+//! 这里记一次**真实栽过的坑**，因为它的症状极具欺骗性。
+//!
+//! 第一版是这么写的：
+//!
+//! ```ignore
+//! // ❌ 错的
+//! let (slot, wait) = self.evaluator.eval(src, lines);   // wait: FnOnce() -> Ready<E>
+//! Task::perform(wait(), Message::Evaluated)             // 注意这个 `wait()` 的括号
+//! ```
+//!
+//! 当时的理解是"`Task::perform` 收 `FnOnce() -> impl Future`，把阻塞放进闭包里
+//! 就由 iced 的线程池去跑了"。但 iced 0.14 的真实签名是：
+//!
+//! ```ignore
+//! pub fn perform<A>(
+//!     future: impl Future<Output = A> + MaybeSend + 'static,   // ← 是 future 本身
+//!     f: impl FnOnce(A) -> T + MaybeSend + 'static,
+//! ) -> Self
+//! ```
+//!
+//! 于是 `wait()` 在 **`update` 里就被调用了** —— 而它内部是一个自旋等待循环
+//!（每 2ms 醒一次查结果信箱）。也就是说：求值确实在别的线程跑，但 UI 线程
+//! **原地等它跑完**，卡死得和改之前一模一样。
+//!
+//! 为什么当时没被发现：那条测试用的是 `5000!`（几十毫秒就返回），
+//! 自旋几毫秒就拿到结果，断言 `< 50ms` 照样过。换成 `100^100^10` 就露馅了。
+//!
+//! 现在的写法直接返回一个**真正的异步 future**：worker 算完时通过
+//! [`futures::channel::oneshot`] 唤醒它。整条链路上**没有任何线程在等**
+//!（自旋等待连"占一条线程"都算不上，它是**占着 UI 线程**）。
+//!
 //! ## 为什么每个请求自带回传通道
 //!
 //! 朴素写法是"一条共享的回传通道"，但那样无法区分响应对应哪个请求，
 //! 而用户完全可以在上一个 `100^100^10` 还在算的时候改精度再求值 ——
-//! 两个请求同时在飞，回来的顺序不保证。让**请求自带一条 `Sender`**
-//! （`mpsc::channel()` 每次新建，成本极低）就把对应关系变成了类型事实：
+//! 两个请求同时在飞，回来的顺序不保证。让**请求自带一条 `oneshot`**
+//!（每次新建，成本极低）就把对应关系变成了类型事实：
 //! 收到的结果必然是这个请求的，不需要 id 比对。
 
+use std::future::Future;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use futures::channel::oneshot;
 use hipercalc::Session;
 use hipercalc::parser_api::DisplayMode;
 use hipercalc_core::calc_mode::CalcMode;
@@ -81,7 +115,8 @@ pub enum Request {
         input: String,
         /// 已 trim、已去空行的待求值行；调用方保证非空
         lines: Vec<String>,
-        reply: Sender<Evaluated>,
+        /// 算完从这里唤醒 UI 侧那条 future（非阻塞，见模块头）
+        reply: oneshot::Sender<Evaluated>,
     },
     Config(Command),
 }
@@ -123,31 +158,21 @@ impl Evaluator {
         Evaluator { tx }
     }
 
-    /// 派一次求值，返回 `(结果信箱, 阻塞等待的闭包)`。
+    /// 派一次求值，返回一个**真正异步**的 future（它只被 `oneshot` 唤醒，不占线程）。
     ///
-    /// - **信箱**（`Arc<Mutex<Option<Evaluated>>>`）：结果落进来后，任何持有它的人
-    ///   都能读到 —— 这是测试路径（`State::await_pending_for_test`）用的。
-    /// - **闭包**：交给 `Task::perform(..)`（它收 `FnOnce() -> impl Future`），
-    ///   内部**阻塞**等结果。⚠️ 必须由 `Task::perform` 放到线程池里跑 ——
-    ///   在 `update` 里直接调它就又把 UI 冻住了。
+    /// ⚠️ 调用方**必须**把它交给 `Task::perform`（或别的执行器），
+    /// **不要**在 `update` 里 `futures::executor::block_on(..)` ——
+    /// 那正是本模块开头记录的那次翻车（UI 线程原地等结果 ⇒ 窗口「未响应」）。
     ///
-    /// ## 为什么是"信箱"而不是直接返回 `Receiver`
-    ///
-    /// `Receiver` 不可 clone、`recv()` 也**只能取一次**。但同一个结果有两条消费路径：
-    /// 产品路径要它去驱动界面，测试路径要它去断言。用一个单槽信箱（worker 只写一次、
-    /// 读者只读一次）比"两条通道二选一"简单得多 —— 谁先读谁拿到，另一条路径
-    /// 天然不会也有结果可拿（同一时刻只会有一条在等）。
-    ///
-    /// 真正跨线程的仍只有 worker 那一条通道；信箱只是结果的暂存点。
+    /// 返回值刻意不叫 `Task`：`evaluator` 是**不依赖 iced** 的纯逻辑模块
+    ///（它只依赖 `std` 与 `futures` 的基础原语），这样它的单测不需要 iced 运行时。
+    /// 由 `app.rs` 负责把 future 包成 `Task::perform(fut, Message::Evaluated)`。
     pub fn eval(
         &self,
         input: String,
         lines: Vec<String>,
-    ) -> (
-        Arc<Mutex<Option<Evaluated>>>,
-        impl FnOnce() -> std::future::Ready<Evaluated>,
-    ) {
-        let (rtx, rrx) = mpsc::channel::<Evaluated>();
+    ) -> impl Future<Output = Evaluated> + Send + 'static {
+        let (rtx, rrx) = oneshot::channel::<Evaluated>();
         let sent = self
             .tx
             .send(Request::Eval {
@@ -157,52 +182,23 @@ impl Evaluator {
             })
             .is_ok();
 
-        // 结果的单槽信箱（见上面的说明）
-        let slot: Arc<Mutex<Option<Evaluated>>> = Arc::new(Mutex::new(None));
-
-        // 搬运线程：从 worker 的回传通道取到结果后写进信箱。
-        // 结果只经手一次，所以"谁读"这件事不构成竞争。
-        let slot_for_move = Arc::clone(&slot);
-        let input_for_move = input.clone();
-        std::thread::Builder::new()
-            .name("hipercalc-eval-wait".into())
-            .spawn(move || {
-                let out = block_for(&rrx, sent, input_for_move);
-                *slot_for_move.lock().unwrap_or_else(|e| e.into_inner()) = Some(out);
-            })
-            .expect("无法创建等待线程");
-
-        // 闭包再持一份（`Arc` 不能 Copy，但 clone 很便宜）
-        let slot_for_wait = Arc::clone(&slot);
-        (slot, move || {
-            let slot = slot_for_wait;
-            // 等待：自旋到信箱里有东西（搬运线程一填就停）。
-            // 用短睡而不是忙等 —— 大运算要跑几十秒，忙等会白烧一个核。
-            let out = loop {
-                if let Some(v) = slot.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-                    break v;
-                }
-                std::thread::sleep(Duration::from_millis(2));
-            };
-            std::future::ready(out)
-        })
+        async move {
+            // 降级路径：worker 已退出（进程正在收尾）时给一个空结果，
+            // 界面不会挂死，只是这一次求值没有产出
+            if !sent {
+                return degraded(input);
+            }
+            // 到这里 input 还没被 move 走，交给降级闭包使用
+            rrx.await.unwrap_or_else(|_| degraded(input))
+        }
     }
 
-    /// 与 [`Evaluator::eval`] 同一条路径，但**直接返回结果**（同步阻塞）。
+    /// 与 [`Evaluator::eval`] 同一条路径，但**同步阻塞**取结果。
     ///
-    /// 只给测试用：单测里没有 iced 的执行器，没法 await 那个 `Ready`。
-    /// 走的仍是同一个 worker、同一条通道，所以验的还是真实行为。
+    /// 只给测试用（单测里没有 iced 的执行器去 poll 那条 future）。
+    /// 走的是同一个 worker、同一条通道，所以验的还是真实行为。
     pub fn eval_blocking(&self, input: String, lines: Vec<String>) -> Evaluated {
-        let (rtx, rrx) = mpsc::channel::<Evaluated>();
-        let sent = self
-            .tx
-            .send(Request::Eval {
-                input: input.clone(),
-                lines,
-                reply: rtx,
-            })
-            .is_ok();
-        block_for(&rrx, sent, input)
+        futures::executor::block_on(self.eval(input, lines))
     }
 
     /// 改一项会话设置（非阻塞，不产生结果）。
@@ -211,23 +207,13 @@ impl Evaluator {
     }
 }
 
-/// 在回传通道上等结果；发不出去（worker 已退出）时给一个空结果。
-///
-/// 抽出来是为了让 [`Evaluator::eval`] 与 [`Evaluator::eval_blocking`] 共用
-/// 同一段等待/降级逻辑 —— 否则测试路径与产品路径就分叉了，测了也不算数。
-fn block_for(rrx: &Receiver<Evaluated>, sent: bool, input: String) -> Evaluated {
-    // 降级路径：worker 已退出（进程正在收尾）时给一个空结果，
-    // 界面不会挂死，只是这一次求值没有产出
-    let fallback = Evaluated {
-        input: input.clone(),
+/// worker 已退出时给的空结果（界面据此保持沉默，而不是挂住）。
+fn degraded(input: String) -> Evaluated {
+    Evaluated {
+        input,
         text: String::new(),
         is_error: false,
         elapsed: Duration::ZERO,
-    };
-    if sent {
-        rrx.recv().unwrap_or(fallback)
-    } else {
-        fallback
     }
 }
 
@@ -251,7 +237,7 @@ fn worker_loop(mut session: Session, rx: Receiver<Request>) {
                 }
                 let elapsed = start.elapsed();
 
-                // 界面已经走了（通道断了）就丢弃结果，别白等
+                // 界面已经走了（future 被 drop）时 `send` 会返回 Err，忽略即可
                 let _ = reply.send(Evaluated {
                     input,
                     text: result.text,
@@ -340,6 +326,32 @@ mod tests {
         );
     }
 
+    /// ⚠️ **回归测试**：`eval` 返回的 future **在没人 poll 它之前不能做任何事**。
+    ///
+    /// 这条是本模块那次翻车（见模块头的「走过的弯路」）留下的护栏：
+    /// 当时 `eval` 的返回值里混进了一段"自旋等结果"的**同步**代码，
+    /// 于是调用方一碰它就把线程占住了。现在 `eval` 只做两件事 ——
+    /// 推消息、返回 future —— 所以：
+    /// - 构造 future 必须**瞬间**返回（哪怕求值本身要跑很久）；
+    /// - 丢弃 future 不能 panic、也不能把 worker 搞坏。
+    #[test]
+    fn eval_returns_immediately_and_is_lazy() {
+        let ev = Evaluator::spawn(Session::new());
+        let start = Instant::now();
+        // 一个很慢的输入：只在 future 里"欠着"，构造阶段不该有任何等待
+        let fut = ev.eval("5000!".into(), vec!["5000!".into()]);
+        let build = start.elapsed();
+        assert!(
+            build < Duration::from_millis(5),
+            "构造 future 必须瞬间完成（不含任何等待），实际 {build:?}"
+        );
+
+        // 丢掉不 poll：不能 panic，worker 也不该被搞坏
+        drop(fut);
+        let after = ev.eval_blocking("1+1".into(), vec!["1+1".into()]);
+        assert!(after.text.contains('2'), "worker 应仍然可用：{after:?}");
+    }
+
     /// 设置命令在 worker 上生效：改成 LineIO 后，同一条 `sqrt(2)` 的结果形态
     /// 从数学式退化成小数（这是**只有** worker 真的执行了 `Config` 才可能的）
     #[test]
@@ -400,9 +412,7 @@ mod tests {
         drop(rx);
         assert!(tx.send(Request::Config(Command::SetPrecision(80))).is_err());
 
-        // `block_for` 在 sent=false 时必须立即返回，不碰通道
-        let (_tx2, rx2) = mpsc::channel::<Evaluated>();
-        let out = block_for(&rx2, false, "1+1".into());
+        let out = degraded("1+1".into());
         assert_eq!(out.input, "1+1");
         assert!(out.text.is_empty(), "降级结果不该有文本");
         assert_eq!(out.elapsed, Duration::ZERO);

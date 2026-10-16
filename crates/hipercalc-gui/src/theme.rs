@@ -73,6 +73,11 @@ pub struct Colors {
     pub success: Color,
     /// 分数横线 / 根号顶线
     pub math_stroke: Color,
+    /// 弹窗遮罩（函数面板背后的压暗层）。
+    ///
+    /// ⚠️ 必须**随主题**：深色下用半透明黑是对的，但浅色下照搬会把整个亮界面
+    /// 压成灰的 —— 用户看到的现象正是"浅色模式打开函数面板，颜色一下子变暗了"。
+    pub scrim: Color,
 }
 
 impl Colors {
@@ -89,6 +94,8 @@ impl Colors {
         danger: rgb8(0xFF, 0x99, 0xA4),
         success: rgb8(0x6C, 0xCB, 0x5F),
         math_stroke: rgba8(0xE8, 0xE8, 0xE8, 0.68),
+        // 深色：压暗一档，让弹窗（本身是浅一层的玻璃）浮出来
+        scrim: rgba8(0x00, 0x00, 0x00, 0.42),
     };
 
     /// WinUI3 Light 令牌
@@ -104,6 +111,10 @@ impl Colors {
         danger: rgb8(0xC4, 0x2B, 0x1C),
         success: rgb8(0x0F, 0x7B, 0x0F),
         math_stroke: rgba8(0x20, 0x20, 0x20, 0.72),
+        // 浅色：**不能**照搬深色那层的半透明黑。亮底上叠黑会整体压灰，
+        // 用户看到的就是"切浅色后打函数面板，颜色变暗了"。
+        // 这里用更淡的中性灰，只轻轻压一层、把弹窗托起来。
+        scrim: rgba8(0x33, 0x33, 0x33, 0.16),
     };
 
     /// 按明暗取色板
@@ -148,6 +159,26 @@ pub fn set_dark(on: bool) {
 /// 当前是否深色
 pub fn dark() -> bool {
     DARK.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 玻璃强度，用**百分数**存（0 = 关闭，100 = 最强）。
+///
+/// 用整数存是为了避开 `AtomicF32` 这种不存在的类型 —— 换算一次而已，
+/// 精度到 1% 对"通透程度"这种主观指标完全够用。
+///
+/// 与 [`DARK`]、[`ACRYLIC`] 同一套理由：样式函数的签名是 `Fn(&Theme) -> Style`，
+/// 拿不到 `State`，所以这类"全局观感开关"只能走进程级静态量。
+static GLASS_PERCENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(60);
+
+/// 设置玻璃强度（0.0 = 关闭，走不透明纯色；1.0 = 最强）
+pub fn set_glass(amount: f32) {
+    let pct = (amount.clamp(0.0, 1.0) * 100.0).round() as u8;
+    GLASS_PERCENT.store(pct, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 当前玻璃强度（0.0 – 1.0）
+pub fn glass_amount() -> f32 {
+    GLASS_PERCENT.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
 }
 
 /// 当前色板
@@ -209,15 +240,23 @@ pub const RADIUS_BUTTON: f32 = 6.0;
 /// - `lift`：投影强度（0 = 贴底，1 = 浮得最高）——用于区分主面板与次级面板
 /// - `tint`：背景 tint 的 alpha 倍数（键盘区比结果区更透，视觉分层）
 fn glass(c: &Colors, lift: f32, tint: f32) -> container::Style {
+    let g = glass_amount();
+    // 玻璃越强 → 底色越透（让底下的层 / DWM 模糊透上来）；0 时是完全不透明的纯色。
+    // 0.55 是实测出的上限：再透下去浅色主题里的深色文字会开始糊。
+    let alpha = tint * (1.0 - 0.55 * g);
+    // 玻璃越强 → 投影越明显。"玻璃厚度"这个观感来自三件事，缺一不可：
+    // 半透明底色（上面）、1px 高光描边（下面）、柔和投影（这里）。
+    let lift = lift * (0.55 + 0.75 * g);
     let base = c.surface;
     container::Style {
         background: Some(gradient_background([
-            (0.0, base.scale_alpha(base.a * tint)),
-            (1.0, base.scale_alpha(base.a * tint * 0.62)),
+            (0.0, base.scale_alpha(base.a * alpha)),
+            (1.0, base.scale_alpha(base.a * alpha * 0.62)),
         ])),
         text_color: Some(c.text),
         border: Border {
-            color: c.stroke,
+            // 描边也跟着变亮：它是"玻璃边缘那道高光"
+            color: c.stroke.scale_alpha(1.0 + 0.9 * g),
             width: 1.0,
             radius: RADIUS_PANEL.into(),
         },
@@ -267,28 +306,13 @@ pub fn preview_strip(_theme: &Theme) -> container::Style {
     }
 }
 
-/// 结果区的卡片：圆角用中等档（它内部还要放滚动区，边太圆会显得挤）
+/// 结果区的卡片。
+///
+/// 走与工具条同一套玻璃语言（用户要求："liquidglass 不仅仅窗口栏有，
+/// 整个计算器都应该有"），只是 `lift` 给得小一点 —— 它托在工具条下面，
+/// 层次该低一档，否则整屏的投影会互相打架。
 pub fn panel_card(_theme: &Theme) -> container::Style {
-    let c = colors();
-    let base = c.surface;
-    container::Style {
-        background: Some(gradient_background([
-            (0.0, base.scale_alpha(base.a * 0.72)),
-            (1.0, base.scale_alpha(base.a * 0.44)),
-        ])),
-        text_color: Some(c.text),
-        border: Border {
-            color: c.stroke,
-            width: 1.0,
-            radius: RADIUS_CARD.into(),
-        },
-        shadow: Shadow {
-            color: Color::BLACK.scale_alpha(0.24),
-            offset: Vector::new(0.0, 2.0),
-            blur_radius: 14.0,
-        },
-        snap: false,
-    }
+    glass(&colors(), 0.7, 0.78)
 }
 
 /// 次级面板（键盘底座，浮得低一点，避免和主面板抢视线）
@@ -528,6 +552,57 @@ mod tests {
         let l = Colors::LIGHT;
         assert!(d.text.r > d.backdrop.r, "深色主题的文本应比背景亮");
         assert!(l.text.r < l.backdrop.r, "浅色主题的文本应比背景暗");
+    }
+
+    /// ⚠️ **浅色主题下函数弹窗的遮罩不能把界面压灰**。
+    ///
+    /// 这是用户报过的现象："浅色模式时打开函数面板颜色会变暗" —— 根因是遮罩
+    /// 写死成 `BLACK 0.42`。现在它随主题走，这条测试钉住"浅色的遮罩明显更淡"。
+    #[test]
+    fn scrim_is_lighter_in_light_theme() {
+        let d = Colors::DARK.scrim;
+        let l = Colors::LIGHT.scrim;
+        assert!(
+            l.a < d.a,
+            "浅色主题的遮罩必须更淡（深色 {:.2} vs 浅色 {:.2}）",
+            d.a,
+            l.a
+        );
+        assert!(l.a <= 0.25, "浅色遮罩的 alpha 应很低，否则会把亮界面压灰");
+    }
+
+    /// 玻璃强度：0.0 = 关闭，1.0 = 最强；值能原样读回（1% 量化），越界夹得住
+    #[test]
+    fn glass_amount_round_trips() {
+        let before = glass_amount();
+        for v in [0.0_f32, 0.33, 1.0] {
+            set_glass(v);
+            assert!(
+                (glass_amount() - v).abs() < 0.011,
+                "设 {v} 后应读回接近它的值（1% 量化），实际 {}",
+                glass_amount()
+            );
+        }
+        set_glass(-1.0);
+        assert_eq!(glass_amount(), 0.0, "下界应夹到 0");
+        set_glass(9.0);
+        assert_eq!(glass_amount(), 1.0, "上界应夹到 1");
+        set_glass(before);
+    }
+
+    /// 玻璃强度**真的**作用在面板底色上（不是个只存不用的开关）
+    #[test]
+    fn glass_strength_changes_panel_alpha() {
+        let before = glass_amount();
+        set_glass(0.0);
+        let solid = format!("{:?}", panel(&Theme::Dark).background);
+        set_glass(1.0);
+        let clear = format!("{:?}", panel(&Theme::Dark).background);
+        assert_ne!(
+            solid, clear,
+            "玻璃强度必须真的改变面板底色（否则设置没接上样式）"
+        );
+        set_glass(before);
     }
 
     #[test]

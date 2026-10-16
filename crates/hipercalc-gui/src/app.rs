@@ -31,16 +31,16 @@
 
 use iced::widget::text_editor::{Action, Content as EditorContent, Edit, Motion};
 use iced::widget::{
-    Column, Row, Space, button, column, container, row, rule, scrollable, stack, text, text_editor,
-    text_input,
+    Column, Row, Space, button, column, container, row, rule, scrollable, slider, stack, text,
+    text_editor, text_input,
 };
 // `Element` / `Length` / `Pixels` 在 iced 顶层与 `iced::widget` 都可用；
 // 这里从 `iced` 顶层取，与官方示例一致。
-use iced::{Alignment, Background, Color, Element, Length, Pixels, Task};
+use iced::{Alignment, Background, Element, Length, Pixels, Task};
 
 use hipercalc::Session;
 use hipercalc::parser_api::DisplayMode;
-use hipercalc::session::{ALL_LANGS, UiLang};
+use hipercalc::session::{ALL_LANGS, GuiPrefs, UiLang};
 use hipercalc_core::calc_mode::CalcMode;
 use hipercalc_core::trig::AngleMode;
 
@@ -176,18 +176,42 @@ pub struct State {
     evaluator: Evaluator,
     /// worker 手里的会话是否正在算（决定按钮要不要禁用、是否显示「计算中」）
     busy: bool,
-    /// 在飞的那一次求值的**结果信箱**。
+    /// 在飞的那一次求值的**原始请求**（输入原文 + 已拆好的行）。
     ///
     /// 产品路径其实用不到它（结果经 `Task::perform` → [`Message::Evaluated`] 回来），
-    /// 留着只是为了让单测能"等在飞的那次求值上"（见 [`State::await_pending_for_test`]）。
-    /// 不占什么资源：一个 `Arc<Mutex<Option<_>>>`，每次求值换一个新的。
-    pending: Option<std::sync::Arc<std::sync::Mutex<Option<Evaluated>>>>,
+    /// 留着只是为了让测试能"补等一次"（见 [`State::await_pending_for_test`]）。
+    ///
+    /// ⚠️ 这里存的是**请求本身**，不是"结果信箱" —— 早期版本存的是
+    /// `Arc<Mutex<Option<Evaluated>>>`，靠一条搬运线程填、靠自旋读，
+    /// 而那段自旋被误放进了 `update`（详见 [`crate::evaluator`] 模块头的「走过的弯路」）。
+    /// 现在结果只走 `oneshot` 一条路，测试要复现就重放一次请求 —— 简单且不可能卡住。
+    pending: Option<(String, Vec<String>)>,
     /// 求值历史，最新在末尾
     history: Vec<Entry>,
     /// 输入框内容（多行编辑器 —— 能读光标、能局部插入）
     input: EditorContent,
     /// 深色模式
     pub dark: bool,
+    /// 玻璃（liquid glass）强度：`0.0` = 关闭（不透明纯色），`1.0` = 最强。
+    ///
+    /// ⚠️ 与 [`theme::set_glass`] **双写**：样式函数的签名是 `Fn(&Theme) -> Style`、
+    /// 拿不到 `State`，所以这类全局观感只能存进程级开关（与 `dark` 同一套路）。
+    /// 这里留一份是为了让设置面板的滑条有值可读、也让单测能断言。
+    glass: f32,
+    /// 关掉玻璃前记住的强度 —— 点"开启"时恢复到它，而不是回到写死的默认值
+    glass_backup: f32,
+    /// 结果行的布局策略：`true` = 长内容自动折行，`false` = 不折行、横向滚动。
+    ///
+    /// 用户报过「结果太长，右边被挡住看不到后半段」。原因是 iced 默认的
+    /// `Wrapping::Word` 只在**词边界**折行，而 100 位的整数中间没有词边界 ⇒
+    /// 既不折行、容器又只开了垂直滚动 ⇒ 横向溢出被裁。详见 [`mathrender::Style2::wrap`]。
+    wrap: bool,
+    /// 是否把设置写回状态文件。
+    ///
+    /// ⚠️ **测试构造出来的 `State` 必须关掉它**（[`State::default`] 里是 `false`）——
+    /// 否则每条"改一下设置"的用例都会去写用户真实的 `~/.hipercalc_state`，
+    /// 跑一次测试就把人家的配置改了。只有产品路径（[`State::load`]）才打开。
+    persist: bool,
     /// 函数弹窗是否展开
     show_funcs: bool,
     /// 亚克力是否已启用（探测一次后固定）
@@ -246,6 +270,23 @@ impl Default for Modes {
     }
 }
 
+impl Modes {
+    /// 从会话里把模式读回来（`State::load` 恢复配置后用）。
+    ///
+    /// 为什么不直接让 `restored()` 回传一份 `Modes`：`Modes` 是**界面侧**的概念
+    /// （它是"worker 手里那份设置在 UI 的副本"），让 `hipercalc` 去认识它会把
+    /// 依赖方向倒过来。读一次而已，代价可以忽略。
+    fn from_session(s: &Session) -> Self {
+        Self {
+            display: s.display_mode(),
+            angle: s.angle_mode(),
+            calc: s.calc_mode(),
+            lang: s.lang(),
+            precision: s.precision(),
+        }
+    }
+}
+
 /// 消息
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -267,6 +308,15 @@ pub enum Message {
     ToggleSettings,
     /// 切换深色模式
     ToggleDark,
+    /// 拖动玻璃强度滑条。⚠️ 拖动会**高频**触发，所以这条只改内存 + 重绘，
+    /// 写盘交给松手时的 [`Message::CommitGlass`]。
+    SetGlass(f32),
+    /// 玻璃滑条松手（这时才写配置）
+    CommitGlass,
+    /// 一键开关玻璃：关 = 强度归零并记住原值，开 = 恢复到原值
+    ToggleGlass,
+    /// 长结果布局：`true` = 自动换行，`false` = 横向滚动
+    SetWrap(bool),
     /// 切换显示模式
     SetDisplay(DisplayMode),
     /// 切换角度模式
@@ -297,18 +347,57 @@ pub enum Message {
 
 impl Default for State {
     fn default() -> Self {
-        let mut session = Session::new();
+        // ⚠️ 这里**刻意不读** `~/.hipercalc_state`（与 `State::load` 的分工）：
+        // 几十条单测与快照测试都用它，若它去读用户主目录下的真实配置，
+        // 测试就不可重复了（换台机器、或用户改过一次设置，基线全变）。
         let modes = Modes::default();
+        let mut session = Session::new();
         // 把 UI 侧的初始模式**同步给 worker**（`Session::new()` 本身是 LineIO，
         // 而 GUI 默认 MathIO —— 不同步的话界面上高亮着 MathIO、算出来却是小数）
         session.set_display_mode(modes.display);
         session.set_precision(modes.precision);
+        // 最后一个 `false` = **不写盘**（见 `State::persist` 字段的说明）
+        Self::with_session(session, modes, GuiPrefs::default(), false)
+    }
+}
+
+impl State {
+    /// **产品路径**的构造：从 `~/.hipercalc_state` 恢复用户的配置。
+    ///
+    /// 用户明确要求："打开时应当从用户配置里读取信息"。恢复的东西包括
+    /// 显示模式 / 角度 / 精度 / 语言 / `/let` 变量（CLI 侧那几个键）
+    /// 以及 GUI 自己的深色、玻璃强度、行布局。
+    ///
+    /// `main.rs` 把它交给 `iced::application(..)`，所以窗口一建出来就是用户上次的样子。
+    pub fn load() -> Self {
+        let (session, prefs) = Session::restored();
+        let modes = Modes::from_session(&session);
+        // 最后一个 `true` = 允许把用户改的设置写回文件
+        Self::with_session(session, modes, prefs, true)
+    }
+
+    /// 共用构造：把会话交给后台线程，并把进程级开关同步好。
+    fn with_session(session: Session, modes: Modes, prefs: GuiPrefs, persist: bool) -> Self {
+        // ⚠️ 进程级开关要在**第一次 `view` 之前**设好。`theme::DARK` 与
+        // `theme::GLASS_PERCENT` 的静态初值只是"能跑"，不一定是用户的选择 ——
+        // 若等第一次 `update` 再同步，首帧就会用错颜色（一闪而过，但快照会拍到）。
+        theme::set_dark(prefs.dark);
+        theme::set_glass(prefs.glass);
         Self {
             precision_text: modes.precision.to_string(),
             acrylic_checked: false,
             input: EditorContent::new(),
             history: Vec::new(),
-            dark: true,
+            dark: prefs.dark,
+            glass: prefs.glass,
+            // 关着启动时，"开启"要回到出厂默认而不是 0
+            glass_backup: if prefs.glass > 0.0 {
+                prefs.glass
+            } else {
+                GuiPrefs::default().glass
+            },
+            wrap: prefs.wrap,
+            persist,
             show_funcs: false,
             show_settings: false,
             last_input: String::new(),
@@ -320,9 +409,6 @@ impl Default for State {
             evaluator: Evaluator::spawn(session),
         }
     }
-}
-
-impl State {
     /// 更新：只改状态，不画界面
     pub fn update(&mut self, message: Message) -> Task<Message> {
         // 样式函数读不到 State，明暗通过进程级开关传给主题模块
@@ -398,19 +484,53 @@ impl State {
             Message::ToggleDark => {
                 self.dark = !self.dark;
                 theme::set_dark(self.dark);
+                self.persist_prefs();
+            }
+            Message::SetGlass(v) => {
+                // 拖动中：只改内存 + 重绘。写盘留给 `CommitGlass` ——
+                // 滑条一次拖动会发出几十条消息，每条都写文件既慢又浪费。
+                self.glass = v.clamp(0.0, 1.0);
+                if self.glass > 0.0 {
+                    self.glass_backup = self.glass;
+                }
+                theme::set_glass(self.glass);
+            }
+            Message::CommitGlass => self.persist_prefs(),
+            Message::ToggleGlass => {
+                if self.glass > 0.0 {
+                    // 关：记住当前值，好让用户再点一次能回到原样
+                    self.glass_backup = self.glass;
+                    self.glass = 0.0;
+                } else {
+                    // 开：回到上次的强度；若从没调过（备份是 0）就用出厂默认
+                    self.glass = if self.glass_backup > 0.0 {
+                        self.glass_backup
+                    } else {
+                        GuiPrefs::default().glass
+                    };
+                }
+                theme::set_glass(self.glass);
+                self.persist_prefs();
+            }
+            Message::SetWrap(on) => {
+                self.wrap = on;
+                self.persist_prefs();
             }
             Message::SetDisplay(m) => {
                 self.modes.display = m;
                 self.evaluator.config(Command::SetDisplay(m));
+                self.persist_prefs();
             }
             Message::SetAngle(m) => {
                 self.modes.angle = m;
                 self.evaluator.config(Command::SetAngle(m));
+                self.persist_prefs();
             }
             Message::SetCalc(deep) => {
                 let m = if deep { CalcMode::Deep } else { CalcMode::Fast };
                 self.modes.calc = m;
                 self.evaluator.config(Command::SetCalc(m));
+                self.persist_prefs();
             }
             Message::ClearHistory => self.history.clear(),
             Message::ClearInput => self.input = EditorContent::new(),
@@ -429,6 +549,7 @@ impl State {
                 // 所以 `evaluator::Command` 里**没有** `SetLang` —— 从类型上就堵住这条路。
                 hipercalc::session::set_ui_lang(l);
                 self.modes.lang = l;
+                self.persist_prefs();
                 // 已有的历史是**当时**算出来的文本，不重算 —— 与"切换显示模式不重算"
                 // 同一套理由：重算会让用户分不清"是结果错了还是我改了设置"。
                 //
@@ -461,9 +582,11 @@ impl State {
                 self.evaluator.config(Command::SetPrecision(n));
                 // 夹过之后回填，让用户看到真实生效的值
                 self.precision_text = n.to_string();
+                self.persist_prefs();
             }
             Message::Evaluated(out) => {
                 self.busy = false;
+                self.pending = None;
                 let precise = is_precise(&out.text);
                 self.history.push(Entry {
                     input: out.input,
@@ -491,6 +614,54 @@ impl State {
             }
         }
         Task::none()
+    }
+
+    /// 把当前设置写回 `~/.hipercalc_state`。
+    ///
+    /// 走的是**键级更新**（[`hipercalc::session::save_prefs`]）：只替换下面这几个键，
+    /// 文件里的 `/let` 变量表、`/set` 颜色、以及 CLI 自己的键**原样保留** ——
+    /// 否则 GUI 每存一次设置就会把命令行那边的变量全清掉。
+    ///
+    /// 失败只 `eprintln!`：设置存不下来（只读目录、磁盘满）不该让计算器不可用。
+    fn persist_prefs(&self) {
+        // 测试构造的 State 一律不写盘（否则跑一次测试就改掉用户的真实配置）
+        if !self.persist {
+            return;
+        }
+        let pairs: Vec<(&str, String)> = vec![
+            (
+                "display",
+                match self.modes.display {
+                    DisplayMode::MathIO => "mathio",
+                    DisplayMode::LineIO => "lineio",
+                }
+                .to_string(),
+            ),
+            (
+                "angle",
+                match self.modes.angle {
+                    AngleMode::Degree => "deg",
+                    AngleMode::Radian => "rad",
+                }
+                .to_string(),
+            ),
+            (
+                "calc",
+                match self.modes.calc {
+                    CalcMode::Deep => "deep",
+                    CalcMode::Fast => "fast",
+                }
+                .to_string(),
+            ),
+            ("prec", self.modes.precision.to_string()),
+            ("lang", self.modes.lang.code().to_string()),
+            ("dark", if self.dark { "on" } else { "off" }.to_string()),
+            ("glass", format!("{:.2}", self.glass)),
+            ("wrap", if self.wrap { "on" } else { "off" }.to_string()),
+        ];
+        if let Err(e) = hipercalc::session::save_prefs(&pairs) {
+            eprintln!("[hipercalc-gui] 设置保存失败（不影响使用）：{e}");
+        }
     }
 
     /// 把文本插到**光标处**，并按需回退光标（函数键补括号后落在括号内）
@@ -636,13 +807,23 @@ impl State {
         self.input = EditorContent::new();
         self.busy = true;
 
-        // ⚠️ `Task::perform` 收的是 `FnOnce() -> impl Future`。我们给它的闭包内部
-        // 会**阻塞**等结果，这正是对的：iced 把 task 放在自己的工作线程池里
-        // 跑，阻塞发生在那条线程，不是事件循环线程。
-        let (slot, wait) = self.evaluator.eval(src, lines);
-        // 留着结果信箱：测试要能"等在飞的那一次求值上"（见 `await_pending_for_test`）
-        self.pending = Some(slot);
-        Task::perform(wait(), Message::Evaluated)
+        // 记下这次请求（测试要能"补等一次"，见 `await_pending_for_test`）
+        self.pending = Some((src.clone(), lines.clone()));
+
+        // ⚠️ **只构造 future、不 poll 它**。`evaluator.eval` 内部只做两件事：
+        // 把请求推给 worker、返回一条由 `oneshot` 唤醒的 future。
+        //
+        // 交给 `Task::perform` 之后由 iced 的执行器去跑（默认 feature 是
+        // `thread-pool`，即 `futures::executor::ThreadPool`）。
+        //
+        // ⚠️ 曾经的写法是 `Task::perform(wait(), Message::Evaluated)` ——
+        // 注意那个 `wait()` 的括号：`Task::perform` 收的是 **future 本身**，
+        // 不是"产生 future 的闭包"，所以 `wait()` 在**这一行**就被执行了。
+        // 而当时的 `wait` 内部是自旋等待循环 ⇒ `update` 原地等求值跑完
+        // ⇒ 大输入依然「未响应」。现在 `eval` 返回的 future 不含任何等待代码，
+        // 谁也无法在构造阶段把线程占住（`evaluator` 里有一条测试守着这一点）。
+        let fut = self.evaluator.eval(src, lines);
+        Task::perform(fut, Message::Evaluated)
     }
 
     /// 视图
@@ -662,7 +843,11 @@ impl State {
             let backdrop = iced::widget::mouse_area(
                 container(Space::new().width(Length::Fill).height(Length::Fill)).style(|_t| {
                     container::Style {
-                        background: Some(Background::Color(Color::BLACK.scale_alpha(0.42))),
+                        // ⚠️ 遮罩色**必须随主题**（`theme::colors().scrim`）。
+                        // 以前这里写死 `Color::BLACK.scale_alpha(0.42)` —— 深色下没问题，
+                        // 但浅色主题里在亮底上压一层黑，整个界面会瞬间变灰，
+                        // 用户看到的就是"切浅色后打开函数面板，颜色变暗了"。
+                        background: Some(Background::Color(theme::colors().scrim)),
                         ..container::Style::default()
                     }
                 }),
@@ -760,12 +945,11 @@ impl State {
         r = r.push(seg_t(t("快速"), !deep, Message::SetCalc(false)));
         r = r.push(seg_t(t("死算"), deep, Message::SetCalc(true)));
         r = r.push(Space::new().width(Length::Fill));
-        // 明暗 + 设置 + 清空
-        r = r.push(icon(
-            if self.dark { "☾" } else { "☀" },
-            false,
-            Message::ToggleDark,
-        ));
+        // 设置 + 清空。
+        //
+        // ⚠️ 明暗切换按钮**不在这里**了 —— 用户要求"深色浅色的按钮放到设置里"。
+        // 主题属于"偶尔改一次"的设置，和 MathIO/RAD/快速 这些"算之前随手切"的
+        // 模式不是一类东西，混在工具条上会让一排 chip 越长越难扫。
         r = r.push(icon("⚙", self.show_settings, Message::ToggleSettings));
         // 清空历史：这条**必须**翻译（工具条上最显眼的中文之一）。
         // 注意键用的是"清空历史"而不是"清空" —— 后者在 CLI 里可能被当成别的片段。
@@ -823,9 +1007,25 @@ impl State {
         // `anchor_bottom`：历史是"越往下越新"，滚到底部才符合计算器的直觉。
         // 内容超出可视区时首条会被滚出视野 —— 这是**正常行为**（不是裁切 bug），
         // 加内边距只是为了首条不与面板边框贴死。
+        //
+        // 滚动方向跟着"长结果"设置走（用户要求："增加左右拖动或者换行，供用户选择"）：
+        // - 自动换行：只开垂直滚动。这一档要求内容折行，而折行由 `mathrender`
+        //   的 `Wrapping::Glyph` 负责 —— 光开垂直滚动是不够的（`Wrapping::Word`
+        //   不会在 100 位整数中间断行，照样横向溢出）。
+        // - 横向滚动：两个方向都开。内容的宽度约束变成"无限"，于是不会折行，
+        //   超出的部分靠拖动看。
+        let direction = if self.wrap {
+            scrollable::Direction::Vertical(scrollable::Scrollbar::default())
+        } else {
+            scrollable::Direction::Both {
+                vertical: scrollable::Scrollbar::default(),
+                horizontal: scrollable::Scrollbar::default(),
+            }
+        };
         let inner = scrollable(col.padding([10, 10]))
             .anchor_bottom()
-            .height(Length::Fill);
+            .height(Length::Fill)
+            .direction(direction);
 
         let mut shell = Column::new().spacing(0);
         if self.show_settings {
@@ -858,6 +1058,7 @@ impl State {
                 size: 15.0,
                 color: Some(theme::colors().text_dim),
                 monospace: false,
+                wrap: self.wrap,
             },
         );
 
@@ -897,6 +1098,7 @@ impl State {
                     theme::colors().text
                 }),
                 monospace: !math,
+                wrap: self.wrap,
             },
         );
 
@@ -986,6 +1188,57 @@ impl State {
             );
         }
 
+        // ④ 主题（用户要求："深色浅色的按钮放到设置里" —— 原来在工具条上）。
+        let theme_row = row![
+            self.setting_label(t("主题"), SETTING_LABEL_W),
+            self.chip(t("深色"), self.dark, Message::ToggleDark),
+            self.chip(t("浅色"), !self.dark, Message::ToggleDark),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+
+        // ⑤ 玻璃（liquid glass）强度：开关芯片 + 滑条。
+        //
+        // 用户要"开关 + 连续滑条"，所以两者都要：芯片负责一键开/关
+        //（关 = 强度归零，且记住原值以便恢复），滑条负责无级微调。
+        // 滑条拉到 0 也等价于关闭 —— 两条路通向同一个状态，不会打架。
+        let glass_on = self.glass > 0.0;
+        let glass_row = row![
+            self.setting_label(t("玻璃质感"), SETTING_LABEL_W),
+            self.chip(
+                if glass_on {
+                    t("已开启")
+                } else {
+                    t("已关闭")
+                },
+                glass_on,
+                Message::ToggleGlass,
+            ),
+            // `slider` 在 iced 里是基础控件，不需要额外 feature
+            slider(0.0..=1.0, self.glass, Message::SetGlass)
+                .step(0.01_f32)
+                // ⚠️ 拖动时发的是 `SetGlass`（只重绘），**松手**才 `CommitGlass` 写盘
+                .on_release(Message::CommitGlass)
+                .width(Length::Fixed(160.0)),
+            theme::label(t_fmt("{0}%", &[&(self.glass * 100.0).round().to_string()]))
+                .size(13)
+                .style(theme::hint),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+
+        // ⑥ 长结果的处理方式（用户要求："增加左右拖动或者换行，放在设置里供用户选择"）。
+        let wrap_row = row![
+            self.setting_label(t("长结果"), SETTING_LABEL_W),
+            self.chip(t("自动换行"), self.wrap, Message::SetWrap(true)),
+            self.chip(t("横向滚动"), !self.wrap, Message::SetWrap(false)),
+            theme::label(t("结果太长看不清时怎么办"))
+                .size(12)
+                .style(theme::hint),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+
         container(
             column![
                 precision_row,
@@ -993,6 +1246,12 @@ impl State {
                 lang_row,
                 rule::horizontal(1.0).style(theme::divider),
                 font_row,
+                rule::horizontal(1.0).style(theme::divider),
+                theme_row,
+                rule::horizontal(1.0).style(theme::divider),
+                glass_row,
+                rule::horizontal(1.0).style(theme::divider),
+                wrap_row,
             ]
             .spacing(8),
         )
@@ -1000,6 +1259,18 @@ impl State {
         .padding([8, 10])
         .style(theme::panel_low)
         .into()
+    }
+
+    /// 设置面板里的一个"选中态芯片"（主题、行布局这类二选一/开关用它）
+    ///
+    /// 收 `String`（已翻译）而不是 `&str`：`theme::mode_chip` 需要 `Move` 闭包
+    /// 捕获 `selected`，而按钮文案是运行时翻译出来的。
+    fn chip(&self, label: String, selected: bool, msg: Message) -> Element<'_, Message> {
+        button(theme::label(label).size(13))
+            .padding([5, 12])
+            .style(move |t, s| theme::mode_chip(t, s, selected))
+            .on_press(msg)
+            .into()
     }
 
     /// 设置面板里各行标签，统一宽度让右边的控件对齐成一列
@@ -1133,6 +1404,7 @@ impl State {
                 size: 21.0,
                 color: Some(theme::colors().text),
                 monospace: false,
+                wrap: self.wrap,
             },
         );
 
@@ -1468,22 +1740,22 @@ impl State {
 
     /// 等**在飞的那一次**求值回来，并按正常路径写进历史（测试用）。
     ///
-    /// 单测没法跑 iced 的 `Task`，所以 `update(Message::Evaluate)` 之后历史是空的。
-    /// 这个方法给出"补等一次"的能力：**走的仍是真实回写路径**
-    /// （[`Message::Evaluated`]），只是把等待从执行器搬到了测试线程。
+    /// 单测没法跑 iced 的 `Task`（`update(Message::Evaluate)` 只**构造**一条 future，
+    /// 没人去 poll 它），所以那条路径上历史永远是空的。这个方法给出"补等一次"的能力：
+    /// 把刚记下的请求**重放一次**（走 [`Evaluator::eval_blocking`]，同一个 worker、
+    /// 同一条队列），再经 [`Message::Evaluated`] 写进历史 —— 落库路径与产品完全一致。
+    ///
+    /// ⚠️ 代价是同一个请求会被算两遍（第一遍的结果没人取）。
+    /// 测试里用的都是毫秒级输入，所以这点浪费可以忽略；换来的是"等待逻辑
+    /// 不可能再把测试线程挂住"（早期版本靠自旋读结果信箱，一旦 worker 出问题
+    /// 就会把测试也一起卡死，只能靠超时杀进程）。
     ///
     /// 没有在飞的请求时什么也不做（幂等），可以放心多调。
     pub fn await_pending_for_test(&mut self) {
-        let Some(slot) = self.pending.take() else {
+        let Some((src, lines)) = self.pending.take() else {
             return;
         };
-        // 自旋等结果信箱被搬运线程填上（产品路径里这一步由 iced 执行器完成）
-        let out = loop {
-            if let Some(v) = slot.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-                break v;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        };
+        let out = self.evaluator.eval_blocking(src, lines);
         let _ = self.update(Message::Evaluated(out));
     }
 
@@ -1731,25 +2003,66 @@ mod tests {
         let _ = State::default().update(Message::SetLang(UiLang::ZhCn));
     }
 
-    /// 求值走后台之后，**`update` 必须立刻返回**（不阻塞）。
+    /// ⚠️ **回归测试（P0）**：`update` 派单时**绝不能等 worker 算完**。
     ///
-    /// 这是本轮修复的核心承诺。怎么在单测里验"不阻塞"？
-    /// 用一个**必然很慢**的算式（`5000!`），断言 `update` 的调用本身在
-    /// 一个很紧的预算内返回 —— 若哪天有人把 `session.eval` 又挪回 `update`，
-    /// 这里会立刻超时失败。
+    /// ## 这条测试为什么长这样
     ///
-    /// 另外顺带验证 `busy` 生命周期：派单后立刻为 `true`，结果回来后为 `false`。
+    /// 它之前是"用 `5000!` + 断言 `update < 50ms`"。那个写法**抓不到当时的 bug**：
+    /// 上一版把 `wait()` 留在了 `update` 里（`Task::perform` 收的是 future 本身，
+    /// 见 [`crate::evaluator`] 模块头），于是 `update` 会一直等到 worker 算完 ——
+    /// 但 `5000!` / `10000!` 在快机器上**只要十几毫秒**（实测 `10000!` = 18.9ms），
+    /// `< 50ms` 照样过。用户报的 `100^100^10` 会卡几十秒，测试却一路绿灯。
+    ///
+    /// 现在做两件事：
+    /// 1. **把输入堆到足够重**（多行重复 15 次，几百毫秒级）—— 单次大运算在
+    ///    fast 模式下有上限（`10000!` 就是顶了），堆行数是唯一能可靠加重的办法，
+    ///    而且多行本来就是产品支持的输入形态（逐行求值）。
+    /// 2. **自适应断言**：先用同步路径量出"这个输入在 worker 上到底要跑多久"，
+    ///    再要求 `update` 的耗时**远小于**它。机器快慢都不影响结论（比的是同一个
+    ///    进程里的两个数），只要有人把等待挪回 `update`，测试必红。
     #[test]
-    fn update_returns_immediately_even_for_slow_input() {
+    fn update_does_not_wait_for_the_worker() {
         use std::time::Instant;
-        let mut s = State::default();
-        s.insert("5000!");
+
+        const ROWS: usize = 15;
+        let lines: Vec<String> = vec!["10000!".to_string(); ROWS];
+        let src = lines.join("\n");
+
+        // ① 量出这个输入在 worker 上的真实耗时
+        let probe = Evaluator::spawn(Session::new());
+        let t0 = Instant::now();
+        let out = probe.eval_blocking(src.clone(), lines.clone());
+        let worker_time = t0.elapsed();
+        assert!(!out.is_error, "探针输入不该报错：{out:?}");
+        assert!(
+            worker_time > std::time::Duration::from_millis(50),
+            "探针输入太轻（worker 只花了 {worker_time:?}），这条测试就失去区分度了 —— \
+             请加大 ROWS"
+        );
+
+        // ② 走产品路径派单：`update` 必须**与 worker 的耗时无关**。
+        //    多行靠 Ctrl+Enter 插入换行（`ctrl_held` 为真时 Enter 才是换行，
+        //    否则会被 `update` 拦成求值，见 `Message::Edit` 分支）。
+        let mut s = State {
+            ctrl_held: true,
+            ..State::default()
+        };
+        for i in 0..ROWS {
+            if i > 0 {
+                let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
+            }
+            s.insert("10000!");
+        }
+        s.ctrl_held = false;
+        assert_eq!(s.input_lines().len(), ROWS, "多行输入应被拆成 {ROWS} 行");
+
         let t = Instant::now();
         let _task = s.update(Message::Evaluate);
         let took = t.elapsed();
         assert!(
-            took < std::time::Duration::from_millis(50),
-            "update 必须立刻返回（求值在后台），实际花了 {took:?}"
+            took < worker_time / 4,
+            "update 花了 {took:?}，而 worker 要 {worker_time:?} —— \
+             说明 update 又在等求值了（这正是「未响应」的成因）"
         );
         assert!(s.busy, "派单后应标记为「计算中」");
         assert!(s.input_text().is_empty(), "派单时就该清空输入框");
@@ -1757,6 +2070,77 @@ mod tests {
             s.history.is_empty(),
             "结果还没回来，不该有历史（有的话说明同步算了）"
         );
+    }
+
+    /// 玻璃强度：滑条改的是 `State` + 进程级开关，且**越界值被夹住**。
+    ///
+    /// ⚠️ 这条会动进程级开关（`theme::GLASS_PERCENT`），结束时必须还原 ——
+    /// 否则后面的快照会拍到"半透明键盘"这种意外观感。
+    #[test]
+    fn glass_setting_syncs_and_clamps() {
+        let mut s = State::default();
+        let before = theme::glass_amount();
+
+        let _ = s.update(Message::SetGlass(0.25));
+        assert!((s.glass - 0.25).abs() < 1e-6, "State 应记下新强度");
+        assert!(
+            (theme::glass_amount() - 0.25).abs() < 1e-6,
+            "进程级开关也该同步（样式函数只读得到它）"
+        );
+
+        // 越界值被夹进 [0, 1]
+        let _ = s.update(Message::SetGlass(2.5));
+        assert!((s.glass - 1.0).abs() < 1e-6, "上界应夹到 1.0：{}", s.glass);
+        let _ = s.update(Message::SetGlass(-3.0));
+        assert!(s.glass.abs() < 1e-6, "下界应夹到 0.0：{}", s.glass);
+
+        theme::set_glass(before);
+    }
+
+    /// 一键开关玻璃：关掉时记住原强度，再开回来要**恢复它**而不是回到默认值
+    #[test]
+    fn toggle_glass_remembers_strength() {
+        let mut s = State::default();
+        let before = theme::glass_amount();
+
+        let _ = s.update(Message::SetGlass(0.83));
+        let _ = s.update(Message::ToggleGlass);
+        assert!(s.glass.abs() < 1e-6, "关掉后强度应为 0");
+        assert!(
+            (s.glass_backup - 0.83).abs() < 1e-6,
+            "关掉时应记住原值：{}",
+            s.glass_backup
+        );
+
+        let _ = s.update(Message::ToggleGlass);
+        assert!(
+            (s.glass - 0.83).abs() < 1e-6,
+            "再开应回到 0.83 而不是默认值：{}",
+            s.glass
+        );
+
+        theme::set_glass(before);
+    }
+
+    /// 长结果布局是个开关：点一下就在"自动换行 / 横向滚动"之间切
+    ///
+    /// （真正影响的是 `results()` 里滚动方向与 `mathrender` 的 `Wrapping`，
+    /// 那两处由快照与 mathrender 自己的测试覆盖；这里钉住状态机。）
+    #[test]
+    fn wrap_setting_is_recorded() {
+        let mut s = State::default();
+        let initial = s.wrap;
+        let _ = s.update(Message::SetWrap(!initial));
+        assert_eq!(s.wrap, !initial, "设置应被记下");
+        let _ = s.update(Message::SetWrap(initial));
+        assert_eq!(s.wrap, initial, "切回来应还原");
+    }
+
+    /// 设置类操作**不能**在测试里写盘（否则跑一次测试就改掉用户的真实配置）
+    #[test]
+    fn test_state_never_persists() {
+        let s = State::default();
+        assert!(!s.persist, "`State::default`（测试路径）必须关掉写盘");
     }
 
     /// 计算中时**不收新单**：连按求值不会积压（否则 worker 会排着算好几次）
@@ -2189,6 +2573,16 @@ mod tests {
             "用时：<1秒",
             "用时：{0}秒",
             "计算中…",
+            "主题",
+            "深色",
+            "浅色",
+            "玻璃质感",
+            "玻璃已开启",
+            "玻璃已关闭",
+            "长结果",
+            "自动换行",
+            "横向滚动",
+            "结果太长看不清时怎么办",
             "HiPerCalc — 超高精度计算器",
         ];
 
@@ -2294,6 +2688,7 @@ mod tests {
                     size: 21.0,
                     color: None,
                     monospace: false,
+                    wrap: true,
                 },
             );
         }
@@ -2316,6 +2711,7 @@ mod tests {
                     size: 21.0,
                     color: None,
                     monospace: false,
+                    wrap: true,
                 },
             );
         }

@@ -378,6 +378,14 @@ pub struct Style2 {
     pub size: f32,
     pub color: Option<iced::Color>,
     pub monospace: bool,
+    /// 超长内容要不要**折行**（`false` = 不折，靠横向滚动看全）。
+    ///
+    /// ⚠️ 折行必须用 `Wrapping::Glyph`，**不能**用 iced 默认的 `Wrapping::Word`：
+    /// `Word` 只在**词边界**折行，而一个 100 位的整数中间没有任何词边界
+    ///（也没有空格）⇒ 它被当成一个不可折的"词"，照样横向溢出、被容器的
+    /// 右边界裁掉。用户报的「当行长过长时会被挡住，右边看不到后半段」
+    /// 正是这么来的 —— 换成 `Glyph` 才能在任意字符间断行。
+    pub wrap: bool,
 }
 
 impl Default for Style2 {
@@ -386,6 +394,8 @@ impl Default for Style2 {
             size: 26.0,
             color: None,
             monospace: false,
+            // 默认折行：能一眼看全是第一位的，横向滚动那档留给有偏好的用户
+            wrap: true,
         }
     }
 }
@@ -404,7 +414,17 @@ pub fn render<'a, M: 'a>(src: &str, math: bool, style: Style2) -> Element<'a, M>
 
 /// 纯文本渲染
 fn plain<'a, M: 'a>(src: &str, style: Style2) -> Element<'a, M> {
-    let mut t = text(src.to_string()).size(Pixels(style.size));
+    let mut t = text(src.to_string())
+        .size(Pixels(style.size))
+        // 见 `Style2::wrap` 的说明：折行要按**字符**断，不能按词断。
+        // `Wrapping` 从 `iced::widget::text` 取 —— 它在 iced_core 里定义，
+        // 但最终通过 `iced_widget::text` 的 `pub use` 出现在 widget 命名空间下
+        //（`iced::advanced::text::Wrapping` 那条路要开 `advanced` feature，没开）。
+        .wrapping(if style.wrap {
+            iced::widget::text::Wrapping::Glyph
+        } else {
+            iced::widget::text::Wrapping::None
+        });
     if let Some(c) = style.color {
         t = t.color(c);
     }
@@ -789,6 +809,7 @@ mod tests {
                     size: 15.0,
                     color: None,
                     monospace: false,
+                    wrap: true,
                 },
             );
         }

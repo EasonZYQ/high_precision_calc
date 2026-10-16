@@ -20,6 +20,14 @@ rustyline = "14"
 # 0.14 是当前稳定版（需要 rustc ≥ 1.88）。
 iced = "0.14"
 
+# 异步原语（仅 hipercalc-gui 使用）：后台求值用 `oneshot` 把结果**非阻塞**地
+# 回传给 iced 的 task future（见 `src/evaluator.rs`）。
+#
+# ⚠️ **不要**把这里换成"在 future 里阻塞等 `std::sync::mpsc`" —— 那样虽然也能跑，
+# 但会占住 iced 线程池的一条线程；`oneshot` 是真正的事件驱动等待，不占线程。
+# iced 自己就依赖 `futures`，所以这条不增加任何编译量。
+futures = "0.3"
+
 # debug 构建下仅对第三方依赖开启优化：
 # 本项目源码保持 opt-level 0（断点/变量查看不受影响），但 num-bigint / num-rational
 # 等大数库的乘除、取模、进制转换在 opt-level 0 下慢一个数量级以上，
