@@ -87,6 +87,8 @@ pub struct GuiPrefs {
     /// 与 `glass` 的分工（用户要求两者都要）：强度是"整体玻璃效果有多强"
     ///（同时影响底色透明度、描边高光、投影），底色只拧"面板底色有多实"这一个旋钮。
     pub glass_tint: f32,
+    /// 面板**投影**强度：`0.0` = 完全没有阴影（界面会很"平"），`1.0` = 最强
+    pub shadow: f32,
     /// 长结果的处理方式：`true` = 自动换行，`false` = 横向滚动
     pub wrap: bool,
 }
@@ -99,6 +101,8 @@ impl Default for GuiPrefs {
             glass: 0.6,
             // 0.7 —— 与 `theme::GLASS_TINT` 的静态初值保持一致，见那里的说明
             glass_tint: 0.7,
+            // 100% —— 与 `theme::SHADOW_PERCENT` 的静态初值一致（不改变现有观感）
+            shadow: 1.0,
             wrap: true,
         }
     }
@@ -131,6 +135,10 @@ impl GuiPrefs {
                 && let Ok(f) = v.trim().parse::<f32>()
             {
                 p.glass_tint = f.clamp(0.0, 1.0);
+            } else if let Some(v) = line.strip_prefix("shadow=")
+                && let Ok(f) = v.trim().parse::<f32>()
+            {
+                p.shadow = f.clamp(0.0, 1.0);
             } else if let Some(v) = line.strip_prefix("wrap=") {
                 p.wrap = v.trim() != "off";
             }
@@ -144,6 +152,7 @@ impl GuiPrefs {
             ("dark", if self.dark { "on" } else { "off" }.to_string()),
             ("glass", format!("{:.2}", self.glass)),
             ("glass_tint", format!("{:.2}", self.glass_tint)),
+            ("shadow", format!("{:.2}", self.shadow)),
             ("wrap", if self.wrap { "on" } else { "off" }.to_string()),
         ]
     }
@@ -495,6 +504,7 @@ mod tests {
             dark: true,
             glass: 0.25,
             glass_tint: 0.55,
+            shadow: 0.4,
             wrap: false,
         };
         update_keys_at(&path, &prefs.to_keys()).unwrap();
@@ -520,6 +530,7 @@ mod tests {
         assert!(text.contains("dark=on"));
         assert!(text.contains("glass=0.25"));
         assert!(text.contains("glass_tint=0.55"));
+        assert!(text.contains("shadow=0.40"));
         assert!(text.contains("wrap=off"));
         // ③ 读回来与写进去的一致
         assert_eq!(GuiPrefs::load_at(&path), prefs);

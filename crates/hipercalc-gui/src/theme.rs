@@ -192,6 +192,23 @@ pub fn glass_amount() -> f32 {
     GLASS_PERCENT.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
 }
 
+/// 投影（阴影）强度，同样按百分数存（0 = 完全没有阴影）。
+///
+/// 用户要求把它做成设置项："阴影的透明调节加到设置里"。
+/// 0 会让界面变得非常"平"（面板浮不起来），但对喜欢极简的人是合法的选择。
+static SHADOW_PERCENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(100);
+
+/// 设置投影强度（0.0 = 无投影，1.0 = 最强）
+pub fn set_shadow(amount: f32) {
+    let pct = (amount.clamp(0.0, 1.0) * 100.0).round() as u8;
+    SHADOW_PERCENT.store(pct, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 当前投影强度（0.0 – 1.0）
+pub fn shadow_amount() -> f32 {
+    SHADOW_PERCENT.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
+}
+
 /// 设置玻璃底色浓度（0.0 = 完全透明，1.0 = 完全不透明）
 pub fn set_glass_tint(tint: f32) {
     let pct = (tint.clamp(0.0, 1.0) * 100.0).round() as u8;
@@ -265,11 +282,20 @@ fn glass(c: &Colors, lift: f32, tint: f32) -> container::Style {
     let g = glass_amount();
     // 底色浓度 = 各面板自己的相对浓度 × 全局旋钮（用户在设置里调，见 [`GLASS_TINT`]）。
     // 玻璃越强 → 底色越透（让氛围底 / DWM 模糊透上来）；0 时是完全不透明的纯色。
-    // 0.55 是实测出的系数：再透下去浅色主题里的深色文字会开始糊。
-    let alpha = tint * glass_tint() * (1.0 - 0.55 * g);
+    //
+    // ⚠️ **深色下不做透明度衰减**（k = 0）：深色的面底色（#2B2B2B）本来就只比背景
+    //（#202020）亮十来级，一旦变透就直接融进背景 —— 用户看到的不是"玻璃"，
+    // 而是"整个界面糊成一片黑"（快照里实测过：面板全看不见了）。
+    // 所以深色下"强度"只作用于高光描边与投影 —— 那两样才撑得起玻璃感。
+    // 浅色下才真正调透明度（白面板透出氛围底的色彩）。
+    //
+    // 系数 0.72 而不是 0.55：用户实测反馈"开到 100% 也看不出差别" ——
+    // 0.55 时 `(1 - 0.55g)` 在 g∈[0.6, 1] 只从 0.67 变到 0.45，肉眼分不出。
+    let k = if dark() { 0.0 } else { 0.72 };
+    let alpha = tint * glass_tint() * (1.0 - k * g);
     // 玻璃越强 → 投影越明显。"玻璃厚度"这个观感来自三件事，缺一不可：
     // 半透明底色（上面）、1px 高光描边（下面）、柔和投影（这里）。
-    let lift = lift * (0.55 + 0.75 * g);
+    let lift = lift * (0.35 + 1.15 * g);
     let base = c.surface;
     container::Style {
         background: Some(gradient_background([
@@ -278,15 +304,26 @@ fn glass(c: &Colors, lift: f32, tint: f32) -> container::Style {
         ])),
         text_color: Some(c.text),
         border: Border {
-            // 描边也跟着变亮：它是"玻璃边缘那道高光"
-            color: c.stroke.scale_alpha(1.0 + 0.9 * g),
+            // 描边是"玻璃边缘那道高光"。深色主题下 `stroke` 本来就是浅色（白 0.09），
+            // 提亮即可；**浅色主题下 `stroke` 是黑 0.07**，直接用会变成一条分隔线
+            //（那是"卡片边框"的观感，不是玻璃）—— 所以浅色下换成**白色**高光。
+            color: if dark() {
+                c.stroke.scale_alpha(1.0 + 1.2 * g)
+            } else {
+                Color::WHITE.scale_alpha(0.30 + 0.45 * g)
+            },
             width: 1.0,
             radius: RADIUS_PANEL.into(),
         },
-        shadow: Shadow {
-            color: Color::BLACK.scale_alpha(0.30 * lift),
-            offset: Vector::new(0.0, 3.0 * lift),
-            blur_radius: 18.0 * lift,
+        shadow: {
+            // 用户的"投影强度"旋钮：0 时连偏移一起归零（只把 alpha 调零会留下
+            // 一片看不见但仍占布局的空白，观感上不如彻底去掉干净）
+            let sh = shadow_amount();
+            Shadow {
+                color: Color::BLACK.scale_alpha(0.30 * lift * sh),
+                offset: Vector::new(0.0, 3.0 * lift * sh),
+                blur_radius: 18.0 * lift * sh,
+            }
         },
         snap: false,
     }
@@ -733,18 +770,35 @@ mod tests {
         set_glass(before);
     }
 
-    /// 玻璃强度**真的**作用在面板底色上（不是个只存不用的开关）
+    /// 玻璃强度**真的**作用在面板上（不是个只存不用的开关）。
+    ///
+    /// ⚠️ 用**浅色**主题来验"透明度"这一路：深色下强度刻意不改透明度
+    ///（面板会融进背景，见 `glass()` 里的长注释），所以拿深色去断言
+    /// "背景变了"必然失败 —— 那正是第一版写错的地方。
     #[test]
     fn glass_strength_changes_panel_alpha() {
         let before = glass_amount();
+        let was_dark = dark();
+        // ⚠️ 样式函数读的是**进程级**的 `dark()`，不是传进去的那个 `Theme` ——
+        // 想在测试里验"浅色那一档"，必须先把全局开关切过去（第一版就栽在这里：
+        // 传 `Theme::Light` 却拿到深色色板，断言于是"看起来莫名其妙"地失败）。
+        set_dark(false);
         set_glass(0.0);
-        let solid = format!("{:?}", panel(&Theme::Dark).background);
+        let solid = format!("{:?}", panel(&Theme::Light).background);
         set_glass(1.0);
-        let clear = format!("{:?}", panel(&Theme::Dark).background);
+        let clear = format!("{:?}", panel(&Theme::Light).background);
         assert_ne!(
             solid, clear,
-            "玻璃强度必须真的改变面板底色（否则设置没接上样式）"
+            "浅色下玻璃强度必须真的改变面板底色（否则设置没接上样式）"
         );
+        // 深色下改的是**描边与投影**，同样必须变
+        set_dark(true);
+        set_glass(0.0);
+        let solid = format!("{:?}", panel(&Theme::Dark).border);
+        set_glass(1.0);
+        let clear = format!("{:?}", panel(&Theme::Dark).border);
+        assert_ne!(solid, clear, "深色下玻璃强度必须改变高光描边");
+        set_dark(was_dark);
         set_glass(before);
     }
 

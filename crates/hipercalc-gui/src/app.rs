@@ -36,7 +36,7 @@ use iced::widget::{
 };
 // `Element` / `Length` / `Pixels` 在 iced 顶层与 `iced::widget` 都可用；
 // 这里从 `iced` 顶层取，与官方示例一致。
-use iced::{Alignment, Background, Element, Length, Pixels, Task};
+use iced::{Alignment, Background, Color, Element, Length, Pixels, Task};
 
 use hipercalc::Session;
 use hipercalc::parser_api::DisplayMode;
@@ -205,6 +205,9 @@ pub struct State {
     /// 与 [`State::glass`] 的分工（用户要求两者都要）：强度拧的是"整体玻璃效果"，
     /// 这一个只拧"面板底色有多实"。同样与 [`theme::set_glass_tint`] 双写。
     glass_tint: f32,
+    /// 面板**投影**强度：`0.0` = 完全无阴影。与 [`theme::set_shadow`] 双写，
+    /// 同一套理由（样式函数拿不到 `State`）。
+    shadow: f32,
     /// 结果行的布局策略：`true` = 长内容自动折行，`false` = 不折行、横向滚动。
     ///
     /// 用户报过「结果太长，右边被挡住看不到后半段」。原因是 iced 默认的
@@ -307,6 +310,8 @@ pub enum Message {
     Evaluated(Evaluated),
     /// 点了排版层里的**空参数框**：把光标挪到源文本的第 n 个字符处
     PlaceCaret(usize),
+    /// 点了排版层的空白处：只把焦点还给编辑器，不动光标
+    FocusInput,
     /// 切换函数弹窗
     ToggleFuncs,
     /// 关闭函数弹窗（点浮层背景）
@@ -322,6 +327,8 @@ pub enum Message {
     SetGlass(f32),
     /// 拖动玻璃**底色浓度**滑条（同样只重绘，松手才写盘）
     SetGlassTint(f32),
+    /// 拖动**投影强度**滑条（同上）
+    SetShadow(f32),
     /// 玻璃滑条（强度或底色）松手 —— 这时才写配置
     CommitGlass,
     /// 一键开关玻璃：关 = 强度归零并记住原值，开 = 恢复到原值
@@ -395,6 +402,7 @@ impl State {
         theme::set_dark(prefs.dark);
         theme::set_glass(prefs.glass);
         theme::set_glass_tint(prefs.glass_tint);
+        theme::set_shadow(prefs.shadow);
         Self {
             precision_text: modes.precision.to_string(),
             acrylic_checked: false,
@@ -410,6 +418,7 @@ impl State {
             },
             wrap: prefs.wrap,
             glass_tint: prefs.glass_tint,
+            shadow: prefs.shadow,
             persist,
             show_funcs: false,
             show_settings: false,
@@ -428,6 +437,7 @@ impl State {
         theme::set_dark(self.dark);
 
         match message {
+            Message::FocusInput => return self.refocus_input(),
             Message::PlaceCaret(at) => {
                 // 点了排版层里的空参数框：把光标送进那个位置，然后把焦点还给
                 // 隐形编辑器（不然用户接着打字会没反应）。
@@ -519,6 +529,10 @@ impl State {
                 // 与 `SetGlass` 同一套路：拖动只重绘，落盘在 `CommitGlass`
                 self.glass_tint = v.clamp(0.0, 1.0);
                 theme::set_glass_tint(self.glass_tint);
+            }
+            Message::SetShadow(v) => {
+                self.shadow = v.clamp(0.0, 1.0);
+                theme::set_shadow(self.shadow);
             }
             Message::CommitGlass => self.persist_prefs(),
             Message::ToggleGlass => {
@@ -683,6 +697,7 @@ impl State {
             ("dark", if self.dark { "on" } else { "off" }.to_string()),
             ("glass", format!("{:.2}", self.glass)),
             ("glass_tint", format!("{:.2}", self.glass_tint)),
+            ("shadow", format!("{:.2}", self.shadow)),
             ("wrap", if self.wrap { "on" } else { "off" }.to_string()),
         ];
         if let Err(e) = hipercalc::session::save_prefs(&pairs) {
@@ -928,11 +943,15 @@ impl State {
             let backdrop = iced::widget::mouse_area(
                 container(Space::new().width(Length::Fill).height(Length::Fill)).style(|_t| {
                     container::Style {
-                        // ⚠️ 遮罩色**必须随主题**（`theme::colors().scrim`）。
-                        // 以前这里写死 `Color::BLACK.scale_alpha(0.42)` —— 深色下没问题，
-                        // 但浅色主题里在亮底上压一层黑，整个界面会瞬间变灰，
-                        // 用户看到的就是"切浅色后打开函数面板，颜色变暗了"。
-                        background: Some(Background::Color(theme::colors().scrim)),
+                        // ⚠️ **全透明**（用户反馈："打开函数面板会变暗"）。
+                        //
+                        // 之前这里是一层压暗遮罩（先是写死的 `BLACK 0.42`，后来改成
+                        // 随主题的 `scrim`）。但函数面板几乎占满窗口，遮罩除了把
+                        // 露出的一圈压暗之外没有任何作用 —— 而它唯一的**功能**是
+                        // "点空白处关闭"，那不需要可见。
+                        //
+                        // 所以底色直接给全透明：点击照样能收到，界面一点不变暗。
+                        background: Some(Background::Color(Color::TRANSPARENT)),
                         ..container::Style::default()
                     }
                 }),
@@ -959,13 +978,12 @@ impl State {
             let backdrop = iced::widget::mouse_area(
                 container(Space::new().width(Length::Fill).height(Length::Fill)).style(|_t| {
                     container::Style {
-                        // 比函数弹窗的遮罩淡：设置是"顺手看一下"，不该像模态对话框
-                        // 那样把整个界面压暗
-                        background: Some(Background::Color(
-                            theme::colors()
-                                .scrim
-                                .scale_alpha(theme::colors().scrim.a * 0.6),
-                        )),
+                        // ⚠️ **全透明**（用户要求："不要遮盖全部界面，显示在哪就遮哪里"）。
+                        //
+                        // 这一层的职责只有一个：接住"点面板外任意处"这个点击，
+                        // 让设置关掉。界面本身一点不该被压暗 —— 它显示在历史区那块，
+                        // 视觉上也就该只影响那块。
+                        background: Some(Background::Color(Color::TRANSPARENT)),
                         ..container::Style::default()
                     }
                 }),
@@ -1353,7 +1371,20 @@ impl State {
         .spacing(6)
         .align_y(Alignment::Center);
 
-        // ⑥ 长结果的处理方式（用户要求："增加左右拖动或者换行，放在设置里供用户选择"）。
+        // ⑥ 面板投影（用户要求："阴影的透明调节加到设置里"）。
+        // 单独占一行：玻璃那行已经有两根滑条，再塞一根就太挤了。
+        let shadow_row = row![
+            self.setting_label(t("面板投影"), SETTING_LABEL_W),
+            slider(0.0..=1.0, self.shadow, Message::SetShadow)
+                .step(0.01_f32)
+                .on_release(Message::CommitGlass)
+                .width(Length::Fixed(104.0)),
+            theme::label(pct(self.shadow)).size(13).style(theme::hint),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+
+        // ⑦ 长结果的处理方式（用户要求："增加左右拖动或者换行，放在设置里供用户选择"）。
         let wrap_row = row![
             self.setting_label(t("长结果"), SETTING_LABEL_W),
             self.chip(t("自动换行"), self.wrap, Message::SetWrap(true)),
@@ -1390,6 +1421,8 @@ impl State {
                 theme_row,
                 rule::horizontal(1.0).style(theme::divider),
                 glass_row,
+                rule::horizontal(1.0).style(theme::divider),
+                shadow_row,
                 rule::horizontal(1.0).style(theme::divider),
                 wrap_row,
             ]
@@ -1507,13 +1540,25 @@ impl State {
 
         // `stack!` 把两层叠起来，高度取两者较大的 —— 所以分数/根号把排版撑高时
         // 输入区会跟着长高，而不是被 `INPUT_HEIGHT` 裁掉。
-        let layered = stack![
+        //
+        // ⚠️ **顺序很关键：后写的在上面**。必须把**排版层放在 editor 之上**。
+        //
+        // 反过来的话，透明的 editor 会把所有鼠标点击都吃掉 —— 它内部的定位是按
+        // **纯文本字形**算的（`√2` 的宽度和 `sqrt(2)` 差得远），点出来的位置必然偏。
+        // 用户的原话是"完全无法选中修改，一选中就变成了文本字母"。
+        // 排版层在上之后，点击由我们自己的 `Node::At` 处理（位置精确到源字符偏移），
+        // editor 只负责它真正不可替代的那件事：键盘、输入法、粘贴、框选。
+        //
+        // 外层的 `mouse_area` 是**兜底**：点在排版层的空白处（没有 `At` 覆盖的地方）
+        // 时不移动光标，但至少要把焦点还给 editor，否则用户接着打字会没反应。
+        let shown_layer = iced::widget::mouse_area(
             container(shown)
                 .width(Length::Fill)
                 .padding([12, 14])
                 .align_x(Alignment::Start),
-            editor,
-        ];
+        )
+        .on_press(Message::FocusInput);
+        let layered = stack![editor, shown_layer];
 
         let editor_slot = container(layered).width(Length::FillPortion(10));
 
@@ -2086,6 +2131,8 @@ mod tests {
             },
             Node::Pow(a, b) => format!("{}^{}", flatten_node(a), flatten_node(b)),
             // 这三种节点不携带源文本（占位框 / 光标 / 参数逗号），拍平后是空的
+            // 位置包装：拍平后就是里面那棵子树
+            Node::At { inner, .. } => flatten_node(inner),
             Node::Empty { .. } | Node::Caret | Node::Comma { .. } => String::new(),
             Node::BigOp {
                 body,
@@ -2739,6 +2786,7 @@ mod tests {
             "点面板外任意处关闭",
             "玻璃强度",
             "底色浓度",
+            "面板投影",
             "长结果",
             "自动换行",
             "横向滚动",

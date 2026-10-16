@@ -336,8 +336,11 @@ pub const FN_GROUPS: &[FnGroup] = &[
             f("diff(,x)", "diff", "求导 diff(f, x)"),
             f("int(,x,0,1)", "int", "定积分 int(f,x,a,b)"),
             f("lim(,x,0)", "lim", "极限 lim(f, x, a)"),
-            f("sum(,k,1,10)", "sum", "求和 sum(f,k,a,b)"),
-            f("prod(,k,1,10)", "prod", "求积 prod(f,k,a,b)"),
+            // ⚠️ 插入时**不带参数**（曾经是 `sum(,k,1,10)`）：那些预填的值会让用户
+            //    以为"参数是定死的"，而他要改的时候还得先删掉它们 ——
+            //    用户原话："求和符号这种符号输入时应当无参数"。
+            f("sum()", "sum", "求和 sum(f,k,a,b)"),
+            f("prod()", "prod", "求积 prod(f,k,a,b)"),
         ],
     },
     FnGroup {
@@ -550,7 +553,7 @@ mod tests {
     #[test]
     fn cursor_back_matches_trailing_parens() {
         assert_eq!(cursor_back_for("sin()"), 1);
-        assert_eq!(cursor_back_for("sum(,k,1,10)"), 1);
+        assert_eq!(cursor_back_for("sum()"), 1);
         // `det([[]])` 结尾是 `])` —— 连续的右括号只有 **1** 个（`]` 不是 `)`），
         // 所以只回退 1 格。这里曾把断言写成 3，是把 `]` 也算进去了。
         assert_eq!(cursor_back_for("det([[]])"), 1);

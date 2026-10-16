@@ -29,7 +29,7 @@
 
 use iced::widget::canvas::{Frame, Geometry, LineCap, LineJoin, Path, Stroke};
 use iced::widget::{Canvas, Column, Row, Space, button, container, rule, text};
-use iced::{Alignment, Element, Font, Length, Padding, Pixels, Point, Rectangle, Renderer};
+use iced::{Alignment, Color, Element, Font, Length, Padding, Pixels, Point, Rectangle, Renderer};
 
 use crate::theme;
 
@@ -81,6 +81,18 @@ pub enum Node {
         /// 上限
         to: Box<Node>,
     },
+    /// **带源位置的包装**：让这棵子树可被点击（点了就把光标送到 `at`）。
+    ///
+    /// ## 为什么点击定位必须靠它
+    ///
+    /// 背后的 `text_editor` 也会处理点击，但它是按**纯文本字形**算位置的 ——
+    /// 而用户看到的是排版层（`√2` 的宽度和 `sqrt(2)` 完全不同）。
+    /// 于是"想改 Σ 上面的 10，点下去光标却跑到别处"，用户的原话是
+    /// **"完全无法选中修改"**。
+    ///
+    /// 所以位置必须来自**解析时的源偏移**：解析时给每个顶层节点包一层 `At`，
+    /// 渲染成一个可点区域。这样"点哪 → 光标去哪"是我们自己说了算的，精确。
+    At { at: usize, inner: Box<Node> },
     /// **参数分隔符**（内部节点，渲染成空）。
     ///
     /// 本模块的解析器是为"排版"写的，它并不懂函数签名 —— 逗号在它眼里只是一个
@@ -90,20 +102,28 @@ pub enum Node {
     Comma { at: usize },
 }
 
-/// 大运算符的种类
+/// 大运算符的种类（都是"一个符号 + 上下限 + 主体"的排版家族）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BigKind {
     /// `sum(f, k, a, b)` → Σ
     Sum,
     /// `prod(f, k, a, b)` → Π
     Prod,
+    /// `int(f, x, a, b)` → ∫（上下限竖排，右侧 `f dx`）
+    Integral,
+    /// `lim(f, x, a)` → `lim` 下方写 `x→a`
+    Limit,
+    /// `diff(f, x)` → `d/dx` 竖排 + 主体
+    Diff,
 }
 
 /// 解析入口：把 MathIO 文本切成节点序列。
 ///
 /// 返回 `Seq`，其中每个元素是**顶层**节点（分数、根号、符号、数字…）。
 pub fn parse(input: &str) -> Node {
-    parse_with_caret(input, None)
+    // ⚠️ **不包位置层**：这是"纯解析"入口，历史区、结果区与所有单测都用它。
+    // 需要点击定位的输入区走 `parse_with_caret`（见那里的说明）。
+    parse_impl(input, None, false)
 }
 
 /// 带光标的解析：`caret` 是光标在源文本里的**字符偏移**（`None` = 不画光标）。
@@ -111,6 +131,12 @@ pub fn parse(input: &str) -> Node {
 /// 光标会作为 [`Node::Caret`] 插进对应的位置，于是它的横坐标由 iced 的布局
 /// 引擎算出来 —— 我们不需要知道任何字体的字形宽度。
 pub fn parse_with_caret(input: &str, caret: Option<usize>) -> Node {
+    // 输入区专用：**包位置层**，这样每个顶层节点都能被点击定位
+    parse_impl(input, caret, true)
+}
+
+/// 解析实现（`wrap` 决定要不要给节点包 [`Node::At`]）
+fn parse_impl(input: &str, caret: Option<usize>, wrap: bool) -> Node {
     let (tokens, offs) = tokenize(input);
     let mut p = Parser {
         toks: tokens,
@@ -118,6 +144,7 @@ pub fn parse_with_caret(input: &str, caret: Option<usize>) -> Node {
         pos: 0,
         caret,
         total: input.chars().count(),
+        wrap,
     };
     let seq = p.parse_seq(Style::Value);
     if seq.len() == 1 {
@@ -242,6 +269,12 @@ struct Parser {
     caret: Option<usize>,
     /// 源文本的字符总数（判断"光标在末尾"要用）
     total: usize,
+    /// 是否给节点包上**位置层**（[`Node::At`]，让它们可被点击）。
+    ///
+    /// ⚠️ 只有**输入区**需要它。历史区是只读的（`on_placeholder` 传 `None`），
+    /// 包了反而会让节点树的形状变复杂 —— 而测试都是按"裸结构"断言的
+    ///（`assert_eq!(seq[0], Node::Text("-"))` 这类），包上会让它们全部失配。
+    wrap: bool,
 }
 
 impl Parser {
@@ -334,8 +367,10 @@ impl Parser {
                     out.push(Node::Frac(Box::new(numer), Box::new(denom)));
                 }
                 _ => {
+                    let at = self.here();
                     if let Some(node) = self.parse_atom(style) {
-                        out.push(node);
+                        // 只在交互路径包位置层（见 `Parser::wrap` 的说明）
+                        out.push(if self.wrap { wrap_at(node, at) } else { node });
                     } else {
                         // 解析不出原子：把当前记号当原样文本吃掉，保证前进（不死循环）
                         out.push(self.raw_token());
@@ -431,16 +466,18 @@ impl Parser {
                     // 语法来自 core 的 `sum` / `prod`（见 `keypad::FN_GROUPS`：
                     // `sum(f,k,a,b)`）。四个参数的含义：
                     // 被运算式 / 变量 / 下限 / 上限。
-                    "sum" | "prod" => {
+                    "sum" | "prod" | "int" | "lim" | "diff" => {
                         let inner_at = at + name.len();
                         let (inner, consumed) = self.parse_call_args();
                         if !consumed {
                             return Some(Node::Text(name));
                         }
-                        let kind = if name == "sum" {
-                            BigKind::Sum
-                        } else {
-                            BigKind::Prod
+                        let kind = match name.as_str() {
+                            "sum" => BigKind::Sum,
+                            "prod" => BigKind::Prod,
+                            "int" => BigKind::Integral,
+                            "lim" => BigKind::Limit,
+                            _ => BigKind::Diff,
                         };
                         let args = split_args(inner, inner_at + 1);
                         let mut it = args.into_iter();
@@ -539,6 +576,21 @@ impl Parser {
     }
 }
 
+/// 给节点包一层"源位置"（可点击），但**已经知道位置的节点不重复包**。
+///
+/// - `Empty` 自己带 `at`，且它已经渲染成可点的虚线框；
+/// - `Caret` 是位置标记本身；
+/// - `Comma` 只服务于参数切分、渲染成空，包了反而会挡住 `split_args` 的识别。
+fn wrap_at(node: Node, at: usize) -> Node {
+    match node {
+        Node::Empty { .. } | Node::Caret | Node::Comma { .. } | Node::At { .. } => node,
+        other => Node::At {
+            at,
+            inner: Box::new(other),
+        },
+    }
+}
+
 /// 把 `sum(f, k, a, b)` 的参数按**顶层逗号**切成若干段。
 ///
 /// `open` 是第一个参数在源文本里的起点（即 `(` 之后），空参数框靠它定位 ——
@@ -629,7 +681,12 @@ pub fn render<'a, M: Clone + 'a>(
     if !math {
         return plain(src, style);
     }
-    let node = parse(src);
+    // 需要点击（输入区）才包位置层；只读的历史区走纯解析（树更简单、更快）
+    let node = if on_placeholder.is_some() {
+        parse_impl(src, None, true)
+    } else {
+        parse(src)
+    };
     build(&node, style, on_placeholder)
 }
 
@@ -698,6 +755,18 @@ pub fn build<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     match node {
         Node::Text(s) => plain(s, style),
+        // 带源位置的包装 ⇒ 一个**可点区域**：点它就把光标送到 `at`。
+        //
+        // 这是"点哪改哪"能精确的根本 —— 位置来自**解析时的源偏移**。
+        // 背后的透明 editor 也会处理点击，但它按纯文本字形算位置，
+        // 与我们画出来的排版层对不上（用户："完全无法选中修改"）。
+        Node::At { at, inner } => {
+            let el = build(inner, style, on_placeholder);
+            match on_placeholder {
+                Some(f) => iced::widget::mouse_area(el).on_press(f(*at)).into(),
+                None => el,
+            }
+        }
         // 分隔符（`sum` 的参数逗号）只在切分阶段有用，排版时不显示
         Node::Comma { .. } => Space::new().width(Pixels(0.0)).height(Pixels(0.0)).into(),
         // 光标：一根竖线。它的位置由布局引擎算 —— 见 `Node::Caret`
@@ -706,24 +775,28 @@ pub fn build<'a, M: Clone + 'a>(
             .height(Length::Fixed(style.size * 1.25))
             .style(theme::caret)
             .into(),
-        // 空参数：灰色圆角方块（Desmos 风格）。点了就把光标送进那个位置
+        // 空参数：**虚线**小框。点了就把光标送进那个位置
         Node::Empty { at } => {
             // ⚠️ **必须给最小尺寸**：Σ/Π 的上下限字号只有正文的 0.52 倍，
-            // 纯按比例算出来的方块只有 5px 左右 —— 肉眼根本看不见，
+            // 纯按比例算出来的框只有 5px 左右 —— 肉眼根本看不见，
             // 等于"这里还缺个东西"的提示直接丢了（第一版就是这样，
             // 快照里 Σ 上方空空如也）。
             let side = (style.size * 0.66).max(11.0);
-            let block = container(Space::new().width(Length::Fill).height(Length::Fill))
-                .width(Length::Fixed(side))
-                .height(Length::Fixed(side * 0.82))
-                .style(theme::placeholder);
+            let dashed = Canvas::new(DashedBox {
+                color: theme::colors().text_dim.scale_alpha(0.75),
+                thickness: 1.2,
+                dash: 3.0,
+                gap: 2.5,
+            })
+            .width(Length::Fixed(side))
+            .height(Length::Fixed(side * 0.85));
             match on_placeholder {
-                Some(f) => button(block)
+                Some(f) => button(dashed)
                     .padding(0)
                     .style(theme::bare_button)
                     .on_press(f(*at))
                     .into(),
-                None => block.into(),
+                None => dashed.into(),
             }
         }
         Node::BigOp {
@@ -733,38 +806,98 @@ pub fn build<'a, M: Clone + 'a>(
             from,
             to,
         } => {
-            // Σ / Π：上限在大符号**上方**、`变量 = 下限` 在**下方**，主体在右侧。
-            // 与 Desmos 一致的经典排版（用户给的参考图就是这个样子）。
-            let glyph = match kind {
-                BigKind::Sum => "∑",
-                BigKind::Prod => "∏",
-            };
-            // 大符号本身用大一号的字；上下限用小一号（标准数学排版惯例）
-            let big = plain(glyph, style);
+            // 这一家族都是"一个大符号 + 上下限 + 主体"的排版：上下限用小一号字
+            // （标准数学排版惯例），主体保持正文大小。
             let limit_style = Style2 {
                 size: style.size * 0.52,
                 ..style
             };
-            let lower = Row::new()
-                .align_y(Alignment::Center)
-                .spacing(2.0)
-                .push(build(var, limit_style, on_placeholder))
-                .push(plain("=", limit_style))
-                .push(build(from, limit_style, on_placeholder));
-
-            let stack = Column::new()
-                .width(Length::Shrink)
-                .align_x(Alignment::Center)
-                .push(build(to, limit_style, on_placeholder))
-                .push(big)
-                .push(lower);
-
-            Row::new()
-                .align_y(Alignment::Center)
-                .spacing(style.size * 0.16)
-                .push(stack)
-                .push(build(body, style, on_placeholder))
-                .into()
+            match kind {
+                BigKind::Sum | BigKind::Prod => {
+                    // 上限在上、`变量 = 下限` 在下，主体在右侧（Desmos 的样子）
+                    let glyph = if matches!(kind, BigKind::Sum) {
+                        "∑"
+                    } else {
+                        "∏"
+                    };
+                    let lower = Row::new()
+                        .align_y(Alignment::Center)
+                        .spacing(2.0)
+                        .push(build(var, limit_style, on_placeholder))
+                        .push(plain("=", limit_style))
+                        .push(build(from, limit_style, on_placeholder));
+                    let stack = Column::new()
+                        .width(Length::Shrink)
+                        .align_x(Alignment::Center)
+                        .push(build(to, limit_style, on_placeholder))
+                        .push(plain(glyph, style))
+                        .push(lower);
+                    Row::new()
+                        .align_y(Alignment::Center)
+                        .spacing(style.size * 0.16)
+                        .push(stack)
+                        .push(build(body, style, on_placeholder))
+                        .into()
+                }
+                BigKind::Integral => {
+                    // ∫：上限在上、下限在下，右侧写成 `f dx`
+                    //（`dx` 是积分写法的一部分，少了它读起来就不像积分）
+                    let stack = Column::new()
+                        .width(Length::Shrink)
+                        .align_x(Alignment::Center)
+                        .push(build(to, limit_style, on_placeholder))
+                        .push(plain("∫", style))
+                        .push(build(from, limit_style, on_placeholder));
+                    let dx = Row::new()
+                        .align_y(Alignment::Center)
+                        .spacing(style.size * 0.04)
+                        .push(plain("d", style))
+                        .push(build(var, style, on_placeholder));
+                    Row::new()
+                        .align_y(Alignment::Center)
+                        .spacing(style.size * 0.09)
+                        .push(stack)
+                        .push(build(body, style, on_placeholder))
+                        .push(dx)
+                        .into()
+                }
+                BigKind::Limit => {
+                    // `lim` 在上、`x→a` 在下，主体在右侧
+                    let arrow = Row::new()
+                        .align_y(Alignment::Center)
+                        .spacing(1.5)
+                        .push(build(var, limit_style, on_placeholder))
+                        .push(plain("→", limit_style))
+                        .push(build(from, limit_style, on_placeholder));
+                    let stack = Column::new()
+                        .width(Length::Shrink)
+                        .align_x(Alignment::Center)
+                        .push(plain("lim", style))
+                        .push(arrow);
+                    Row::new()
+                        .align_y(Alignment::Center)
+                        .spacing(style.size * 0.18)
+                        .push(stack)
+                        .push(build(body, style, on_placeholder))
+                        .into()
+                }
+                BigKind::Diff => {
+                    // `d/dx`：竖排分数（d 在上、`dx` 在下），右侧接主体。
+                    //
+                    // 复用 `Frac` 的渲染而不是另写一遍横线逻辑 —— 那块的宽度估算
+                    //（`frac_bar_width`）已经有测试守着。
+                    let frac = Node::Frac(
+                        Box::new(Node::Text("d".into())),
+                        Box::new(Node::Seq(vec![Node::Text("d".into()), (**var).clone()])),
+                    );
+                    Row::new()
+                        .align_y(Alignment::Center)
+                        .spacing(style.size * 0.10)
+                        .push(build(&frac, style, on_placeholder))
+                        .push(build(body, style, on_placeholder))
+                        .into()
+                }
+            }
         }
         Node::Seq(items) => {
             let mut r = Row::new().align_y(Alignment::Center).spacing(0.0);
@@ -924,6 +1057,72 @@ struct Radical {
     thickness: f32,
 }
 
+/// 空参数占位框：一个**虚线**矩形（用户要求：用虚线代替实心方块）。
+///
+/// ## 为什么用 canvas 而不是 `Border`
+///
+/// iced 的 `Border` 只有 `width` / `color` / `radius`，**没有 dash 的概念** ——
+/// 画不出虚线。而虚线正是这个框的语义："这里还空着、等你填"。
+/// 实心块看起来像"已经有内容了"，方向正好相反。
+///
+/// 也没有阴影：用户明确说"阴影太深了"（一个 11px 的小框带投影，
+/// 在浅色主题下会糊成一团小黑边）。
+struct DashedBox {
+    color: Color,
+    thickness: f32,
+    dash: f32,
+    gap: f32,
+}
+
+impl<Message> iced::widget::canvas::Program<Message> for DashedBox {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &iced::Theme,
+        bounds: Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let w = bounds.width.max(1.0);
+        let h = bounds.height.max(1.0);
+        let t = self.thickness;
+        let stroke = Stroke::default().with_color(self.color).with_width(t);
+        // 线心内缩半个线宽，保证笔画完全落在画布内（否则会被裁掉一半）
+        let i = t * 0.5;
+        // 四条边用同一段"沿边交替画 dash"的代码，避免写四遍
+        let edges = [
+            (Point::new(i, i), Point::new(w - i, i)),
+            (Point::new(w - i, i), Point::new(w - i, h - i)),
+            (Point::new(w - i, h - i), Point::new(i, h - i)),
+            (Point::new(i, h - i), Point::new(i, i)),
+        ];
+        for (a, b) in edges {
+            let (dx, dy) = (b.x - a.x, b.y - a.y);
+            let len = (dx * dx + dy * dy).sqrt();
+            if len <= 0.0 {
+                continue;
+            }
+            let (ux, uy) = (dx / len, dy / len);
+            let mut pos = 0.0_f32;
+            while pos < len {
+                let end = (pos + self.dash).min(len);
+                let p0 = Point::new(a.x + ux * pos, a.y + uy * pos);
+                let p1 = Point::new(a.x + ux * end, a.y + uy * end);
+                let path = Path::new(|p| {
+                    p.move_to(p0);
+                    p.line_to(p1);
+                });
+                frame.stroke(&path, stroke);
+                pos = end + self.gap;
+            }
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
 impl<Message> iced::widget::canvas::Program<Message> for Radical {
     type State = ();
 
@@ -1006,6 +1205,8 @@ fn root_hook_width(size: f32) -> f32 {
 fn node_width(node: &Node, size: f32) -> f32 {
     match node {
         Node::Text(s) => s.chars().count() as f32 * size * CHAR_WIDTH_RATIO,
+        // 位置包装：宽度就是里面那棵子树
+        Node::At { inner, .. } => node_width(inner, size),
         // 空占位框 / 光标：固定的小宽度
         Node::Empty { .. } => size * 0.6,
         Node::Caret => size * 0.12,
@@ -1136,6 +1337,8 @@ mod tests {
                 None => format!("√({})", flatten(inner)),
             },
             Node::Pow(a, b) => format!("{}^{}", flatten(a), flatten(b)),
+            // 位置包装：拍平后就是里面那棵子树（位置不属于"文本"）
+            Node::At { inner, .. } => flatten(inner),
             // 不携带源文本的三种（占位框 / 光标 / 参数逗号）
             Node::Empty { .. } | Node::Caret | Node::Comma { .. } => String::new(),
             Node::BigOp {
@@ -1176,6 +1379,7 @@ mod tests {
                     || contains_caret(from)
                     || contains_caret(to)
             }
+            Node::At { inner, .. } => contains_caret(inner),
             _ => false,
         }
     }
