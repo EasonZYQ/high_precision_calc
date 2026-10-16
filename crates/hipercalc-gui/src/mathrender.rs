@@ -780,7 +780,16 @@ pub fn build<'a, M: Clone + 'a>(
         Node::At { at, inner } => {
             let el = build(inner, style, on_placeholder);
             match on_placeholder {
-                Some(f) => iced::widget::mouse_area(el).on_press(f(*at)).into(),
+                Some(f) => {
+                    // 纵向补足到接近整行高：算式的字形本身很矮（比如一个 `+`），
+                    // 只按字形命中的话点起来要非常准 —— 补一层 padding 让整块都可点，
+                    // 是编辑器里常见的做法（点运算符旁边也算点它）。
+                    iced::widget::mouse_area(
+                        container(el).padding([2, 1]).align_y(Alignment::Center),
+                    )
+                    .on_press(f(*at))
+                    .into()
+                }
                 None => el,
             }
         }
@@ -798,7 +807,7 @@ pub fn build<'a, M: Clone + 'a>(
             // 纯按比例算出来的框只有 5px 左右 —— 肉眼根本看不见，
             // 等于"这里还缺个东西"的提示直接丢了（第一版就是这样，
             // 快照里 Σ 上方空空如也）。
-            let side = (style.size * 0.66).max(11.0);
+            let side = (style.size * 0.66).max(12.0);
             let dashed = Canvas::new(DashedBox {
                 color: theme::colors().text_dim.scale_alpha(0.75),
                 thickness: 1.2,
@@ -809,7 +818,11 @@ pub fn build<'a, M: Clone + 'a>(
             .height(Length::Fixed(side * 0.85));
             match on_placeholder {
                 Some(f) => button(dashed)
-                    .padding(0)
+                    // ⚠️ **热区必须比视觉框大一圈**（用户反馈"点不中虚线框"）。
+                    // 一个 12px 的框、padding 给 0 的话，指针差一两像素就落空 ——
+                    // 而它本来就是"最小、最难瞄"的那类元素。
+                    // `[3, 5]` 把热区撑到 22×17 左右，视觉上仍然紧凑。
+                    .padding([3, 5])
                     .style(theme::bare_button)
                     .on_press(f(*at))
                     .into(),
