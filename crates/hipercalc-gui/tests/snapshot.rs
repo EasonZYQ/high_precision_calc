@@ -177,6 +177,29 @@ fn input_preview_snapshot() {
     );
 }
 
+/// Σ / Π 大符号 + **空参数占位框**（用户本轮要求的两项渲染）。
+///
+/// 输入区故意留一个空参数（`sum(k^2, k, 1, )`）：应当看到
+/// Σ 的上方是上限、下方是 `k = 1`、主体是 `k²`，而第 4 个位置是一个**灰色小方块**
+///（点了它光标会跳进去 —— 那是"预览即输入栏"的交互核心）。
+///
+/// ⚠️ 这条快照是**必须肉眼看的**：Σ 的上下限竖排、占位框的大小与颜色，
+/// 都是"测试变绿但看着不对"最容易漏掉的地方。
+#[test]
+fn bigop_and_placeholder_snapshot() {
+    let _guard = lock();
+    let mut state = populated_state();
+    state.set_dark_for_test(true);
+    // 还差最后一个参数没打 ⇒ 那个位置应是占位框
+    state.set_input_for_test("sum(k^2, k, 1, )");
+    let snapshot = snap(&state);
+    let path = format!("{SNAP_DIR}/bigop.png");
+    assert!(
+        snapshot.matches_image(&path).expect("快照比对/写入失败"),
+        "Σ 大符号与占位框的渲染与基线不一致：{path}"
+    );
+}
+
 /// 字母面板（Desmos 的第二块键盘）：应打出 `123` 返回键与三行字母。
 ///
 /// 同时把界面语言切成英文 —— 一张图能同时验证"面板切换"与"语言切换"两件事：

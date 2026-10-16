@@ -200,6 +200,11 @@ pub struct State {
     glass: f32,
     /// 关掉玻璃前记住的强度 —— 点"开启"时恢复到它，而不是回到写死的默认值
     glass_backup: f32,
+    /// 玻璃**底色的浓度**：`0.0` = 完全透明，`1.0` = 完全不透明。
+    ///
+    /// 与 [`State::glass`] 的分工（用户要求两者都要）：强度拧的是"整体玻璃效果"，
+    /// 这一个只拧"面板底色有多实"。同样与 [`theme::set_glass_tint`] 双写。
+    glass_tint: f32,
     /// 结果行的布局策略：`true` = 长内容自动折行，`false` = 不折行、横向滚动。
     ///
     /// 用户报过「结果太长，右边被挡住看不到后半段」。原因是 iced 默认的
@@ -300,18 +305,24 @@ pub enum Message {
     Evaluate,
     /// 后台求值完成（由 [`crate::evaluator`] 的 future 回传）
     Evaluated(Evaluated),
+    /// 点了排版层里的**空参数框**：把光标挪到源文本的第 n 个字符处
+    PlaceCaret(usize),
     /// 切换函数弹窗
     ToggleFuncs,
     /// 关闭函数弹窗（点浮层背景）
     CloseFuncs,
     /// 切换设置面板
     ToggleSettings,
+    /// 关闭设置浮层（点面板外的任意位置）
+    CloseSettings,
     /// 切换深色模式
     ToggleDark,
     /// 拖动玻璃强度滑条。⚠️ 拖动会**高频**触发，所以这条只改内存 + 重绘，
     /// 写盘交给松手时的 [`Message::CommitGlass`]。
     SetGlass(f32),
-    /// 玻璃滑条松手（这时才写配置）
+    /// 拖动玻璃**底色浓度**滑条（同样只重绘，松手才写盘）
+    SetGlassTint(f32),
+    /// 玻璃滑条（强度或底色）松手 —— 这时才写配置
     CommitGlass,
     /// 一键开关玻璃：关 = 强度归零并记住原值，开 = 恢复到原值
     ToggleGlass,
@@ -383,6 +394,7 @@ impl State {
         // 若等第一次 `update` 再同步，首帧就会用错颜色（一闪而过，但快照会拍到）。
         theme::set_dark(prefs.dark);
         theme::set_glass(prefs.glass);
+        theme::set_glass_tint(prefs.glass_tint);
         Self {
             precision_text: modes.precision.to_string(),
             acrylic_checked: false,
@@ -397,6 +409,7 @@ impl State {
                 GuiPrefs::default().glass
             },
             wrap: prefs.wrap,
+            glass_tint: prefs.glass_tint,
             persist,
             show_funcs: false,
             show_settings: false,
@@ -415,6 +428,12 @@ impl State {
         theme::set_dark(self.dark);
 
         match message {
+            Message::PlaceCaret(at) => {
+                // 点了排版层里的空参数框：把光标送进那个位置，然后把焦点还给
+                // 隐形编辑器（不然用户接着打字会没反应）。
+                self.place_caret(at);
+                return self.refocus_input();
+            }
             Message::Noop => {}
             Message::Edit(action) => {
                 // ── Enter 的语义：**求值**；Ctrl+Enter 才是**换行** ────────────
@@ -481,6 +500,7 @@ impl State {
             Message::ToggleFuncs => self.show_funcs = !self.show_funcs,
             Message::CloseFuncs => self.show_funcs = false,
             Message::ToggleSettings => self.show_settings = !self.show_settings,
+            Message::CloseSettings => self.show_settings = false,
             Message::ToggleDark => {
                 self.dark = !self.dark;
                 theme::set_dark(self.dark);
@@ -494,6 +514,11 @@ impl State {
                     self.glass_backup = self.glass;
                 }
                 theme::set_glass(self.glass);
+            }
+            Message::SetGlassTint(v) => {
+                // 与 `SetGlass` 同一套路：拖动只重绘，落盘在 `CommitGlass`
+                self.glass_tint = v.clamp(0.0, 1.0);
+                theme::set_glass_tint(self.glass_tint);
             }
             Message::CommitGlass => self.persist_prefs(),
             Message::ToggleGlass => {
@@ -657,10 +682,70 @@ impl State {
             ("lang", self.modes.lang.code().to_string()),
             ("dark", if self.dark { "on" } else { "off" }.to_string()),
             ("glass", format!("{:.2}", self.glass)),
+            ("glass_tint", format!("{:.2}", self.glass_tint)),
             ("wrap", if self.wrap { "on" } else { "off" }.to_string()),
         ];
         if let Err(e) = hipercalc::session::save_prefs(&pairs) {
             eprintln!("[hipercalc-gui] 设置保存失败（不影响使用）：{e}");
+        }
+    }
+
+    /// 光标在源文本里的**字符偏移**（排版层要靠它画那根竖线）。
+    ///
+    /// 有选区时不返回（画一根不知该放哪儿的线没有意义）。
+    fn caret_offset(&self) -> Option<usize> {
+        let c = self.input.cursor();
+        if c.selection.is_some() {
+            return None;
+        }
+        let text = self.input_text();
+        let mut off = 0usize;
+        for (i, line) in text.split('\n').enumerate() {
+            if i == c.position.line {
+                return Some(off + c.position.column);
+            }
+            // +1 是那个换行符本身
+            off += line.chars().count() + 1;
+        }
+        Some(text.chars().count())
+    }
+
+    /// 把光标挪到源文本的第 `at` 个**字符**处。
+    ///
+    /// 用于"点排版里的空参数框 → 光标进去"（用户要求）。
+    ///
+    /// ## 为什么不是一次 `Action::Click`
+    ///
+    /// iced 的 `Action::Click` 收的是**屏幕坐标**（`Point`），不是字符位置 ——
+    /// 它内部要把坐标换算成 `(行, 列)`，那需要知道字形宽度。
+    /// 而我们点击的是**排版层**（`√2` 的宽度跟背后的 `sqrt(2)` 完全不一样），
+    /// 换算出来的位置必然不对。
+    ///
+    /// 所以我们**自己知道**目标字符偏移，用 `Motion` 序列把光标挪过去：
+    /// 回文首 → 逐行 `Down` → `Home` → 逐列 `Right`。
+    /// 表达式最长也就几十个字符，这点 `perform` 是纯内存操作，代价可以忽略。
+    fn place_caret(&mut self, at: usize) {
+        let text = self.input_text();
+        let mut line = 0usize;
+        let mut col = 0usize;
+        for (i, ch) in text.chars().enumerate() {
+            if i >= at {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+        }
+        self.input.perform(Action::Move(Motion::DocumentStart));
+        for _ in 0..line {
+            self.input.perform(Action::Move(Motion::Down));
+        }
+        self.input.perform(Action::Move(Motion::Home));
+        for _ in 0..col {
+            self.input.perform(Action::Move(Motion::Right));
         }
     }
 
@@ -862,6 +947,40 @@ impl State {
                 .center_y(Length::Fill);
 
             stack![backdrop, panel].into()
+        } else if self.show_settings {
+            // ── 设置浮层（用户要求）────────────────────────────────────────
+            //
+            // 两条要求：
+            // 1. **盖在历史计算之上**，而不是把历史推下去 —— 推进去会让历史区被压得
+            //    很矮（旧快照里最后一条的分母被滚出可视区，看起来像排版坏了）；
+            // 2. **点面板外的任意位置就关闭**（不必再点一次齿轮）。
+            //
+            // 做法与函数弹窗同一套：`stack!` + 一层接收点击的遮罩。
+            let backdrop = iced::widget::mouse_area(
+                container(Space::new().width(Length::Fill).height(Length::Fill)).style(|_t| {
+                    container::Style {
+                        // 比函数弹窗的遮罩淡：设置是"顺手看一下"，不该像模态对话框
+                        // 那样把整个界面压暗
+                        background: Some(Background::Color(
+                            theme::colors()
+                                .scrim
+                                .scale_alpha(theme::colors().scrim.a * 0.6),
+                        )),
+                        ..container::Style::default()
+                    }
+                }),
+            )
+            .on_press(Message::CloseSettings);
+
+            // 顶部留出工具条的高度，让面板落在"历史区"的位置上。
+            // ⚠️ `Padding` 只实现 `From<[f32; N]>`，`[Length; 2]` 是不行的。
+            let panel = container(self.settings_panel())
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding([56.0, 22.0])
+                .align_y(Alignment::Start);
+
+            stack![backdrop, panel].into()
         } else {
             body.into()
         };
@@ -1027,13 +1146,7 @@ impl State {
             .height(Length::Fill)
             .direction(direction);
 
-        let mut shell = Column::new().spacing(0);
-        if self.show_settings {
-            shell = shell.push(self.settings_panel());
-        }
-        shell = shell.push(inner);
-
-        container(shell)
+        container(inner)
             .width(Length::Fill)
             .height(Length::Fill)
             .padding(6)
@@ -1060,6 +1173,8 @@ impl State {
                 monospace: false,
                 wrap: self.wrap,
             },
+            // 历史是只读的：占位框不可点
+            None,
         );
 
         let echo = row![
@@ -1100,6 +1215,8 @@ impl State {
                 monospace: !math,
                 wrap: self.wrap,
             },
+            // 历史是只读的：结果里的占位框不可点
+            None,
         );
 
         // ── 耗时贴结果行**最右侧**（用户要求："计时放在运算结果的最右侧"）──
@@ -1197,12 +1314,14 @@ impl State {
         .spacing(6)
         .align_y(Alignment::Center);
 
-        // ⑤ 玻璃（liquid glass）强度：开关芯片 + 滑条。
+        // ⑤ 玻璃（liquid glass）：强度 + **底色浓度**（用户要求"两者都要"）。
         //
-        // 用户要"开关 + 连续滑条"，所以两者都要：芯片负责一键开/关
-        //（关 = 强度归零，且记住原值以便恢复），滑条负责无级微调。
-        // 滑条拉到 0 也等价于关闭 —— 两条路通向同一个状态，不会打架。
+        // 分工：**强度**是整体玻璃效果（底色透明度、描边高光、投影一起变）；
+        // **底色浓度**只拧一个旋钮 —— 面板底色本身有多实。
+        // 之所以要分开：想让面板"更飘"就调低浓度，想"字更好认"就调高，
+        // 这与"玻璃整体有多强"是两件独立的诉求。
         let glass_on = self.glass > 0.0;
+        let pct = |v: f32| t_fmt("{0}%", &[&(v * 100.0).round().to_string()]);
         let glass_row = row![
             self.setting_label(t("玻璃质感"), SETTING_LABEL_W),
             self.chip(
@@ -1214,17 +1333,24 @@ impl State {
                 glass_on,
                 Message::ToggleGlass,
             ),
-            // `slider` 在 iced 里是基础控件，不需要额外 feature
+            theme::label(t("玻璃强度")).size(12).style(theme::hint),
             slider(0.0..=1.0, self.glass, Message::SetGlass)
                 .step(0.01_f32)
                 // ⚠️ 拖动时发的是 `SetGlass`（只重绘），**松手**才 `CommitGlass` 写盘
                 .on_release(Message::CommitGlass)
-                .width(Length::Fixed(160.0)),
-            theme::label(t_fmt("{0}%", &[&(self.glass * 100.0).round().to_string()]))
+                .width(Length::Fixed(104.0)),
+            theme::label(pct(self.glass)).size(13).style(theme::hint),
+            Space::new().width(Pixels(8.0)),
+            theme::label(t("底色浓度")).size(12).style(theme::hint),
+            slider(0.0..=1.0, self.glass_tint, Message::SetGlassTint)
+                .step(0.01_f32)
+                .on_release(Message::CommitGlass)
+                .width(Length::Fixed(104.0)),
+            theme::label(pct(self.glass_tint))
                 .size(13)
                 .style(theme::hint),
         ]
-        .spacing(8)
+        .spacing(6)
         .align_y(Alignment::Center);
 
         // ⑥ 长结果的处理方式（用户要求："增加左右拖动或者换行，放在设置里供用户选择"）。
@@ -1241,6 +1367,20 @@ impl State {
 
         container(
             column![
+                row![
+                    // ⚠️ 标题用"设置面板"而不是光"设置"：词典是**子串最长优先**
+                    // 匹配，而 CLI 的输出里满地都是"设置"（"已恢复默认设置…"），
+                    // 一个两字短键迟早会在某句话里被误替换。
+                    theme::label(t("设置面板")).size(16),
+                    Space::new().width(Length::Fill),
+                    // 提示"点别处就关" —— 用户明确要求了这个交互，
+                    // 但没必要让每个人自己去试出来
+                    theme::label(t("点面板外任意处关闭"))
+                        .size(12)
+                        .style(theme::hint),
+                ]
+                .align_y(Alignment::Center),
+                rule::horizontal(1.0).style(theme::divider),
                 precision_row,
                 rule::horizontal(1.0).style(theme::divider),
                 lang_row,
@@ -1256,8 +1396,11 @@ impl State {
             .spacing(8),
         )
         .width(Length::Fill)
-        .padding([8, 10])
-        .style(theme::panel_low)
+        .padding([12, 14])
+        // ⚠️ 用 `panel`（玻璃卡片）而不是 `panel_low`：它现在是**浮在历史之上的
+        // 一张卡**，需要有明确的高光描边与投影才立得住（`panel_low` 是"底座"，
+        // 托得比别的东西低）。
+        .style(theme::panel)
         .into()
     }
 
@@ -1315,20 +1458,64 @@ impl State {
         //
         // 解法：把编辑器放进一个 `FillPortion` 的槽位，让它有**明确的上限**
         // —— 槽位拿到 `Row` 分配的空间后，`text_editor` 在里面填满，不再向外膨胀。
+        // ── ① 背后那层：**隐形**的 text_editor ────────────────────────────────
+        //
+        // 用户要求"不要输入栏，预览就是输入栏"。但键盘输入、中文输入法、
+        // Ctrl+V、鼠标框选这些东西**只能**由 `text_editor` 提供（自己实现要跟
+        // 系统输入法对接），而它又只能显示纯文本、画不出根号。
+        //
+        // 所以让它**在下面继续收输入、但一个字都不显示**（`invisible_editor`），
+        // 用户看到的是上面那层排版（见 `theme::invisible_editor` 的长注释）。
+        //
+        // ⚠️ `.placeholder()` 不再需要：看不见的东西不用提示，
+        // 提示改由上面那层在输入为空时显示。
         let editor = text_editor(&self.input)
             .id(INPUT_ID)
-            .placeholder(t("输入表达式，例如 sqrt(2)/3、x^2-4=0、int(x^2,x,0,1)"))
             .on_action(Message::Edit)
             .size(19)
-            // 内边距给得比默认宽：数学字贴着圆角边框会显得很挤
+            // 内边距与上面那层保持一致，否则两层会错位
             .padding([12, 14])
             .height(Pixels(INPUT_HEIGHT))
             // 字体：数学衬线体（用户要求"符号和字母用 markdown 那种字体"）。
             // 中文走不到这里 —— 输入框里的内容应当都是表达式。
             .font(theme::font_math())
-            .style(theme::input);
+            .style(theme::invisible_editor);
 
-        let editor_slot = container(editor).width(Length::FillPortion(10));
+        // ── ② 上面那层：用户真正**看得见**的数学排版 ─────────────────────────
+        let src = self.input_text();
+        let shown: Element<'_, Message> = if src.is_empty() {
+            theme::label(t("输入表达式，例如 sqrt(2)/3、x^2-4=0、int(x^2,x,0,1)"))
+                .size(17)
+                .style(theme::hint)
+                .into()
+        } else {
+            // 带光标解析：光标会作为一根**真实参与布局的竖线**插进去，
+            // 位置由 iced 算 —— 不需要猜任何字体的字形宽度。
+            let parsed = mathrender::parse_with_caret(&src, self.caret_offset());
+            mathrender::build(
+                &parsed,
+                mathrender::Style2 {
+                    size: 19.0,
+                    color: Some(theme::colors().text),
+                    monospace: false,
+                    wrap: true,
+                },
+                // 空参数框可点：点了把光标送进去（用户要求）
+                Some(&|at| Message::PlaceCaret(at)),
+            )
+        };
+
+        // `stack!` 把两层叠起来，高度取两者较大的 —— 所以分数/根号把排版撑高时
+        // 输入区会跟着长高，而不是被 `INPUT_HEIGHT` 裁掉。
+        let layered = stack![
+            container(shown)
+                .width(Length::Fill)
+                .padding([12, 14])
+                .align_x(Alignment::Start),
+            editor,
+        ];
+
+        let editor_slot = container(layered).width(Length::FillPortion(10));
 
         // `=` 与 `C` 给**固定宽高**：两者不等宽（56 / 46）是有意的，让 `=` 更醒目。
         //
@@ -1360,58 +1547,12 @@ impl State {
             .spacing(8)
             .align_y(Alignment::Center);
 
-        let mut body = Column::new().spacing(8).push(row1);
-
-        // ── 实时预览行 ────────────────────────────────────────────────────
-        // 先解析成 `Node`（拥有字符串），再借它渲染 —— 见 `input_preview` 的注释。
-        let src = self.input_text();
-        if !src.is_empty() {
-            let parsed = mathrender::parse(&src);
-            body = body.push(self.input_preview(&parsed));
-        }
-
-        container(body)
+        // 输入区只剩一行：排版层本身就是"输入栏"（用户要求），
+        // 不再另起一条"预览"—— 那是旧方案（编辑器可见 + 预览在下）的产物。
+        container(row1)
             .width(Length::Fill)
             .padding(8)
             .style(theme::panel)
-            .into()
-    }
-
-    /// 输入框下方的**实时数学预览**（用户要求："输入栏里根号应当渲染，类似 desmos"）。
-    ///
-    /// 与结果区走同一个 [`mathrender`]，只是字号小一点、颜色弱一点 ——
-    /// 它是"你正在打的东西长什么样"的回显，不该比结果更抢眼。
-    ///
-    /// ⚠️ 这里**先 `parse` 再 `build`**，而不是直接调 `render(src, ..)`。
-    /// 原因是生命周期：`render` 的返回类型与入参 `&str` 没有绑定关系，
-    /// 但它最终会调 `text(src.to_string())`，借用检查器于是把返回值的生命周期
-    /// 追到入参上。预览用的 `src` 是 `input_area` 里的**局部变量**，
-    /// 一旦直接返回就会报 `cannot return value referencing local variable`。
-    /// 先 parse 得到**拥有所有权的 [`mathrender::Node`]**（里面的 `String` 是它自己的），
-    /// 再把 `Node` 借出去渲染，生命周期就干净了。
-    fn input_preview(&self, node: &mathrender::Node) -> Element<'_, Message> {
-        let label = container(
-            text(t("预览"))
-                .size(11)
-                .font(theme::font_cjk())
-                .style(theme::hint),
-        )
-        .width(Length::Fixed(34.0));
-
-        let rendered = mathrender::build(
-            node,
-            mathrender::Style2 {
-                size: 21.0,
-                color: Some(theme::colors().text),
-                monospace: false,
-                wrap: self.wrap,
-            },
-        );
-
-        container(row![label, rendered].spacing(6).align_y(Alignment::Center))
-            .width(Length::Fill)
-            .padding([6, 10])
-            .style(theme::preview_strip)
             .into()
     }
 
@@ -1944,6 +2085,21 @@ mod tests {
                 None => format!("√({})", flatten_node(inner)),
             },
             Node::Pow(a, b) => format!("{}^{}", flatten_node(a), flatten_node(b)),
+            // 这三种节点不携带源文本（占位框 / 光标 / 参数逗号），拍平后是空的
+            Node::Empty { .. } | Node::Caret | Node::Comma { .. } => String::new(),
+            Node::BigOp {
+                body,
+                var,
+                from,
+                to,
+                ..
+            } => format!(
+                "sum({},{},{},{})",
+                flatten_node(body),
+                flatten_node(var),
+                flatten_node(from),
+                flatten_node(to)
+            ),
         }
     }
 
@@ -2579,6 +2735,10 @@ mod tests {
             "玻璃质感",
             "玻璃已开启",
             "玻璃已关闭",
+            "设置面板",
+            "点面板外任意处关闭",
+            "玻璃强度",
+            "底色浓度",
             "长结果",
             "自动换行",
             "横向滚动",
@@ -2690,6 +2850,7 @@ mod tests {
                     monospace: false,
                     wrap: true,
                 },
+                None,
             );
         }
     }
@@ -2713,6 +2874,7 @@ mod tests {
                     monospace: false,
                     wrap: true,
                 },
+                None,
             );
         }
     }

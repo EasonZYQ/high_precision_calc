@@ -82,6 +82,11 @@ pub struct GuiPrefs {
     pub dark: bool,
     /// 玻璃（liquid glass）强度：`0.0` = 关闭（不透明纯色），`1.0` = 最强
     pub glass: f32,
+    /// 玻璃**底色的浓度**：`0.0` = 完全透明，`1.0` = 完全不透明。
+    ///
+    /// 与 `glass` 的分工（用户要求两者都要）：强度是"整体玻璃效果有多强"
+    ///（同时影响底色透明度、描边高光、投影），底色只拧"面板底色有多实"这一个旋钮。
+    pub glass_tint: f32,
     /// 长结果的处理方式：`true` = 自动换行，`false` = 横向滚动
     pub wrap: bool,
 }
@@ -92,6 +97,8 @@ impl Default for GuiPrefs {
             dark: true,
             // 0.6 是"看得出玻璃、又不至于糊成一片"的中间值（滑条默认落在这里）
             glass: 0.6,
+            // 0.7 —— 与 `theme::GLASS_TINT` 的静态初值保持一致，见那里的说明
+            glass_tint: 0.7,
             wrap: true,
         }
     }
@@ -120,6 +127,10 @@ impl GuiPrefs {
                 && let Ok(f) = v.trim().parse::<f32>()
             {
                 p.glass = f.clamp(0.0, 1.0);
+            } else if let Some(v) = line.strip_prefix("glass_tint=")
+                && let Ok(f) = v.trim().parse::<f32>()
+            {
+                p.glass_tint = f.clamp(0.0, 1.0);
             } else if let Some(v) = line.strip_prefix("wrap=") {
                 p.wrap = v.trim() != "off";
             }
@@ -132,6 +143,7 @@ impl GuiPrefs {
         vec![
             ("dark", if self.dark { "on" } else { "off" }.to_string()),
             ("glass", format!("{:.2}", self.glass)),
+            ("glass_tint", format!("{:.2}", self.glass_tint)),
             ("wrap", if self.wrap { "on" } else { "off" }.to_string()),
         ]
     }
@@ -482,6 +494,7 @@ mod tests {
         let prefs = GuiPrefs {
             dark: true,
             glass: 0.25,
+            glass_tint: 0.55,
             wrap: false,
         };
         update_keys_at(&path, &prefs.to_keys()).unwrap();
@@ -506,6 +519,7 @@ mod tests {
         );
         assert!(text.contains("dark=on"));
         assert!(text.contains("glass=0.25"));
+        assert!(text.contains("glass_tint=0.55"));
         assert!(text.contains("wrap=off"));
         // ③ 读回来与写进去的一致
         assert_eq!(GuiPrefs::load_at(&path), prefs);

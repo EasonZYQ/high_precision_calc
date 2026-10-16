@@ -28,7 +28,7 @@
 //! 原样当普通文本渲染。两种模式走同一入口 [`render`]，由参数区分。
 
 use iced::widget::canvas::{Frame, Geometry, LineCap, LineJoin, Path, Stroke};
-use iced::widget::{Canvas, Column, Row, Space, container, rule, text};
+use iced::widget::{Canvas, Column, Row, Space, button, container, rule, text};
 use iced::{Alignment, Element, Font, Length, Padding, Pixels, Point, Rectangle, Renderer};
 
 use crate::theme;
@@ -56,16 +56,68 @@ pub enum Node {
     Pow(Box<Node>, Box<Node>),
     /// 一行按顺序排列的若干节点（乘号、加减号都在这里显式出现）
     Seq(Vec<Node>),
+    /// **用户还没输入的空参数** —— 渲染成灰色方块（Desmos 风格）。
+    ///
+    /// `at` 是它在**源文本里的字符偏移**：点这个方块时要知道"光标该落在哪"。
+    /// 这是本模块唯一带位置信息的节点，因为只有它需要被点。
+    Empty { at: usize },
+    /// **输入光标**（一根竖线）。
+    ///
+    /// 输入区改成"预览即输入栏"之后，背后的 `text_editor` 被透明化，
+    /// 它自己的光标也跟着看不见了（iced 的光标用的就是 `style.value` 的颜色，
+    /// 见 `iced_widget` 的 `text_editor::draw`）。所以光标由排版层自己画：
+    /// 解析时按光标偏移插一个 `Caret`，**位置交给布局引擎算** ——
+    /// 比自己去量字形宽度可靠得多。
+    Caret,
+    /// Σ / Π 这类**大运算符**（上下限竖排在大符号上方/下方）。
+    BigOp {
+        kind: BigKind,
+        /// 被运算的表达式
+        body: Box<Node>,
+        /// 求和/求积变量（`k`）
+        var: Box<Node>,
+        /// 下限
+        from: Box<Node>,
+        /// 上限
+        to: Box<Node>,
+    },
+    /// **参数分隔符**（内部节点，渲染成空）。
+    ///
+    /// 本模块的解析器是为"排版"写的，它并不懂函数签名 —— 逗号在它眼里只是一个
+    /// 普通字符。而 `sum(f, k, a, b)` 要按逗号切成 4 个参数，切分时要能说出
+    /// "每个参数从源文本的哪个偏移开始"（空参数框才知道点击后光标该去哪）。
+    /// 所以逗号单独成一个节点、并把偏移带在身上，切分完就丢掉。
+    Comma { at: usize },
+}
+
+/// 大运算符的种类
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BigKind {
+    /// `sum(f, k, a, b)` → Σ
+    Sum,
+    /// `prod(f, k, a, b)` → Π
+    Prod,
 }
 
 /// 解析入口：把 MathIO 文本切成节点序列。
 ///
 /// 返回 `Seq`，其中每个元素是**顶层**节点（分数、根号、符号、数字…）。
 pub fn parse(input: &str) -> Node {
-    let tokens = tokenize(input);
+    parse_with_caret(input, None)
+}
+
+/// 带光标的解析：`caret` 是光标在源文本里的**字符偏移**（`None` = 不画光标）。
+///
+/// 光标会作为 [`Node::Caret`] 插进对应的位置，于是它的横坐标由 iced 的布局
+/// 引擎算出来 —— 我们不需要知道任何字体的字形宽度。
+pub fn parse_with_caret(input: &str, caret: Option<usize>) -> Node {
+    let (tokens, offs) = tokenize(input);
     let mut p = Parser {
         toks: tokens,
+        offs,
         pos: 0,
+        caret,
+        total: input.chars().count(),
     };
     let seq = p.parse_seq(Style::Value);
     if seq.len() == 1 {
@@ -93,31 +145,39 @@ enum Tok {
     Caret,
 }
 
-fn tokenize(s: &str) -> Vec<Tok> {
+fn tokenize(s: &str) -> (Vec<Tok>, Vec<usize>) {
     let cs: Vec<char> = s.chars().collect();
     let mut out = Vec::new();
+    // 与 `out` 一一对应：每个 token 在**源文本里的字符偏移**。
+    // 光标与空参数框都要靠它映回源文本（见 `Node::Caret` / `Node::Empty`）。
+    let mut offs: Vec<usize> = Vec::new();
     let mut i = 0;
     while i < cs.len() {
         let c = cs[i];
         match c {
             ' ' => i += 1,
             '(' => {
+                offs.push(i);
                 out.push(Tok::LParen);
                 i += 1;
             }
             ')' => {
+                offs.push(i);
                 out.push(Tok::RParen);
                 i += 1;
             }
             '*' | '·' | '×' => {
+                offs.push(i);
                 out.push(Tok::Star);
                 i += 1;
             }
             '^' => {
+                offs.push(i);
                 out.push(Tok::Caret);
                 i += 1;
             }
             '+' | '-' | '/' => {
+                offs.push(i);
                 out.push(Tok::Op(c));
                 i += 1;
             }
@@ -142,6 +202,7 @@ fn tokenize(s: &str) -> Vec<Tok> {
                         i = save;
                     }
                 }
+                offs.push(start);
                 out.push(Tok::Num(cs[start..i].iter().collect()));
             }
             _ if c.is_alphabetic() || c == '_' => {
@@ -149,16 +210,18 @@ fn tokenize(s: &str) -> Vec<Tok> {
                 while i < cs.len() && (cs[i].is_alphanumeric() || cs[i] == '_') {
                     i += 1;
                 }
+                offs.push(start);
                 out.push(Tok::Ident(cs[start..i].iter().collect()));
             }
             _ => {
                 // 未识别字符（`π`、`√` 等）当单字符标识符处理，最终降级成原样文本
+                offs.push(i);
                 out.push(Tok::Ident(c.to_string()));
                 i += 1;
             }
         }
     }
-    out
+    (out, offs)
 }
 
 /// 表达式所处的"结合环境"，决定 `/` 按分数还是按普通除法处理。
@@ -172,7 +235,13 @@ enum Style {
 
 struct Parser {
     toks: Vec<Tok>,
+    /// 与 `toks` 一一对应：每个 token 在**源文本里的字符偏移**
+    offs: Vec<usize>,
     pos: usize,
+    /// 还没被安置的光标偏移；插进树里之后就置 `None`，保证只插一次
+    caret: Option<usize>,
+    /// 源文本的字符总数（判断"光标在末尾"要用）
+    total: usize,
 }
 
 impl Parser {
@@ -180,27 +249,88 @@ impl Parser {
         self.toks.get(self.pos)
     }
 
+    /// 当前解析位置对应的**源文本偏移**（没有更多 token 时就是输入末尾）
+    fn here(&self) -> usize {
+        self.offs.get(self.pos).copied().unwrap_or(self.total)
+    }
+
+    /// 光标正好落在当前位置时，把它插进节点流（只插一次）。
+    ///
+    /// 插进去的是一根**真实参与布局的竖线**，所以它的横坐标由 iced 算 ——
+    /// 我们不需要任何字体的字形宽度（那是排版层最不该去猜的东西）。
+    fn take_caret(&mut self, out: &mut Vec<Node>) {
+        if let Some(c) = self.caret
+            && c == self.here()
+        {
+            out.push(Node::Caret);
+            self.caret = None;
+        }
+    }
+
+    /// 光标落在 `s` **内部**时把文本拆成三段（前 / 光标 / 后）。
+    ///
+    /// 返回 `None` 表示光标不在内部（在端点上的情况由 [`Parser::take_caret`] 负责，
+    /// 那才是常规路径）。没有这一步的话，`12|3` 这种"光标在数字中间"就画不出光标 ——
+    /// 因为 tokenizer 把 `123` 当成**一个** token，光标根本不在任何 token 边界上。
+    fn split_inside(&mut self, s: &str, at: usize) -> Option<Node> {
+        let c = self.caret?;
+        let len = s.chars().count();
+        if c <= at || c >= at + len {
+            return None;
+        }
+        let k = c - at;
+        self.caret = None;
+        let head: String = s.chars().take(k).collect();
+        let tail: String = s.chars().skip(k).collect();
+        Some(Node::Seq(vec![
+            Node::Text(head),
+            Node::Caret,
+            Node::Text(tail),
+        ]))
+    }
+
     /// 解析一段节点序列，直到遇到不归自己管的记号（`)` 或结束）。
     fn parse_seq(&mut self, style: Style) -> Vec<Node> {
         let mut out: Vec<Node> = Vec::new();
-        while let Some(tok) = self.peek().cloned() {
+        loop {
+            self.take_caret(&mut out);
+            let Some(tok) = self.peek().cloned() else {
+                break;
+            };
             match tok {
                 Tok::RParen => break,
                 // 分数：吞掉 `/`，左右各取一个"原子"
                 Tok::Op('/') if style == Style::Value => {
                     self.pos += 1;
+                    // ⚠️ 先把"刚插进来的光标"摘出来：它是**位置标记**，不是分子的一部分。
+                    //
+                    // 光标正好停在 `/` 前面时（`1|/2`），`take_caret` 会在这一轮循环
+                    // 开头把它推进 `out`，于是下面那句 `out.pop()` 会把**光标**当成
+                    // 分子 pop 走 —— 分子没了，光标还跑到了树外面。实测就是这个症状。
+                    let mut pending_caret = None;
+                    while matches!(out.last(), Some(Node::Caret)) {
+                        pending_caret = out.pop();
+                    }
                     // 左：从已收集的序列里**弹出最后一个原子**当分子。
                     // 这就是 `-1 / 4 + …` 能正确工作的关键：分子只拿到 `-1`，
                     // 而不是把整段（含前面的 `+`）都吃进去。
                     let Some(numer) = out.pop() else {
                         // 开头就是 `/`（畸形输入）⇒ 退化成普通除号，保证前进
+                        if let Some(c) = pending_caret {
+                            out.push(c);
+                        }
                         out.push(Node::Text("/".into()));
                         continue;
                     };
-                    // 右：取一个原子当分母；取不到就补个空串占位（不丢内容、不 panic）
-                    let denom = self
-                        .parse_atom(Style::Term)
-                        .unwrap_or_else(|| Node::Text(String::new()));
+                    // 光标放回分数**之前**（视觉上就该在这儿：它停在分子右边）
+                    if let Some(c) = pending_caret {
+                        out.push(c);
+                    }
+                    // 右：取一个原子当分母；取不到就放一个**空占位框**
+                    //（用户正打到 `1/`，Desmos 里这个位置也是一个灰方块，
+                    //  而不是什么都没有 —— 那是"这里还缺个东西"的唯一提示）
+                    let at = self.here();
+                    let denom = self.parse_atom(Style::Term).unwrap_or(Node::Empty { at });
                     out.push(Node::Frac(Box::new(numer), Box::new(denom)));
                 }
                 _ => {
@@ -231,10 +361,11 @@ impl Parser {
                 // 退回 `raw_token()`。实测症状：输入框里打 `x^` 的瞬间 `x` 消失，
                 // 打完数字才回来 —— 打字过程中字符"闪掉"是很容易被当成 bug 的。
                 //
-                // 正确做法：保留底数，并把还没打出来的指数位置留成一个空的 `Pow`，
+                // 正确做法：保留底数，并把还没打出来的指数位置留成一个**空占位框**，
                 // 这样预览里能看到"上标框是空的"，与 Desmos 一致。
                 None => {
-                    base = Node::Pow(Box::new(base), Box::new(Node::Text(String::new())));
+                    let at = self.here();
+                    base = Node::Pow(Box::new(base), Box::new(Node::Empty { at }));
                     break;
                 }
             }
@@ -249,19 +380,40 @@ impl Parser {
     fn parse_primary(&mut self) -> Option<Node> {
         match self.peek()?.clone() {
             Tok::Num(s) => {
+                let at = self.here();
                 self.pos += 1;
-                Some(Node::Text(s))
+                // 光标在数字**内部**（`12|3`）时拆开，否则光标没地方画
+                match self.split_inside(&s, at) {
+                    Some(n) => Some(n),
+                    None => Some(Node::Text(s)),
+                }
             }
             Tok::Ident(name) => {
+                let at = self.here();
                 self.pos += 1;
+                // 逗号：只服务于 `sum/prod` 的参数切分，排版时不显示（见 `Node::Comma`）
+                if name == "," {
+                    return Some(Node::Comma { at });
+                }
+                // 光标在标识符内部（`si|n(x)`）时同样要拆开
+                if let Some(n) = self.split_inside(&name, at) {
+                    return Some(n);
+                }
                 match name.as_str() {
                     // `sqrt(x)` → 根号
                     "sqrt" => {
+                        // `(` 的位置：`at` 是 `sqrt` 的起点，跳过 4 个字符就是括号
+                        let inner_at = at + "sqrt".len();
                         let (inner, consumed) = self.parse_call_args();
                         if consumed {
                             // 常见的 `sqrt(2)`（单参数）画成 √2；多参数理论上不会出现
                             let inner = if inner.len() == 1 {
                                 inner.into_iter().next().unwrap()
+                            } else if inner.is_empty() {
+                                // `sqrt()` —— 里面还没输入：放一个**空占位框**。
+                                // 点它就把光标送进括号（Desmos 的行为），
+                                // 而不是让用户对着一个空荡荡的根号发呆。
+                                Node::Empty { at: inner_at + 1 }
                             } else {
                                 Node::Seq(inner)
                             };
@@ -273,6 +425,39 @@ impl Parser {
                             // 没有括号跟随：当普通标识符
                             Some(Node::Text(name))
                         }
+                    }
+                    // `sum(f, k, a, b)` → Σ / `prod(...)` → Π
+                    //
+                    // 语法来自 core 的 `sum` / `prod`（见 `keypad::FN_GROUPS`：
+                    // `sum(f,k,a,b)`）。四个参数的含义：
+                    // 被运算式 / 变量 / 下限 / 上限。
+                    "sum" | "prod" => {
+                        let inner_at = at + name.len();
+                        let (inner, consumed) = self.parse_call_args();
+                        if !consumed {
+                            return Some(Node::Text(name));
+                        }
+                        let kind = if name == "sum" {
+                            BigKind::Sum
+                        } else {
+                            BigKind::Prod
+                        };
+                        let args = split_args(inner, inner_at + 1);
+                        let mut it = args.into_iter();
+                        // 参数不全（用户还在打）时补空占位框，而不是放弃整个结构 ——
+                        // 一打 `sum(` 就能看到 Σ 出来，这才是"所见即所得"。
+                        let e = || Node::Empty { at: inner_at + 1 };
+                        let body = it.next().unwrap_or_else(e);
+                        let var = it.next().unwrap_or_else(e);
+                        let from = it.next().unwrap_or_else(e);
+                        let to = it.next().unwrap_or_else(e);
+                        Some(Node::BigOp {
+                            kind,
+                            body: Box::new(body),
+                            var: Box::new(var),
+                            from: Box::new(from),
+                            to: Box::new(to),
+                        })
                     }
                     // 已知数学常数与函数名：渲染成对应符号
                     // ⚠️ **不能**把函数名后面的 `(...)` 单独当普通括号组解析 ——
@@ -354,6 +539,36 @@ impl Parser {
     }
 }
 
+/// 把 `sum(f, k, a, b)` 的参数按**顶层逗号**切成若干段。
+///
+/// `open` 是第一个参数在源文本里的起点（即 `(` 之后），空参数框靠它定位 ——
+/// 点了空框之后光标要落在"那个参数该在的位置"。
+fn split_args(nodes: Vec<Node>, open: usize) -> Vec<Node> {
+    let mut out: Vec<Node> = Vec::new();
+    let mut cur: Vec<Node> = Vec::new();
+    let mut seg_at = open;
+    for n in nodes {
+        if let Node::Comma { at } = n {
+            out.push(collapse(cur, seg_at));
+            cur = Vec::new();
+            seg_at = at + 1;
+            continue;
+        }
+        cur.push(n);
+    }
+    out.push(collapse(cur, seg_at));
+    out
+}
+
+/// 把一段节点收成一个：空的 → [`Node::Empty`]，单个 → 它自己，多个 → [`Node::Seq`]
+fn collapse(nodes: Vec<Node>, at: usize) -> Node {
+    match nodes.len() {
+        0 => Node::Empty { at },
+        1 => nodes.into_iter().next().unwrap(),
+        _ => Node::Seq(nodes),
+    }
+}
+
 /// 标识符 → 显示符号
 fn render_ident(name: &str) -> String {
     match name {
@@ -404,12 +619,18 @@ impl Default for Style2 {
 ///
 /// - `math` 为真（MathIO）→ 先解析成语法树再排版；
 /// - 为假（LineIO，纯小数）→ 直接当文本，避免把 `1.41421356…` 误判成结构。
-pub fn render<'a, M: 'a>(src: &str, math: bool, style: Style2) -> Element<'a, M> {
+/// - `on_placeholder`：空参数框被点了发什么消息（`None` = 不可点，历史区用这个）。
+pub fn render<'a, M: Clone + 'a>(
+    src: &str,
+    math: bool,
+    style: Style2,
+    on_placeholder: Option<&'a dyn Fn(usize) -> M>,
+) -> Element<'a, M> {
     if !math {
         return plain(src, style);
     }
     let node = parse(src);
-    build(&node, style)
+    build(&node, style, on_placeholder)
 }
 
 /// 纯文本渲染
@@ -465,13 +686,90 @@ fn contains_math_glyph(s: &str) -> bool {
 /// [`render`] 的返回值会借用入参（它内部要 `src.to_string()`），
 /// 入参若是局部变量就没法把结果返回出去。分成两步后，
 /// [`Node`] 拥有自己的字符串，借它渲染出来的 widget 生命周期就自由了。
-pub fn build<'a, M: 'a>(node: &Node, style: Style2) -> Element<'a, M> {
+///
+/// `on_placeholder`：**空参数框被点击**时要发什么消息（参数是那个框的源文本偏移）。
+/// 传 `None` 就是纯视觉（历史区里的旧结果用 `None` —— 那里不该能点）。
+/// 之所以要传闭包而不是直接给 `Message`：本模块对消息类型是**泛型**的
+///（`M` 由调用方决定），它不认识 `app::Message`。
+pub fn build<'a, M: Clone + 'a>(
+    node: &Node,
+    style: Style2,
+    on_placeholder: Option<&'a dyn Fn(usize) -> M>,
+) -> Element<'a, M> {
     match node {
         Node::Text(s) => plain(s, style),
+        // 分隔符（`sum` 的参数逗号）只在切分阶段有用，排版时不显示
+        Node::Comma { .. } => Space::new().width(Pixels(0.0)).height(Pixels(0.0)).into(),
+        // 光标：一根竖线。它的位置由布局引擎算 —— 见 `Node::Caret`
+        Node::Caret => container(Space::new().width(Pixels(0.0)).height(Pixels(style.size)))
+            .width(Length::Fixed((style.size * 0.09).max(1.5)))
+            .height(Length::Fixed(style.size * 1.25))
+            .style(theme::caret)
+            .into(),
+        // 空参数：灰色圆角方块（Desmos 风格）。点了就把光标送进那个位置
+        Node::Empty { at } => {
+            // ⚠️ **必须给最小尺寸**：Σ/Π 的上下限字号只有正文的 0.52 倍，
+            // 纯按比例算出来的方块只有 5px 左右 —— 肉眼根本看不见，
+            // 等于"这里还缺个东西"的提示直接丢了（第一版就是这样，
+            // 快照里 Σ 上方空空如也）。
+            let side = (style.size * 0.66).max(11.0);
+            let block = container(Space::new().width(Length::Fill).height(Length::Fill))
+                .width(Length::Fixed(side))
+                .height(Length::Fixed(side * 0.82))
+                .style(theme::placeholder);
+            match on_placeholder {
+                Some(f) => button(block)
+                    .padding(0)
+                    .style(theme::bare_button)
+                    .on_press(f(*at))
+                    .into(),
+                None => block.into(),
+            }
+        }
+        Node::BigOp {
+            kind,
+            body,
+            var,
+            from,
+            to,
+        } => {
+            // Σ / Π：上限在大符号**上方**、`变量 = 下限` 在**下方**，主体在右侧。
+            // 与 Desmos 一致的经典排版（用户给的参考图就是这个样子）。
+            let glyph = match kind {
+                BigKind::Sum => "∑",
+                BigKind::Prod => "∏",
+            };
+            // 大符号本身用大一号的字；上下限用小一号（标准数学排版惯例）
+            let big = plain(glyph, style);
+            let limit_style = Style2 {
+                size: style.size * 0.52,
+                ..style
+            };
+            let lower = Row::new()
+                .align_y(Alignment::Center)
+                .spacing(2.0)
+                .push(build(var, limit_style, on_placeholder))
+                .push(plain("=", limit_style))
+                .push(build(from, limit_style, on_placeholder));
+
+            let stack = Column::new()
+                .width(Length::Shrink)
+                .align_x(Alignment::Center)
+                .push(build(to, limit_style, on_placeholder))
+                .push(big)
+                .push(lower);
+
+            Row::new()
+                .align_y(Alignment::Center)
+                .spacing(style.size * 0.16)
+                .push(stack)
+                .push(build(body, style, on_placeholder))
+                .into()
+        }
         Node::Seq(items) => {
             let mut r = Row::new().align_y(Alignment::Center).spacing(0.0);
             for it in items {
-                r = r.push(build(it, style));
+                r = r.push(build(it, style, on_placeholder));
             }
             r.into()
         }
@@ -484,8 +782,8 @@ pub fn build<'a, M: 'a>(node: &Node, style: Style2) -> Element<'a, M> {
                 size: style.size * 0.72,
                 ..style
             };
-            let num_el = build(num, inner_style);
-            let den_el = build(den, inner_style);
+            let num_el = build(num, inner_style, on_placeholder);
+            let den_el = build(den, inner_style, on_placeholder);
             // 横线宽度取分子/分母中较长者的近似宽度：用字符数 × 字号估一个
             // （iced 没有"测量文字宽度"的公开接口，这是务实的近似）
             let w = frac_bar_width(num, den, inner_style.size);
@@ -532,7 +830,7 @@ pub fn build<'a, M: 'a>(node: &Node, style: Style2) -> Element<'a, M> {
             //     并**下移**到顶线以下（上 padding = 顶线位置）。
             // 用叠加而不是 `Row`，是因为被开方式必须落在顶线**正下方**、
             // 而 `Row` 的横向排布做不到"压到前一个元素下面"。
-            let radicand = build(inner, style);
+            let radicand = build(inner, style, on_placeholder);
             let radicand_w = node_width(inner, style.size);
             let color = style.color.unwrap_or_else(|| theme::colors().text);
             // 整个根号的高度：比被开方式略高一点，顶线压在上沿、钩子下探一点。
@@ -573,6 +871,7 @@ pub fn build<'a, M: 'a>(node: &Node, style: Style2) -> Element<'a, M> {
                         size: style.size * 0.55,
                         ..style
                     },
+                    on_placeholder,
                 ));
             }
             r = r.push(iced::widget::stack![sign, laid_out]);
@@ -581,13 +880,14 @@ pub fn build<'a, M: 'a>(node: &Node, style: Style2) -> Element<'a, M> {
         Node::Pow(base, exp) => {
             // 右上标：基线对齐到顶端，字号小一档
             let mut r = Row::new().align_y(Alignment::Start).spacing(0.0);
-            r = r.push(build(base, style));
+            r = r.push(build(base, style, on_placeholder));
             r = r.push(build(
                 exp,
                 Style2 {
                     size: style.size * 0.62,
                     ..style
                 },
+                on_placeholder,
             ));
             r.into()
         }
@@ -706,6 +1006,16 @@ fn root_hook_width(size: f32) -> f32 {
 fn node_width(node: &Node, size: f32) -> f32 {
     match node {
         Node::Text(s) => s.chars().count() as f32 * size * CHAR_WIDTH_RATIO,
+        // 空占位框 / 光标：固定的小宽度
+        Node::Empty { .. } => size * 0.6,
+        Node::Caret => size * 0.12,
+        Node::Comma { .. } => 0.0,
+        // Σ/Π：宽度取"大符号"与"上下限里较宽的那组"之较大者
+        Node::BigOp { var, from, to, .. } => {
+            let up = node_width(to, size * 0.52);
+            let low = node_width(var, size * 0.52) + node_width(from, size * 0.52);
+            up.max(low) + size * 0.6
+        }
         Node::Seq(items) => items.iter().map(|i| node_width(i, size)).sum(),
         // 分数：取分子/分母较宽者（横线宽度），外加一点内边距
         Node::Frac(num, den) => {
@@ -826,7 +1136,144 @@ mod tests {
                 None => format!("√({})", flatten(inner)),
             },
             Node::Pow(a, b) => format!("{}^{}", flatten(a), flatten(b)),
+            // 不携带源文本的三种（占位框 / 光标 / 参数逗号）
+            Node::Empty { .. } | Node::Caret | Node::Comma { .. } => String::new(),
+            Node::BigOp {
+                body,
+                var,
+                from,
+                to,
+                ..
+            } => format!(
+                "sum({},{},{},{})",
+                flatten(body),
+                flatten(var),
+                flatten(from),
+                flatten(to)
+            ),
         }
+    }
+
+    /// 节点树里有没有光标（测试辅助）
+    fn contains_caret(n: &Node) -> bool {
+        match n {
+            Node::Caret => true,
+            Node::Seq(v) => v.iter().any(contains_caret),
+            Node::Frac(a, b) => contains_caret(a) || contains_caret(b),
+            Node::Root { degree, inner } => {
+                degree.as_deref().is_some_and(contains_caret) || contains_caret(inner)
+            }
+            Node::Pow(a, b) => contains_caret(a) || contains_caret(b),
+            Node::BigOp {
+                body,
+                var,
+                from,
+                to,
+                ..
+            } => {
+                contains_caret(body)
+                    || contains_caret(var)
+                    || contains_caret(from)
+                    || contains_caret(to)
+            }
+            _ => false,
+        }
+    }
+
+    /// `sum(...)` / `prod(...)` 要排成 Σ / Π，而不是当成普通函数名。
+    ///
+    /// 参数顺序是 core 的约定：`sum(被运算式, 变量, 下限, 上限)`
+    ///（见 `keypad::FN_GROUPS` 里的 `sum(f,k,a,b)`）。
+    #[test]
+    fn parses_big_operators() {
+        let n = parse("sum(k^2,k,1,10)");
+        let Node::BigOp { kind, to, from, .. } = &n else {
+            panic!("应解析成大运算符：{n:?}");
+        };
+        assert_eq!(*kind, BigKind::Sum);
+        assert_eq!(flatten(to), "10", "上限应是第 4 个参数（末位）");
+        assert_eq!(flatten(from), "1", "下限应是第 3 个参数");
+
+        let n = parse("prod(i,i,1,5)");
+        assert!(
+            matches!(
+                n,
+                Node::BigOp {
+                    kind: BigKind::Prod,
+                    ..
+                }
+            ),
+            "prod 应排成 Π：{n:?}"
+        );
+    }
+
+    /// 空的参数位置要变成**占位框**，而且带正确的源文本偏移
+    ///（点了框才知道该把光标送到哪 —— 这是用户明确要求的交互）。
+    #[test]
+    fn empty_arguments_become_placeholders() {
+        // 空根号：`sqrt(` 是 5 个字符，所以括号内是偏移 5
+        let n = parse("sqrt()");
+        let Node::Root { inner, .. } = &n else {
+            panic!("{n:?}")
+        };
+        assert_eq!(**inner, Node::Empty { at: 5 }, "sqrt() 的占位框应在括号内");
+
+        // Σ 的第 4 个参数空着
+        let n = parse("sum(k,k,1,)");
+        let Node::BigOp { to, .. } = &n else {
+            panic!("{n:?}")
+        };
+        assert!(
+            matches!(**to, Node::Empty { .. }),
+            "空参数应是占位框：{to:?}"
+        );
+
+        // 分数少一边：`1/` 的分母也是占位框
+        let n = parse("1/");
+        let Node::Frac(_, den) = &n else {
+            panic!("{n:?}")
+        };
+        assert!(matches!(**den, Node::Empty { .. }), "1/ 的分母应是占位框");
+    }
+
+    /// 光标：`parse_with_caret` 在对应偏移处插一根竖线，且**不破坏结构**。
+    ///
+    /// `1|/2` 这种"光标正好停在 `/` 前面"是最刁的位置：分数分支会
+    /// `out.pop()` 取分子，一不小心就把光标 pop 走了（第一版就是这样，
+    /// 分子直接消失）。这条守着它。
+    #[test]
+    fn caret_is_inserted_without_breaking_structure() {
+        // 末尾
+        assert!(
+            contains_caret(&parse_with_caret("ab", Some(2))),
+            "末尾应插光标"
+        );
+        // 开头
+        assert!(
+            contains_caret(&parse_with_caret("ab", Some(0))),
+            "开头应插光标"
+        );
+        // 数字内部
+        assert!(
+            contains_caret(&parse_with_caret("12", Some(1))),
+            "数字中间应插光标"
+        );
+
+        // 最刁的一个：光标停在 `/` 前 —— 结构必须还是一个完整分数
+        let n = parse_with_caret("1/2", Some(1));
+        assert!(
+            matches!(n, Node::Seq(_) | Node::Frac(..)),
+            "结构不该被光标打散：{n:?}"
+        );
+        assert!(contains_caret(&n), "光标不能丢：{n:?}");
+        assert!(
+            flatten(&n).contains("1/2") || flatten(&n).contains("1"),
+            "分子不能被光标吃掉：{:?}",
+            flatten(&n)
+        );
+
+        // 不给光标时不该出现 Caret
+        assert!(!contains_caret(&parse("ab")));
     }
 
     #[test]

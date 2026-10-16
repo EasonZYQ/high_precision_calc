@@ -170,6 +170,17 @@ pub fn dark() -> bool {
 /// 拿不到 `State`，所以这类"全局观感开关"只能走进程级静态量。
 static GLASS_PERCENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(60);
 
+/// 玻璃**底色的浓度**（0 = 完全透明，100 = 完全不透明）。
+///
+/// 与 [`GLASS_PERCENT`] 的分工（用户要求两者都要）：
+/// - **强度**是"整体玻璃效果有多强"—— 它同时影响底色透明度、描边高光、投影幅度；
+/// - **底色**只拧一个旋钮：面板底色本身有多实。想要"更飘"就调低，想要"更稳、
+///   字更好认"就调高。
+///
+/// 默认 70 而不是 100：配合 [`ambient_background`] 的氛围底，70% 就能看出
+/// "面板是块玻璃"，而 100% 会让所有面板看起来还是不透明的色块。
+static GLASS_TINT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(70);
+
 /// 设置玻璃强度（0.0 = 关闭，走不透明纯色；1.0 = 最强）
 pub fn set_glass(amount: f32) {
     let pct = (amount.clamp(0.0, 1.0) * 100.0).round() as u8;
@@ -179,6 +190,17 @@ pub fn set_glass(amount: f32) {
 /// 当前玻璃强度（0.0 – 1.0）
 pub fn glass_amount() -> f32 {
     GLASS_PERCENT.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
+}
+
+/// 设置玻璃底色浓度（0.0 = 完全透明，1.0 = 完全不透明）
+pub fn set_glass_tint(tint: f32) {
+    let pct = (tint.clamp(0.0, 1.0) * 100.0).round() as u8;
+    GLASS_TINT.store(pct, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 当前玻璃底色浓度（0.0 – 1.0）
+pub fn glass_tint() -> f32 {
+    GLASS_TINT.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
 }
 
 /// 当前色板
@@ -241,9 +263,10 @@ pub const RADIUS_BUTTON: f32 = 6.0;
 /// - `tint`：背景 tint 的 alpha 倍数（键盘区比结果区更透，视觉分层）
 fn glass(c: &Colors, lift: f32, tint: f32) -> container::Style {
     let g = glass_amount();
-    // 玻璃越强 → 底色越透（让底下的层 / DWM 模糊透上来）；0 时是完全不透明的纯色。
-    // 0.55 是实测出的上限：再透下去浅色主题里的深色文字会开始糊。
-    let alpha = tint * (1.0 - 0.55 * g);
+    // 底色浓度 = 各面板自己的相对浓度 × 全局旋钮（用户在设置里调，见 [`GLASS_TINT`]）。
+    // 玻璃越强 → 底色越透（让氛围底 / DWM 模糊透上来）；0 时是完全不透明的纯色。
+    // 0.55 是实测出的系数：再透下去浅色主题里的深色文字会开始糊。
+    let alpha = tint * glass_tint() * (1.0 - 0.55 * g);
     // 玻璃越强 → 投影越明显。"玻璃厚度"这个观感来自三件事，缺一不可：
     // 半透明底色（上面）、1px 高光描边（下面）、柔和投影（这里）。
     let lift = lift * (0.55 + 0.75 * g);
@@ -267,6 +290,44 @@ fn glass(c: &Colors, lift: f32, tint: f32) -> container::Style {
         },
         snap: false,
     }
+}
+
+/// 两个色按 `t` 线性插值（`t = 0` 取 `base`，`t = 1` 取 `over`）。
+///
+/// `Color` 没有内置的 `lerp`，而这里只需要 RGB 三个通道 —— 手算比拉一个依赖划算。
+/// 结果**强制不透明**：调用方（[`ambient_background`]）要的正是"实色"。
+fn mix(base: Color, over: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    Color {
+        r: base.r + (over.r - base.r) * t,
+        g: base.g + (over.g - base.g) * t,
+        b: base.b + (over.b - base.b) * t,
+        a: 1.0,
+    }
+}
+
+/// 窗口的**氛围底色**：一层不透明的斜向柔光（左上偏亮 → 右下回到底色）。
+///
+/// ## 这不是装饰，是"玻璃能成立"的前提
+///
+/// 半透明面板透过去的若是同一个纯色，观感就是一堆不透明的灰块 —— 跟玻璃毫无关系。
+/// 用户实测反馈过"只有窗口顶部一栏像玻璃，整个界面都不是"，根因就在这里
+///（亚克力在某些环境下不可用，窗口底色退化成纯色）。
+/// 有了这层带方向的柔光，面板各处透出的色才不同，玻璃的"厚度"才立得住。
+///
+/// ## 为什么两个停靠点都必须不透明
+///
+/// 窗口开了 `transparent: true`。这层若带 alpha，亚克力失败时会直接透出
+/// 桌面甚至黑色 ⇒ 花屏。所以这里用 [`mix`] 调出实色，而不是靠 alpha 叠加。
+fn ambient_background(c: &Colors) -> Background {
+    // 把强调色掺进底色当"光"。比例刻意很小（0.12 / 0.02）：再大就不像系统界面了
+    let light = mix(c.backdrop, c.accent, if dark() { 0.14 } else { 0.10 });
+    let shade = mix(c.backdrop, c.accent, 0.02);
+    // 45° —— 斜向比纯竖向更有"光从某个方向来"的感觉
+    let mut linear = iced::gradient::Linear::new(iced::Radians(std::f32::consts::FRAC_PI_4));
+    linear = linear.add_stop(0.0, light);
+    linear = linear.add_stop(1.0, shade);
+    Background::Gradient(iced::Gradient::Linear(linear))
 }
 
 /// 造一个自上而下的线性渐变背景。
@@ -320,12 +381,17 @@ pub fn panel_low(_theme: &Theme) -> container::Style {
     glass(&colors(), 0.45, 0.72)
 }
 
-/// 窗口根容器：亚克力成功时**完全透明**（让 DWM 的模糊透上来），
-/// 否则填上不透明底色。
+/// 窗口根容器：亚克力成功时**完全透明**（让 DWM 的模糊透上来 —— 那才是真正的
+/// liquid glass），否则铺一层[氛围底色][ambient_background]。
 pub fn root(_theme: &Theme) -> container::Style {
+    let c = colors();
     container::Style {
-        background: Some(Background::Color(colors().backdrop_for(acrylic()))),
-        text_color: Some(colors().text),
+        background: Some(if acrylic() {
+            Background::Color(c.backdrop_for(true))
+        } else {
+            ambient_background(&c)
+        }),
+        text_color: Some(c.text),
         ..container::Style::default()
     }
 }
@@ -356,6 +422,83 @@ pub fn mode_chip(_theme: &Theme, status: button::Status, selected: bool) -> butt
             width: 1.0,
             radius: RADIUS_BUTTON.into(),
         },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+/// **"隐形"编辑器**：`text_editor` 的每一处可见部分都透明化。
+///
+/// ## 为什么需要它（用户要求："不要输入栏，预览就是输入栏"）
+///
+/// `text_editor` 只能显示纯文本（`sqrt(2)` 就是那 7 个字符），它**没有**
+/// "在这里画一根号"的扩展点（唯一开放的 `Highlighter` 只有 `color` / `font`）。
+/// 但它是**唯一**能接管键盘、中文输入法、Ctrl+V、鼠标框选的东西 ——
+/// 自己从零实现这些要跟系统输入法对接，做不出来。
+///
+/// 所以做法是**分层**：`text_editor` 藏在下面继续收输入，但一个字都不显示
+///（`background` / `placeholder` / `value` / `selection` 全透明）；
+/// 用户看到的是它上面那一层 `mathrender` 排出来的数学式。
+///
+/// ⚠️ **光标也会一起消失**：iced 画光标用的就是 `style.value` 的颜色
+///（见 `iced_widget` 的 `text_editor::draw`，`Selection::Caret` 分支）。
+/// 所以光标得由排版层自己画（`mathrender::Node::Caret` + [`caret`]）。
+pub fn invisible_editor(_theme: &Theme, _status: text_edit::Status) -> text_editor::Style {
+    text_editor::Style {
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border::default(),
+        placeholder: Color::TRANSPARENT,
+        value: Color::TRANSPARENT,
+        selection: Color::TRANSPARENT,
+    }
+}
+
+/// **输入光标**（排版层自绘的那根竖线）。
+///
+/// 输入区改成"预览即输入栏"后，背后的 `text_editor` 被透明化，它自己的光标
+/// 也跟着看不见了（iced 的光标用的就是 `style.value` 的颜色）。
+/// 所以光标由 `mathrender` 在解析时插一个 `Node::Caret`，样式在这里定。
+pub fn caret(_theme: &Theme) -> container::Style {
+    let c = colors();
+    container::Style {
+        background: Some(Background::Color(c.accent)),
+        ..container::Style::default()
+    }
+}
+
+/// **空参数占位框**（`sqrt()` / `1/` / `sum(,k,1,10)` 里那些还没输入的位置）。
+///
+/// Desmos 用的是一个灰色小方块。刻意**不做成虚线框**（虽然也有编辑器这么做）：
+/// 实心方块在小字号下更清楚，而且它表示的是"这里缺一个东西"，
+/// 不是"这里可以画一条线"。
+pub fn placeholder(_theme: &Theme) -> container::Style {
+    let c = colors();
+    container::Style {
+        // 半透明的"阴影块"：比正文弱、但比背景显眼，一眼能看出"这里还缺东西"。
+        //
+        // ⚠️ alpha 不能太低：0.38 那版在快照里**几乎看不见**（方块只有 9px，
+        // 再淡就等于没有），而"这里缺个东西"正是这个占位框存在的唯一理由。
+        background: Some(Background::Color(c.text_dim.scale_alpha(0.62))),
+        border: Border {
+            color: c.text_dim.scale_alpha(0.95),
+            width: 1.0,
+            radius: 3.0.into(),
+        },
+        shadow: Shadow {
+            color: Color::BLACK.scale_alpha(0.10),
+            offset: Vector::new(0.0, 1.0),
+            blur_radius: 2.0,
+        },
+        ..container::Style::default()
+    }
+}
+
+/// 占位框外面那层"光板"按钮（不要任何视觉，样式全在里面的方块上）
+pub fn bare_button(_theme: &Theme, _status: button::Status) -> button::Style {
+    button::Style {
+        background: None,
+        text_color: Color::WHITE,
+        border: Border::default(),
         shadow: Shadow::default(),
         snap: false,
     }
