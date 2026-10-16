@@ -1553,6 +1553,8 @@ impl State {
         //
         // 解法：把编辑器放进一个 `FillPortion` 的槽位，让它有**明确的上限**
         // —— 槽位拿到 `Row` 分配的空间后，`text_editor` 在里面填满，不再向外膨胀。
+        let src = self.input_text();
+
         // ── ① 背后那层：**隐形**的 text_editor ────────────────────────────────
         //
         // 用户要求"不要输入栏，预览就是输入栏"。但键盘输入、中文输入法、
@@ -1570,14 +1572,24 @@ impl State {
             .size(19)
             // 内边距与上面那层保持一致，否则两层会错位
             .padding([12, 14])
-            .height(Pixels(INPUT_HEIGHT))
+            // ⚠️ **高度必须跟着排版层走**：
+            // 固定 56 会把排版层压住 —— 带上下限的表达式（Σ / ∫）需要更高，
+            // 被压掉的那部分直接看不见（用户实测："下面框没了"：`sum()` 的
+            // `▯ = ▯` 那一行整个消失了；快照里也复现了）。
+            //
+            // 空输入时用固定高度（免得输入区随提示文字忽高忽低），
+            // 有内容时交给 `stack!` 取两者较大的那个。
+            .height(if src.is_empty() {
+                Length::Fixed(INPUT_HEIGHT)
+            } else {
+                Length::Shrink
+            })
             // 字体：数学衬线体（用户要求"符号和字母用 markdown 那种字体"）。
             // 中文走不到这里 —— 输入框里的内容应当都是表达式。
             .font(theme::font_math())
             .style(theme::invisible_editor);
 
         // ── ② 上面那层：用户真正**看得见**的数学排版 ─────────────────────────
-        let src = self.input_text();
         let shown: Element<'_, Message> = if src.is_empty() {
             theme::label(t("输入表达式，例如 sqrt(2)/3、x^2-4=0、int(x^2,x,0,1)"))
                 .size(17)

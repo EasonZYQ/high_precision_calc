@@ -191,7 +191,7 @@ fn bigop_and_placeholder_snapshot() {
     let mut state = populated_state();
     state.set_dark_for_test(true);
     // 还差最后一个参数没打 ⇒ 那个位置应是占位框
-    state.set_input_for_test("sum(k^2, k, 1, )");
+    state.set_input_for_test("sum()");
     let snapshot = snap(&state);
     let path = format!("{SNAP_DIR}/bigop.png");
     assert!(

@@ -808,12 +808,23 @@ pub fn build<'a, M: Clone + 'a>(
             // 等于"这里还缺个东西"的提示直接丢了（第一版就是这样，
             // 快照里 Σ 上方空空如也）。
             let side = (style.size * 0.66).max(12.0);
-            let dashed = Canvas::new(DashedBox {
-                color: theme::colors().text_dim.scale_alpha(0.75),
-                thickness: 1.2,
-                dash: 3.0,
-                gap: 2.5,
-            })
+            // ⚠️ **尺寸给外层 `container`，`Canvas` 用 `Fill` 填满它**。
+            //
+            // 之前是直接给 `Canvas` 设 `.width()/.height()`，结果在
+            // `Column`/`Row` 的嵌套里它**高度塌成 0** —— 布局上仍占宽
+            //（所以那一行把父容器撑宽了），但**画不出任何东西**。
+            // 用户看到的正是"Σ 下面那行 `▯ = ▯` 整个没了"。
+            // `container` 的尺寸是硬约束，`Fill` 的孩子一定会被拉到那么大。
+            let dashed = container(
+                Canvas::new(DashedBox {
+                    color: theme::colors().text_dim.scale_alpha(0.75),
+                    thickness: 1.2,
+                    dash: 3.0,
+                    gap: 2.5,
+                })
+                .width(Length::Fill)
+                .height(Length::Fill),
+            )
             .width(Length::Fixed(side))
             .height(Length::Fixed(side * 0.85));
             match on_placeholder {
@@ -850,12 +861,21 @@ pub fn build<'a, M: Clone + 'a>(
                     } else {
                         "∏"
                     };
-                    let lower = Row::new()
-                        .align_y(Alignment::Center)
-                        .spacing(2.0)
-                        .push(build(var, limit_style, on_placeholder))
-                        .push(plain("=", limit_style))
-                        .push(build(from, limit_style, on_placeholder));
+                    // ⚠️ 下限那一行**显式给高度**：`Column` 自动取高度时它会塌掉 ——
+                    // 证据是它**仍占宽度**（父容器被撑宽了、Σ 的居中位置也跟着偏），
+                    // 却画不出任何东西。用户看到的正是"Σ 下面那行 `▯ = ▯` 整个没了"。
+                    // 给一个硬高度最省事，也最不容易再出意外。
+                    let row_h = (limit_style.size * 1.9).max(18.0);
+                    let lower = container(
+                        Row::new()
+                            .align_y(Alignment::Center)
+                            .spacing(2.0)
+                            .push(build(var, limit_style, on_placeholder))
+                            .push(plain("=", limit_style))
+                            .push(build(from, limit_style, on_placeholder)),
+                    )
+                    .height(Length::Fixed(row_h))
+                    .align_y(Alignment::Center);
                     let stack = Column::new()
                         .width(Length::Shrink)
                         .align_x(Alignment::Center)
