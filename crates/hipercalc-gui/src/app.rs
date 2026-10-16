@@ -1491,10 +1491,11 @@ impl State {
         )
         .width(Length::Fill)
         .padding([12, 14])
-        // ⚠️ 用 `panel`（玻璃卡片）而不是 `panel_low`：它现在是**浮在历史之上的
-        // 一张卡**，需要有明确的高光描边与投影才立得住（`panel_low` 是"底座"，
-        // 托得比别的东西低）。
-        .style(theme::panel)
+        // ⚠️ 用 `dialog`（**接近不透明**的浮层样式）而不是 `panel`：
+        // 玻璃面板的 alpha 只有 0.5 上下，下面的历史文字会透上来，
+        // 与设置项混在一起 —— 用户实测反馈"设置与计算结果重叠"。
+        // `dialog` 保留高光边与大投影（浮起来的感觉），但底色是实心的。
+        .style(theme::dialog)
         .into()
     }
 
@@ -1871,7 +1872,8 @@ impl State {
         .width(Length::FillPortion(4))
         .height(Length::FillPortion(5))
         .padding(16)
-        .style(theme::panel);
+        // 与设置面板同理：浮层必须压得住下面的内容（见 `theme::dialog`）
+        .style(theme::dialog);
 
         card.into()
     }

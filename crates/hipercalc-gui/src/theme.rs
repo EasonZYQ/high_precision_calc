@@ -541,6 +541,51 @@ pub fn bare_button(_theme: &Theme, _status: button::Status) -> button::Style {
     }
 }
 
+/// **浮层面板**的样式（设置面板 / 函数面板）。
+///
+/// ## 为什么不能直接用 `panel`（玻璃）
+///
+/// 用户实测反馈："设置与计算结果重叠，设置应该遮住计算结果"。
+/// 玻璃面板的底色 alpha 只有 0.5 上下，**下面的历史文字会透上来**，
+/// 与设置项的字混在一起 —— 读起来非常糟。
+///
+/// 浮层和普通面板的要求不一样：普通面板是"界面的一部分"（透一点好看），
+/// 浮层是"压在界面之上的对话"（**必须压得住**）。
+/// 所以这里保留玻璃的**高光边 + 大投影**（厚度感、浮起来的感觉都在），
+/// 但底色用**接近不透明**的面板色。
+pub fn dialog(_theme: &Theme) -> container::Style {
+    let c = colors();
+    let g = glass_amount();
+    let sh = shadow_amount();
+    // 把面板色的 alpha 拉到 1：`surface` 的 RGB 本来就是"面板该有的颜色"，
+    // 只是它在普通面板里被当作半透明底用。这里要的是实心。
+    let solid = Color {
+        a: 1.0,
+        ..c.surface
+    };
+    container::Style {
+        // 只留一点点渐变，免得整块面板看起来是死板的纯色
+        background: Some(gradient_background([(0.0, solid), (1.0, solid)])),
+        text_color: Some(c.text),
+        border: Border {
+            color: if dark() {
+                c.stroke.scale_alpha(1.0 + 1.2 * g)
+            } else {
+                Color::WHITE.scale_alpha(0.85)
+            },
+            width: 1.0,
+            radius: RADIUS_PANEL.into(),
+        },
+        shadow: Shadow {
+            // 投影比普通面板重一档：它是浮在最上面的那一层
+            color: Color::BLACK.scale_alpha(0.42 * sh),
+            offset: Vector::new(0.0, 8.0 * sh),
+            blur_radius: 32.0 * sh,
+        },
+        snap: false,
+    }
+}
+
 /// 键盘按键的视觉分组 —— 不同分组用不同底色，用户扫一眼就能定位。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyKind {
