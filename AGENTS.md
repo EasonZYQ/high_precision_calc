@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**已可用**：计算 / **后台求值（界面永不卡死）** / **耗时显示（对标 CLI）** / 历史 / Desmos 式双面板虚拟键盘 / 函数弹窗 / 数学排版与实时预览 / 内置字体 / 深浅双主题 / 全界面多语言）。**含 322 项单元测试**（hipercalc 196 + core 22 + GUI 93 单测 + 10 快照 + 1 doctest，其中 1 项 `perf_scan` 默认 ignore），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
+`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**已可用**：计算 / **后台求值（界面永不卡死）** / **耗时显示（对标 CLI）** / 历史 / Desmos 式双面板虚拟键盘 / 函数弹窗 / 数学排版与实时预览 / 内置字体 / 深浅双主题 / 全界面多语言）。**含 334 项单元测试**（hipercalc 200 + core 22 + GUI 101 单测 + 10 快照 + 1 doctest，其中 1 项 `perf_scan` 默认 ignore），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
 
 ## 硬性要求（用户指定）
 
@@ -60,7 +60,7 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
   | 文件 | 职责 |
   | --- | --- |
   | `app.rs` | 状态 / 消息 / update / view；**所有业务逻辑都在 `update` 里**，`view` 只读状态。求值与 UI 通过 `evaluator` 通信，`update` 本体永不阻塞 |
-  | `evaluator.rs` | **后台求值线程**：常驻 worker 独占 `Session`，`mpsc` 收发 `Request::{Eval, Config}`；`Evaluator::eval` 返回 `(信箱, 等待闭包)` 供 `Task::perform`。⚠️ 刻意不含 `SetLang`（语言必须在 UI 线程同步设） |
+  | `evaluator.rs` | **后台求值线程**：常驻 worker 独占 `Session`，`mpsc` 收发 `Request::{Eval, Config}`；`Evaluator::eval` 返回一条**真异步** future（`futures::oneshot` 唤醒），由 `app.rs` 交给 `Task::perform`。⚠️ 刻意不含 `SetLang`（语言必须在 UI 线程同步设） |
   | `keypad.rs` | 虚拟键盘布局 `LAYOUT`（主面板）+ `LAYOUT_ABC`（字母面板）+ 函数目录 `FN_GROUPS` + 插入行为 `splice`/`cursor_back_for`（纯数据 + 纯函数，可脱 GUI 单测） |
   | `mathrender.rs` | MathIO 文本 → 真正的数学排版（分数竖排、根号顶线、幂上标）。**解析与渲染分离**，解析层是纯函数 |
   | `fonts.rs` | **内置字体**（`assets/fonts/`，见下节）+ 数学字体选择（进程级）+ `font_for` / `label` 的自适应分派 |
@@ -70,6 +70,21 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
 - **`Session` 是 GUI 与 CLI 的公共求值入口**（`crates/hipercalc/src/session.rs`）：
   GUI **不直接调** `run_line` / `handle_command`，一律走 `Session::eval(&str) -> LineResult`。
   这样两条前端走同一条求值路径，行为不会漂移。改求值行为时**两处都要回归**。
+
+### ⚠️ 状态文件由 CLI 与 GUI **共用**（用户明确要求）
+
+`~/.hipercalc_state` 一份文件、两个前端。因此有一条必须守住的不变量：
+**任何一方都只碰自己的键**。
+
+- CLI 的 `state::save` 会把整份文件重写 ⇒ 必须把[自己不认识的行走 `foreign_lines` 原样带回]；
+- GUI 用 `state::update_keys`（键级更新）写自己那几个键，其余一律保留。
+
+少了任一环，症状是"用一次命令行就把 GUI 的深色设置抹掉 / 进一次 GUI 就清空
+命令行的 `/let` 变量"—— 表现出来只是**"设置有时会自己变回去"**，极难排查。
+`state.rs` 里有三条测试守着它。
+
+GUI 专属键：`dark=` / `glass=`（0–1 强度）/ `wrap=`（长结果是否折行）。
+CLI 不解释它们，但保存时会原样保留。
 
 ### 界面文案必须过 `t()`（漏了会"看着像做了其实没做"）
 
@@ -244,8 +259,8 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
 ```powershell
 cargo build              # 只建两个出货 crate（workspace 设了 default-members）
 cargo run                # 交互式 REPL（rustyline）
-cargo test               # 218 项单元测试（hipercalc 196 + core 22，其中 1 项 perf_scan 默认 ignore）
-cargo test -p hipercalc-gui    # GUI：93 单测 + 10 快照测试（快照首次跑会自己建基线）
+cargo test               # 222 项单元测试（hipercalc 200 + core 22，其中 1 项 perf_scan 默认 ignore）
+cargo test -p hipercalc-gui    # GUI：101 单测 + 10 快照测试（快照首次跑会自己建基线）
 cargo build -p hipercalc-gui   # 图形界面（唯一会编 iced 的命令，首次约 5.5 分钟）
 ```
 
@@ -259,7 +274,7 @@ cargo build -p hipercalc-gui   # 图形界面（唯一会编 iced 的命令，�
   `cargo test` 结尾自带 `finished in X.XXs`（纯测试耗时），需要连编译一起看时用 `time cargo test`。
   多轮验证（反复跑测试、跑全语料扫描）要写清**总耗时**。
   原因：不看时间就发现不了"某次改动把求解拖慢了十倍"，也无法判断某个预算是真有必要的。
-- 已有 `#[cfg(test)]` 单元测试（**218 项**：hipercalc 196 + core 22，`cargo test` 全绿；GUI 另有 93 单测 + 10 快照测试，需显式 `-p hipercalc-gui`），
+- 已有 `#[cfg(test)]` 单元测试（**222 项**：hipercalc 200 + core 22，`cargo test` 全绿；GUI 另有 101 单测 + 10 快照测试，需显式 `-p hipercalc-gui`），
   其余验证靠管道喂输入人工核对结果：  
   `Write-Output "1+2*3", "x^2-4=0", "x+y=5,2x-y=1", "sin(pi/6)", "/exit" | cargo run`
 - **⚠️ 对拍用的二进制一定要放在 `target-t/` 下，不要放 `change_logs/`**：同一份 exe 放在 `change_logs/`
