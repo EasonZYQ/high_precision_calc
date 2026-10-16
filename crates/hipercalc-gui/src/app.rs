@@ -992,7 +992,13 @@ impl State {
                 .center_x(Length::Fill)
                 .center_y(Length::Fill);
 
-            stack![backdrop, panel].into()
+            // ⚠️ **必须把 `body` 垫在最底下**（用户："我的意思不是遮住整个界面，
+            // 是设置这个小框在最顶层，不是全部遮住啊"）。
+            //
+            // 上一版写的是 `stack![backdrop, panel]` —— 浮层**替代**了 `body`，
+            // 于是打开设置时工具条/历史/输入区/键盘**全都不画了**，只剩一块空白，
+            // 看起来就是把整个界面盖住。我当时只改了高度，没发现根因在这里。
+            stack![body, backdrop, panel].into()
         } else if self.show_settings {
             // ── 设置浮层（用户要求）────────────────────────────────────────
             //
@@ -1027,7 +1033,13 @@ impl State {
                 .height(Length::Shrink)
                 .padding([56.0, 22.0]);
 
-            stack![backdrop, panel].into()
+            // ⚠️ **必须把 `body` 垫在最底下**（用户："我的意思不是遮住整个界面，
+            // 是设置这个小框在最顶层，不是全部遮住啊"）。
+            //
+            // 上一版写的是 `stack![backdrop, panel]` —— 浮层**替代**了 `body`，
+            // 于是打开设置时工具条/历史/输入区/键盘**全都不画了**，只剩一块空白，
+            // 看起来就是把整个界面盖住。我当时只改了高度，没发现根因在这里。
+            stack![body, backdrop, panel].into()
         } else {
             body.into()
         };
