@@ -300,6 +300,24 @@ impl Parser {
         }
     }
 
+    /// 光标落在**标识符**内部时，把它对齐到这个 token 的边界（而不是拆开）。
+    ///
+    /// ## 为什么不能拆
+    ///
+    /// 拆开的话 `sum` 就变成 `s|um` 两段文本 —— 解析器再也认不出这是求和函数，
+    /// Σ 瞬间退化成普通字符（用户实测：光标用方向键移进 `sum` 内部，Σ 变成了 "sum"）。
+    ///
+    /// 而对齐到边界之后：函数名保持完整（Σ 照常渲染），光标画在它**右边** ——
+    /// 偏差不到一个函数名的宽度，而排版保住了。这个取舍是值得的。
+    fn align_caret_to_boundary(&mut self, at: usize, len: usize) {
+        if let Some(c) = self.caret
+            && c > at
+            && c < at + len
+        {
+            self.caret = Some(at + len);
+        }
+    }
+
     /// 光标落在 `s` **内部**时把文本拆成三段（前 / 光标 / 后）。
     ///
     /// 返回 `None` 表示光标不在内部（在端点上的情况由 [`Parser::take_caret`] 负责，
@@ -430,10 +448,9 @@ impl Parser {
                 if name == "," {
                     return Some(Node::Comma { at });
                 }
-                // 光标在标识符内部（`si|n(x)`）时同样要拆开
-                if let Some(n) = self.split_inside(&name, at) {
-                    return Some(n);
-                }
+                // ⚠️ 光标在标识符内部时**不拆**（拆了函数识别就毁了，Σ 会变成 "sum"），
+                // 对齐到这个 token 的末尾 —— 见 `align_caret_to_boundary` 的说明
+                self.align_caret_to_boundary(at, name.chars().count());
                 match name.as_str() {
                     // `sqrt(x)` → 根号
                     "sqrt" => {
