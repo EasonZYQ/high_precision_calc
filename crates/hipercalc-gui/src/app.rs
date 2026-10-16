@@ -667,20 +667,16 @@ impl State {
                 }
             }
             Message::WindowOpened => {
-                // 窗口已创建，此时才能反查 HWND 并调 DWM
-                if !self.acrylic_checked {
-                    self.acrylic_checked = true;
-                    let ok = crate::backdrop::enable(self.dark);
-                    theme::set_acrylic(ok);
-                    if !ok {
-                        // 如实反馈：亚克力没生效（远程桌面下很常见），
-                        // 界面会退回不透明背景，但功能完全正常
-                        eprintln!(
-                            "[hipercalc-gui] 桌面模糊不可用（DWM 未接受任何材质请求），\
-                             已退回不透明背景。远程桌面 / 无头环境下这是预期行为。"
-                        );
-                    }
-                }
+                // ⚠️ **这里刻意什么都不做**。
+                //
+                // 上一版在这里调 `backdrop::enable` 并设 `acrylic_checked = true`，
+                // 结果是：它先于 boot 里的 Task 触发，把 `acrylic_checked` 抢占了，
+                // 于是 `AcrylicProbed` 到来时被挡掉 —— **而它的成功路径不打印任何东西**，
+                // 用户看到的"控制台一行输出都没有"就是这么来的（我据此误判成
+                // "Opened 事件没触发"，白查了一轮）。
+                //
+                // 现在探测只走 `backdrop::probe`（boot 里的 Task，成功失败都会报告，
+                // 而且结果会显示在设置面板里）。
             }
         }
         Task::none()
@@ -1021,13 +1017,15 @@ impl State {
             )
             .on_press(Message::CloseSettings);
 
-            // 顶部留出工具条的高度，让面板落在"历史区"的位置上。
-            // ⚠️ `Padding` 只实现 `From<[f32; N]>`，`[Length; 2]` 是不行的。
+            // ⚠️ **高度必须是 Shrink**（用户反馈："我的意思不是遮住整个界面，
+            // 是设置这个小框在最顶层，不是全部遮住啊"）。
+            // 上一版写的是 `height(Length::Fill)`，于是 `settings_panel()` 那层
+            // **带背景色**的容器被拉伸到整屏高 —— 面板下面拖出一大片同色空白，
+            // 看起来就是把整个界面盖住了。
             let panel = container(self.settings_panel())
                 .width(Length::Fill)
-                .height(Length::Fill)
-                .padding([56.0, 22.0])
-                .align_y(Alignment::Start);
+                .height(Length::Shrink)
+                .padding([56.0, 22.0]);
 
             stack![backdrop, panel].into()
         } else {
@@ -1415,7 +1413,25 @@ impl State {
         .spacing(6)
         .align_y(Alignment::Center);
 
-        // ⑦ 长结果的处理方式（用户要求："增加左右拖动或者换行，放在设置里供用户选择"）。
+        // ⑦ 桌面模糊状态（**只读**）。
+        //
+        // ⚠️ 结果必须显示在界面上：探测报告原本只 eprintln 到控制台，而用户是按
+        // `cargo run` 跑、不会盯着控制台 —— "到底生效没有"就只能靠猜。
+        // 这类"环境相关的能力"就该显示出来，而不是藏在没人看的 stderr 里。
+        let acrylic_row = row![
+            self.setting_label(t("桌面模糊"), SETTING_LABEL_W),
+            theme::label(if theme::acrylic() {
+                t("已启用")
+            } else {
+                t("系统未提供")
+            })
+            .size(13)
+            .style(theme::hint),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+
+        // ⑧ 长结果的处理方式（用户要求："增加左右拖动或者换行，放在设置里供用户选择"）。
         let wrap_row = row![
             self.setting_label(t("长结果"), SETTING_LABEL_W),
             self.chip(t("自动换行"), self.wrap, Message::SetWrap(true)),
@@ -1454,6 +1470,8 @@ impl State {
                 glass_row,
                 rule::horizontal(1.0).style(theme::divider),
                 shadow_row,
+                rule::horizontal(1.0).style(theme::divider),
+                acrylic_row,
                 rule::horizontal(1.0).style(theme::divider),
                 wrap_row,
             ]
@@ -2818,6 +2836,8 @@ mod tests {
             "玻璃强度",
             "底色浓度",
             "面板投影",
+            "桌面模糊",
+            "系统未提供",
             "长结果",
             "自动换行",
             "横向滚动",
