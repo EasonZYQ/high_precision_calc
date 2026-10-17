@@ -29,7 +29,7 @@
 
 use iced::widget::canvas::{Frame, Geometry, LineCap, LineJoin, Path, Stroke};
 use iced::widget::{Canvas, Column, Row, Space, button, container, rule, text};
-use iced::{Alignment, Color, Element, Font, Length, Padding, Pixels, Point, Rectangle, Renderer};
+use iced::{Alignment, Element, Font, Length, Padding, Pixels, Point, Rectangle, Renderer};
 
 use crate::theme;
 
@@ -801,45 +801,32 @@ pub fn build<'a, M: Clone + 'a>(
             .height(Length::Fixed(style.size * 1.25))
             .style(theme::caret)
             .into(),
-        // 空参数：**虚线**小框。点了就把光标送进那个位置
+        // 空参数：**一个空心方框字符**（用户建议："虚线框可不可以用文本框实现，
+        // 这样防止像素偏差"）。
+        //
+        // 这个建议解决了两件事：
+        // 1. **对齐**：字符的宽度由字体度量给出，与周围文字天然同一套度量；
+        //    而画出来的矩形只能靠估算（`node_width` 里的 `CHAR_WIDTH_RATIO` 就是估的），
+        //    必然对不齐 —— 这就是之前"框偏左、和 Σ 挨得太开"的来源。
+        // 2. **渲染**：`Row` 里套 `button` 时那个按钮**画不出来**（实测：Σ 下面
+        //    那行 `▯ = ▯` 整个消失，但布局上仍占宽）。换成文本就没有这个问题 ——
+        //    文本 widget 在任何嵌套层级都能正常布局与绘制。
+        //
+        // 用 `□`（U+25A1 WHITE SQUARE）而不是 `▯`：前者在几乎任何字体里都有，
+        // 缺字退化成豆腐块的风险最小。
         Node::Empty { at } => {
-            // ⚠️ **必须给最小尺寸**：Σ/Π 的上下限字号只有正文的 0.52 倍，
-            // 纯按比例算出来的框只有 5px 左右 —— 肉眼根本看不见，
-            // 等于"这里还缺个东西"的提示直接丢了（第一版就是这样，
-            // 快照里 Σ 上方空空如也）。
-            let side = (style.size * 0.66).max(12.0);
-            // ⚠️ **尺寸给外层 `container`，`Canvas` 用 `Fill` 填满它**。
-            //
-            // 之前是直接给 `Canvas` 设 `.width()/.height()`，结果在
-            // `Column`/`Row` 的嵌套里它**高度塌成 0** —— 布局上仍占宽
-            //（所以那一行把父容器撑宽了），但**画不出任何东西**。
-            // 用户看到的正是"Σ 下面那行 `▯ = ▯` 整个没了"。
-            // `container` 的尺寸是硬约束，`Fill` 的孩子一定会被拉到那么大。
-            let dashed = container(
-                Canvas::new(DashedBox {
-                    color: theme::colors().text_dim.scale_alpha(0.75),
-                    thickness: 1.2,
-                    dash: 3.0,
-                    gap: 2.5,
-                })
-                .width(Length::Fill)
-                .height(Length::Fill),
-            )
-            .width(Length::Fixed(side))
-            .height(Length::Fixed(side * 0.85));
+            let glyph = plain("□", style);
             match on_placeholder {
-                Some(f) => button(dashed)
-                    // ⚠️ **热区必须比视觉框大一圈**（用户反馈"点不中虚线框"）。
-                    // 一个 12px 的框、padding 给 0 的话，指针差一两像素就落空 ——
-                    // 而它本来就是"最小、最难瞄"的那类元素。
-                    // `[3, 5]` 把热区撑到 22×17 左右，视觉上仍然紧凑。
-                    .padding([3, 5])
+                Some(f) => button(glyph)
+                    // 热区比字形略大一圈：单字符本来就难点中
+                    .padding([1, 1])
                     .style(theme::bare_button)
                     .on_press(f(*at))
                     .into(),
-                None => dashed.into(),
+                None => glyph,
             }
         }
+
         Node::BigOp {
             kind,
             body,
@@ -1105,72 +1092,6 @@ struct Radical {
     color: iced::Color,
     /// 线宽
     thickness: f32,
-}
-
-/// 空参数占位框：一个**虚线**矩形（用户要求：用虚线代替实心方块）。
-///
-/// ## 为什么用 canvas 而不是 `Border`
-///
-/// iced 的 `Border` 只有 `width` / `color` / `radius`，**没有 dash 的概念** ——
-/// 画不出虚线。而虚线正是这个框的语义："这里还空着、等你填"。
-/// 实心块看起来像"已经有内容了"，方向正好相反。
-///
-/// 也没有阴影：用户明确说"阴影太深了"（一个 11px 的小框带投影，
-/// 在浅色主题下会糊成一团小黑边）。
-struct DashedBox {
-    color: Color,
-    thickness: f32,
-    dash: f32,
-    gap: f32,
-}
-
-impl<Message> iced::widget::canvas::Program<Message> for DashedBox {
-    type State = ();
-
-    fn draw(
-        &self,
-        _state: &Self::State,
-        renderer: &Renderer,
-        _theme: &iced::Theme,
-        bounds: Rectangle,
-        _cursor: iced::mouse::Cursor,
-    ) -> Vec<Geometry> {
-        let mut frame = Frame::new(renderer, bounds.size());
-        let w = bounds.width.max(1.0);
-        let h = bounds.height.max(1.0);
-        let t = self.thickness;
-        let stroke = Stroke::default().with_color(self.color).with_width(t);
-        // 线心内缩半个线宽，保证笔画完全落在画布内（否则会被裁掉一半）
-        let i = t * 0.5;
-        // 四条边用同一段"沿边交替画 dash"的代码，避免写四遍
-        let edges = [
-            (Point::new(i, i), Point::new(w - i, i)),
-            (Point::new(w - i, i), Point::new(w - i, h - i)),
-            (Point::new(w - i, h - i), Point::new(i, h - i)),
-            (Point::new(i, h - i), Point::new(i, i)),
-        ];
-        for (a, b) in edges {
-            let (dx, dy) = (b.x - a.x, b.y - a.y);
-            let len = (dx * dx + dy * dy).sqrt();
-            if len <= 0.0 {
-                continue;
-            }
-            let (ux, uy) = (dx / len, dy / len);
-            let mut pos = 0.0_f32;
-            while pos < len {
-                let end = (pos + self.dash).min(len);
-                let p0 = Point::new(a.x + ux * pos, a.y + uy * pos);
-                let p1 = Point::new(a.x + ux * end, a.y + uy * end);
-                let path = Path::new(|p| {
-                    p.move_to(p0);
-                    p.line_to(p1);
-                });
-                frame.stroke(&path, stroke);
-                pos = end + self.gap;
-            }
-        }
-        vec![frame.into_geometry()]
-    }
 }
 
 impl<Message> iced::widget::canvas::Program<Message> for Radical {
