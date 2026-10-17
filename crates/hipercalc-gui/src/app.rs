@@ -101,6 +101,12 @@ const KEY_GAP: f32 = 5.0;
 /// 排出来大约就是这么宽；窄了会把标签折行。
 const SETTING_LABEL_W: f32 = 118.0;
 
+/// 自绘模糊的降采样倍数：8 意味着 940×860 的窗口先缩到 118×108 再模糊。
+///
+/// 降采样本身就是最强的低通滤波（先缩小再放大天然丢掉高频），
+/// 所以这个值既是"模糊程度"也是"省算力"的旋钮。
+const BG_DOWNSCALE: u32 = 8;
+
 /// 历史区滚动容器的 Id（`snap_to` 用它定位）
 const HISTORY_ID: &str = "hipercalc-history";
 
@@ -231,6 +237,11 @@ pub struct State {
     /// 用户明确要求："当历史已经拉到最新的计算，那么再计算新的就应该自动滑动到最下面，
     /// 如果原来不在最新的计算，就不需要滚动" —— 翻旧记录时不能被强行拽回底部。
     at_bottom: bool,
+    /// **自绘模糊**得到的背景图（`None` = 还没抓到 / 抓不到）。
+    ///
+    /// DWM 的亚克力在这套架构下不可用（wgpu 全客户区自绘把它盖住了），
+    /// 所以"真的能看到桌面"只能自己抓屏 + 模糊。见 `crate::backdrop`。
+    bg: Option<iced::widget::image::Handle>,
     /// 是否把设置写回状态文件。
     ///
     /// ⚠️ **测试构造出来的 `State` 必须关掉它**（[`State::default`] 里是 `false`）——
@@ -377,6 +388,10 @@ pub enum Message {
     SetLang(UiLang),
     /// 设置面板：切换数学字体（传 [`MathFont::ALL`] 的下标）
     SetMathFont(usize),
+    /// 抓一帧自绘模糊背景（定时触发）
+    CaptureBg,
+    /// 抓回来了
+    BgCaptured(Option<crate::backdrop::Backdrop>),
     /// 历史区滚动（用来记住"用户是不是停在底部"）
     HistoryScrolled(iced::widget::scrollable::Viewport),
     /// 桌面模糊探测完成（`backdrop::probe` 的回传）
@@ -413,7 +428,15 @@ pub fn boot() -> (State, Task<Message>) {
     let dark = s.dark;
     (
         s,
-        Task::perform(crate::backdrop::probe(dark), Message::AcrylicProbed),
+        Task::batch([
+            Task::perform(crate::backdrop::probe(dark), Message::AcrylicProbed),
+            // 立刻抓第一帧（否则要等定时的第一次触发，头两秒背景是空的）。
+            // 窗口刚起来时 `GetWindowRect` 可能还没尺寸，抓失败也不要紧 —— 定时那路会补上。
+            Task::perform(
+                async { crate::backdrop::capture_window_blurred(BG_DOWNSCALE) },
+                Message::BgCaptured,
+            ),
+        ]),
     )
 }
 
@@ -458,6 +481,7 @@ impl State {
             wrap: prefs.wrap,
             // 启动时视作在底部（`anchor_bottom` 也会把初始位置放到底部）
             at_bottom: true,
+            bg: None,
             glass_tint: prefs.glass_tint,
             shadow: prefs.shadow,
             persist,
@@ -663,6 +687,23 @@ impl State {
                         HISTORY_ID,
                         iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
                     );
+                }
+            }
+            Message::CaptureBg => {
+                // 抓屏 + 模糊是阻塞的（BitBlt + 两趟 box blur，约几毫秒到十几毫秒），
+                // 丢进 Task 让 runtime 在线程池里跑，UI 线程不等。
+                return Task::perform(
+                    async { crate::backdrop::capture_window_blurred(BG_DOWNSCALE) },
+                    Message::BgCaptured,
+                );
+            }
+            Message::BgCaptured(bd) => {
+                if let Some(b) = bd {
+                    self.bg = Some(iced::widget::image::Handle::from_rgba(
+                        b.width, b.height, b.rgba,
+                    ));
+                    // 告诉根容器"下面有东西了，你可以全透了"
+                    theme::set_bg_ready(true);
                 }
             }
             Message::HistoryScrolled(viewport) => {
@@ -1057,7 +1098,23 @@ impl State {
         // 根容器负责"透出桌面"：亚克力成功时背景全透，失败时不透明。
         // 这一步**必须有** —— 窗口开了 transparent，若根容器不给背景，
         // 没成功启用亚克力时就会露出一片黑/花屏。
-        container(content)
+        // 最底层：**自绘模糊**的背景图（抓屏 + 模糊，见 `crate::backdrop`）。
+        // 它必须垫在 `content` **之下** —— 上面的面板是半透明的，
+        // 透过它们看到的就是这张图。抓不到时退回氛围底色。
+        let layered: Element<'_, Message> = match &self.bg {
+            Some(handle) => stack![
+                iced::widget::image(handle.clone())
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    // 抓的是窗口那块屏幕，尺寸与客户区基本一致，直接拉伸填满
+                    .content_fit(iced::ContentFit::Fill),
+                content,
+            ]
+            .into(),
+            None => content,
+        };
+
+        container(layered)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(theme::root)
@@ -1937,6 +1994,14 @@ fn elapsed_text(d: std::time::Duration) -> String {
 pub fn subscription(_state: &State) -> iced::Subscription<Message> {
     let window_events = iced::window::events().map(|(_id, ev)| match ev {
         iced::window::Event::Opened { .. } => Message::WindowOpened,
+        // ⚠️ **窗口动了就重抓背景**。背景图是"窗口背后那块屏幕"的快照，
+        // 窗口一移动它就和实际位置错开了 —— 看起来像贴了张不动的壁纸。
+        //
+        // ⚠️ iced 0.14 没有 `iced::time::every`（那需要额外的 feature），
+        // 所以这里**没有定时刷新**：桌面内容变化（别的窗口动了）不会自动跟上。
+        // 拖动窗口时会重抓，够用；要更实时就得引入 `time` feature 或自己写
+        // `Subscription::run`。
+        iced::window::Event::Moved(_) | iced::window::Event::Resized(_) => Message::CaptureBg,
         // 其余窗口事件本项目暂时不关心，映射成一个不会被处理的占位
         _ => Message::Noop,
     });
