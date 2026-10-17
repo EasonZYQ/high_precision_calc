@@ -848,6 +848,16 @@ impl State {
         self.input.clone()
     }
 
+    /// 把**显示符号**还原成求值器认识的函数名。
+    ///
+    /// 输入栏里 `∑` / `∏` 是"符号本身"（用户要求：不要用函数名，否则光标在
+    /// `sum` 中间移动时会把它拆成 `sumx`，排版立刻崩成文本）。
+    /// 但求值器只认 `sum(f,k,a,b)` / `prod(f,k,a,b)`，所以在这条边界上做一次映射 ——
+    /// **显示与计算彻底解耦**。
+    fn normalize_for_eval(text: &str) -> String {
+        text.replace('∑', "sum").replace('∏', "prod")
+    }
+
     /// 求值：把请求**交给后台 worker**，立刻返回一个等待结果的 task。
     ///
     /// ## 多行怎么处理
@@ -892,13 +902,17 @@ impl State {
         // 历史里显示的原文 = 用户敲的全部内容（多行保留换行，便于回看）
         let src = lines.join("\n");
         self.last_input = src.clone();
+        // ⚠️ **求值走另一份文本**：`∑` / `∏` 要换成 `sum` / `prod`（见 `normalize_for_eval`）。
+        // 历史里仍显示用户敲的原文，两边不互相污染。
+        let eval_src = Self::normalize_for_eval(&src);
+        let eval_lines: Vec<String> = lines.iter().map(|l| Self::normalize_for_eval(l)).collect();
         // 求值后清空输入框，符合计算器的直觉（现在就清 —— 结果回来时用户可能
         // 已经在敲下一句了，那时再清会把新打的内容一起抹掉）
         self.clear_input();
         self.busy = true;
 
         // 记下这次请求（测试要能"补等一次"，见 `await_pending_for_test`）
-        self.pending = Some((src.clone(), lines.clone()));
+        self.pending = Some((eval_src.clone(), eval_lines.clone()));
 
         // ⚠️ **只构造 future、不 poll 它**。`evaluator.eval` 内部只做两件事：
         // 把请求推给 worker、返回一条由 `oneshot` 唤醒的 future。
@@ -912,7 +926,7 @@ impl State {
         // 而当时的 `wait` 内部是自旋等待循环 ⇒ `update` 原地等求值跑完
         // ⇒ 大输入依然「未响应」。现在 `eval` 返回的 future 不含任何等待代码，
         // 谁也无法在构造阶段把线程占住（`evaluator` 里有一条测试守着这一点）。
-        let fut = self.evaluator.eval(src, lines);
+        let fut = self.evaluator.eval(eval_src, eval_lines);
         Task::perform(fut, Message::Evaluated)
     }
 

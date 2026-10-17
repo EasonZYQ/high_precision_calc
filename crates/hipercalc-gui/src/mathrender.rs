@@ -483,15 +483,20 @@ impl Parser {
                     // 语法来自 core 的 `sum` / `prod`（见 `keypad::FN_GROUPS`：
                     // `sum(f,k,a,b)`）。四个参数的含义：
                     // 被运算式 / 变量 / 下限 / 上限。
-                    "sum" | "prod" | "int" | "lim" | "diff" => {
-                        let inner_at = at + name.len();
+                    // `∑` / `∏` 与 `sum` / `prod` 等价 —— 键盘插入的是**符号本身**
+                    // （用户要求：不要用函数名，否则光标在 `sum` 中间移动时会把它
+                    // 拆成 `sumx`，排版立刻崩成文本）。
+                    "sum" | "prod" | "int" | "lim" | "diff" | "∑" | "∏" => {
+                        // ⚠️ 用**字符数**而不是 `name.len()`（字节数）：
+                        // `∑` 的 UTF-8 是 3 字节，用字节算偏移会把它后面的位置全带偏。
+                        let inner_at = at + name.chars().count();
                         let (inner, consumed) = self.parse_call_args();
                         if !consumed {
                             return Some(Node::Text(name));
                         }
                         let kind = match name.as_str() {
-                            "sum" => BigKind::Sum,
-                            "prod" => BigKind::Prod,
+                            "sum" | "∑" => BigKind::Sum,
+                            "prod" | "∏" => BigKind::Prod,
                             "int" => BigKind::Integral,
                             "lim" => BigKind::Limit,
                             _ => BigKind::Diff,
@@ -819,15 +824,20 @@ pub fn build<'a, M: Clone + 'a>(
             // 用它画出来的方框只有 10px 左右，用户实测"小到看不清"。
             // 占位框是"这里要填东西"的提示，得看得见才有用 ——
             // 放大到正文的 0.85 倍，同时仍然比正文矮一点（不喧宾夺主）。
+            // ⚠️ **必须给一个绝对下限**：上下限的字号只有正文的 0.52 倍，
+            // 再乘 0.85 只剩 8.4px —— 那么小的方框，鼠标根本点不中
+            //（用户实测："对于上下的框，鼠标无法选中"）。
+            // 13px 是"视觉上不喧宾夺主、又能稳稳点中"的折中值。
             let glyph_style = Style2 {
-                size: style.size * 0.85,
+                size: (style.size * 0.85).max(13.0),
                 ..style
             };
             let glyph = plain("□", glyph_style);
             match on_placeholder {
                 Some(f) => button(glyph)
-                    // 热区比字形略大一圈：单字符本来就难点中
-                    .padding([1, 1])
+                    // 热区比字形大一圈：单个字符本来就难点中，
+                    // 而上下限附近的方框周围几乎没有别的可点区域
+                    .padding([3, 3])
                     .style(theme::bare_button)
                     .on_press(f(*at))
                     .into(),
