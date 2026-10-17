@@ -106,7 +106,7 @@ const SETTING_LABEL_W: f32 = 118.0;
 ///
 /// 抽成常量是因为它们**必须相等** —— 不等的话 `Row` 会把矮的那个拉伸，
 /// 观感立刻散架（第一版就是高度不一致，按钮被压成 22px 细线）。
-const INPUT_HEIGHT: f32 = 54.0;
+const INPUT_HEIGHT: f32 = 72.0;
 
 /// 输入框的 widget id。
 ///

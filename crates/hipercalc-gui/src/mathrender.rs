@@ -815,7 +815,15 @@ pub fn build<'a, M: Clone + 'a>(
         // 用 `□`（U+25A1 WHITE SQUARE）而不是 `▯`：前者在几乎任何字体里都有，
         // 缺字退化成豆腐块的风险最小。
         Node::Empty { at } => {
-            let glyph = plain("□", style);
+            // ⚠️ **不要继承上下限的小字号**：上下限是 `size * 0.52`，
+            // 用它画出来的方框只有 10px 左右，用户实测"小到看不清"。
+            // 占位框是"这里要填东西"的提示，得看得见才有用 ——
+            // 放大到正文的 0.85 倍，同时仍然比正文矮一点（不喧宾夺主）。
+            let glyph_style = Style2 {
+                size: style.size * 0.85,
+                ..style
+            };
+            let glyph = plain("□", glyph_style);
             match on_placeholder {
                 Some(f) => button(glyph)
                     // 热区比字形略大一圈：单字符本来就难点中
