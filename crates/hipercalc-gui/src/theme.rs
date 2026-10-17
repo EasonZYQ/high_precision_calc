@@ -187,6 +187,22 @@ pub fn set_glass(amount: f32) {
     GLASS_PERCENT.store(pct, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// 「自绘模糊背景」是否已经就绪（抓到图并转成了纹理）。
+///
+/// 就绪时根容器要给**全透**背景 —— 否则下面那层模糊图根本透不上来
+///（和亚克力失败时"材质被自绘内容盖住"是同一个道理，这次是我们自己盖自己）。
+static BG_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 设置自绘模糊背景是否就绪
+pub fn set_bg_ready(ready: bool) {
+    BG_READY.store(ready, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 自绘模糊背景是否就绪
+pub fn bg_ready() -> bool {
+    BG_READY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// 当前玻璃强度（0.0 – 1.0）
 pub fn glass_amount() -> f32 {
     GLASS_PERCENT.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
@@ -423,7 +439,7 @@ pub fn panel_low(_theme: &Theme) -> container::Style {
 pub fn root(_theme: &Theme) -> container::Style {
     let c = colors();
     container::Style {
-        background: Some(if acrylic() {
+        background: Some(if acrylic() || bg_ready() {
             Background::Color(c.backdrop_for(true))
         } else {
             ambient_background(&c)
