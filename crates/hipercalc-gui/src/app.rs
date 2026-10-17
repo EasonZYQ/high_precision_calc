@@ -101,6 +101,9 @@ const KEY_GAP: f32 = 5.0;
 /// 排出来大约就是这么宽；窄了会把标签折行。
 const SETTING_LABEL_W: f32 = 118.0;
 
+/// 历史区滚动容器的 Id（`snap_to` 用它定位）
+const HISTORY_ID: &str = "hipercalc-history";
+
 /// 输入框与右侧 `C` / `=` 按钮的高度。
 ///
 /// 抽成常量是因为它们**必须相等** —— 不等的话 `Row` 会把矮的那个拉伸，
@@ -223,6 +226,11 @@ pub struct State {
     /// `Wrapping::Word` 只在**词边界**折行，而 100 位的整数中间没有词边界 ⇒
     /// 既不折行、容器又只开了垂直滚动 ⇒ 横向溢出被裁。详见 [`mathrender::Style2::wrap`]。
     wrap: bool,
+    /// 历史区是否停在**底部**（新结果要不要自动滚下去，看它）。
+    ///
+    /// 用户明确要求："当历史已经拉到最新的计算，那么再计算新的就应该自动滑动到最下面，
+    /// 如果原来不在最新的计算，就不需要滚动" —— 翻旧记录时不能被强行拽回底部。
+    at_bottom: bool,
     /// 是否把设置写回状态文件。
     ///
     /// ⚠️ **测试构造出来的 `State` 必须关掉它**（[`State::default`] 里是 `false`）——
@@ -369,6 +377,8 @@ pub enum Message {
     SetLang(UiLang),
     /// 设置面板：切换数学字体（传 [`MathFont::ALL`] 的下标）
     SetMathFont(usize),
+    /// 历史区滚动（用来记住"用户是不是停在底部"）
+    HistoryScrolled(iced::widget::scrollable::Viewport),
     /// 桌面模糊探测完成（`backdrop::probe` 的回传）
     AcrylicProbed(bool),
     /// 键盘修饰键状态变化（关键：用来区分 Enter 与 Ctrl+Enter）
@@ -446,6 +456,8 @@ impl State {
                 GuiPrefs::default().glass
             },
             wrap: prefs.wrap,
+            // 启动时视作在底部（`anchor_bottom` 也会把初始位置放到底部）
+            at_bottom: true,
             glass_tint: prefs.glass_tint,
             shadow: prefs.shadow,
             persist,
@@ -644,6 +656,18 @@ impl State {
                     precise,
                     elapsed: out.elapsed,
                 });
+                // ⚠️ **贴底跟随**：只有"原本就在底部"时才自动滚下去。
+                // 用户翻旧记录时（不在底部）不该被强行拽走。
+                if self.at_bottom {
+                    return iced::widget::operation::snap_to(
+                        HISTORY_ID,
+                        iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+                    );
+                }
+            }
+            Message::HistoryScrolled(viewport) => {
+                // 0.98 的余量：滚动条取整后很难精确等于 1.0
+                self.at_bottom = viewport.relative_offset().y >= 0.98;
             }
             Message::AcrylicProbed(ok) => {
                 // ⚠️ 探测**只能在窗口创建之后**做，而且要在它出现在
@@ -1018,7 +1042,16 @@ impl State {
             // 看起来就是把整个界面盖住。我当时只改了高度，没发现根因在这里。
             stack![body, backdrop, panel].into()
         } else {
-            body.into()
+            // ⚠️ **单独包一层 `stack!`，哪怕只有一个孩子**。
+            //
+            // 用户实测："历史计算较多时，打开设置就会拉到最早的历史"。
+            // 根因：两个浮层分支返回的是 `stack![body, ..]`，而这里直接返回 `body`
+            // —— 于是 `body` 在 widget 树里的**位置不同**（一个在 stack 的
+            // `children[0]`，一个就是根），iced 按位置匹配状态 ⇒ 滚动位置被判为
+            // "新容器"而重置到顶部。
+            //
+            // 统一成"body 永远是 stack 的第 0 个孩子"，状态就能跨开合保留下来。
+            stack![body].into()
         };
 
         // 根容器负责"透出桌面"：亚克力成功时背景全透，失败时不透明。
@@ -1178,9 +1211,12 @@ impl State {
             }
         };
         let inner = scrollable(col.padding([10, 10]))
+            .id(HISTORY_ID)
             .anchor_bottom()
             .height(Length::Fill)
-            .direction(direction);
+            .direction(direction)
+            // 记住"用户是不是在底部"（见 `State::at_bottom`）
+            .on_scroll(Message::HistoryScrolled);
 
         container(inner)
             .width(Length::Fill)
@@ -1248,7 +1284,10 @@ impl State {
                 } else {
                     theme::colors().text
                 }),
-                monospace: !math,
+                // ⚠️ **统一用数学字体**（用户要求：LineIO 与 MathIO 字体要一致）。
+                // 之前 LineIO 走等宽字体（`!math`），观感上与 MathIO 判若两套；
+                // 等宽的好处只是"小数位对齐"，代价是整块结果区看起来像另一款软件。
+                monospace: false,
                 wrap: self.wrap,
             },
             // 历史是只读的：结果里的占位框不可点
