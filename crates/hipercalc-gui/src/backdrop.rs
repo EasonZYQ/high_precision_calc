@@ -306,7 +306,7 @@ pub struct Backdrop {
 ///
 /// - `factor` 越大越模糊、也越省算力：**降采样本身就是最强的低通滤波**，
 ///   先缩小再放大天然丢掉高频细节。8 是实测够用的值
-///  （940×860 的窗口 → 118×108，后续模糊几乎不要钱）。
+///   （940×860 的窗口 → 118×108，后续模糊几乎不要钱）。
 /// - 抓屏前会把自己的窗口**临时**排除在捕获之外（`WDA_EXCLUDEFROMCAPTURE`），
 ///   否则抓到的会是自己（半透明界面与桌面混在一起 ⇒ 重影）。
 ///   抓完立刻恢复，所以用户截图/录屏里窗口**照常出现**。
@@ -400,48 +400,96 @@ fn blur_downsample(src: &[u8], w: usize, h: usize, factor: usize) -> Backdrop {
     }
 }
 
-/// 分离式 box blur：先横后竖（原地，用一行/一列临时缓冲）
+/// 分离式 box blur：先横后竖。
+///
+/// ## ⚠️ 为什么必须**滑动窗口**
+///
+/// 上一版对每个像素都重新累加 `lo..=hi`（`O(n·r)`）。在**未优化构建**下
+/// 470×430 的图要跑约 1100 万次内层循环 ⇒ 单次模糊上百毫秒 —— 用户实测
+/// 玻璃模式 CPU 10–30%，这是一大块。改成滑动窗口后复杂度是 `O(n)`，
+/// **与半径无关**。
+///
+/// ## ⚠️ 为什么两趟都必须用临时缓冲
+///
+/// 上一版的**纵向**那趟是"边读边写同一个 `buf`"：算 `y` 时要读 `[y-r, y+r]`，
+/// 但 `y-r .. y-1` 已经被写成了模糊后的值 ⇒ 那不是 box blur，
+/// 而是一个**向下拖尾的 IIR 滤波**（上下不对称）。现在先把整行/整列拷进
+/// `tmp` 再算，结果才是对称的、真正意义上的盒式模糊。
 fn box_blur(buf: &mut [u8], w: usize, h: usize, radius: usize) {
-    let r = radius.min(w.max(1) - 1).max(1);
-    let mut tmp = vec![0u8; w * 4];
+    let r = radius.max(1);
+    let mut tmp = vec![0u8; w.max(h).max(1) * 4];
 
-    // 横向
+    // ① 横向：整行拷进 `tmp` → 从 `tmp` 滑动求和 → 写回 `buf`
     for y in 0..h {
-        let row = &mut buf[y * w * 4..(y + 1) * w * 4];
-        tmp.copy_from_slice(row);
-        for x in 0..w {
-            let lo = x.saturating_sub(r);
-            let hi = (x + r).min(w - 1);
-            let mut acc = [0u32; 3];
-            for xx in lo..=hi {
-                acc[0] += tmp[xx * 4] as u32;
-                acc[1] += tmp[xx * 4 + 1] as u32;
-                acc[2] += tmp[xx * 4 + 2] as u32;
+        let base = y * w * 4;
+        tmp[..w * 4].copy_from_slice(&buf[base..base + w * 4]);
+
+        let hi0 = r.min(w - 1);
+        let mut acc = [0u32; 3];
+        for xx in 0..=hi0 {
+            for c in 0..3 {
+                acc[c] += tmp[xx * 4 + c] as u32;
             }
-            let n = (hi - lo + 1) as u32;
-            row[x * 4] = (acc[0] / n) as u8;
-            row[x * 4 + 1] = (acc[1] / n) as u8;
-            row[x * 4 + 2] = (acc[2] / n) as u8;
+        }
+        let mut n = (hi0 + 1) as u32;
+
+        for x in 0..w {
+            for c in 0..3 {
+                buf[base + x * 4 + c] = (acc[c] / n) as u8;
+            }
+            // 窗口右移一格：右边进来一个、左边出去一个
+            let add = x + r + 1;
+            if add < w {
+                for c in 0..3 {
+                    acc[c] += tmp[add * 4 + c] as u32;
+                }
+                n += 1;
+            }
+            if x >= r {
+                let sub = x - r;
+                for c in 0..3 {
+                    acc[c] -= tmp[sub * 4 + c] as u32;
+                }
+                n -= 1;
+            }
         }
     }
 
-    // 纵向（同样的滑动窗口，只是步长是整行）
+    // ② 纵向：同样先把整列拷进 `tmp`（步长是整行），再滑动
     for x in 0..w {
         for y in 0..h {
-            let lo = y.saturating_sub(r);
-            let hi = (y + r).min(h - 1);
-            let mut acc = [0u32; 3];
-            for yy in lo..=hi {
-                let i = (yy * w + x) * 4;
-                acc[0] += buf[i] as u32;
-                acc[1] += buf[i + 1] as u32;
-                acc[2] += buf[i + 2] as u32;
+            let i = (y * w + x) * 4;
+            tmp[y * 4..y * 4 + 4].copy_from_slice(&buf[i..i + 4]);
+        }
+
+        let hi0 = r.min(h - 1);
+        let mut acc = [0u32; 3];
+        for yy in 0..=hi0 {
+            for c in 0..3 {
+                acc[c] += tmp[yy * 4 + c] as u32;
             }
-            let n = (hi - lo + 1) as u32;
+        }
+        let mut n = (hi0 + 1) as u32;
+
+        for y in 0..h {
             let o = (y * w + x) * 4;
-            buf[o] = (acc[0] / n) as u8;
-            buf[o + 1] = (acc[1] / n) as u8;
-            buf[o + 2] = (acc[2] / n) as u8;
+            for c in 0..3 {
+                buf[o + c] = (acc[c] / n) as u8;
+            }
+            let add = y + r + 1;
+            if add < h {
+                for c in 0..3 {
+                    acc[c] += tmp[add * 4 + c] as u32;
+                }
+                n += 1;
+            }
+            if y >= r {
+                let sub = y - r;
+                for c in 0..3 {
+                    acc[c] -= tmp[sub * 4 + c] as u32;
+                }
+                n -= 1;
+            }
         }
     }
 }
@@ -540,11 +588,11 @@ mod platform {
         fn DeleteDC(hdc: Hdc) -> Bool;
     }
 
-    /// `SetStretchBltMode` 的 `HALFTONE`：缩小的时候做像素平均。
-    ///
-    /// 背景本来就要模糊，用 `COLORONCOLOR`（最快）也行 —— 但 `HALFTONE` 在
-    /// 缩小倍数不大时更不容易出摩尔纹，代价可以忽略（图只有十几万像素）。
+    /// `SetStretchBltMode` 的 `HALFTONE`：缩小的时候做**像素平均**。
+    /// 质量最好，但 GDI 要为每一个目标像素去平均一大块源像素 —— 最慢。
     const HALFTONE: i32 = 4;
+    /// `COLORONCOLOR`：直接**丢掉**多余的行列，不做平均。快得多。
+    const COLORONCOLOR: i32 = 3;
 
     #[repr(C)]
     struct Rect {
@@ -598,10 +646,8 @@ mod platform {
 
             let result = grab_inner(x, y, w, h, dw, dh);
 
-            if excluded {
-                if let Some(h) = hwnd {
-                    SetWindowDisplayAffinity(h, WDA_NONE);
-                }
+            if excluded && let Some(h) = hwnd {
+                SetWindowDisplayAffinity(h, WDA_NONE);
             }
             result
         }
@@ -627,8 +673,13 @@ mod platform {
             let old = SelectObject(mem, bmp as Hgdiobj);
 
             let mut out = None;
-            // HALFTONE：缩小的时候做像素平均（不出摩尔纹）
-            SetStretchBltMode(mem, HALFTONE);
+            // ⚠️ **缩放模式按缩小倍数决定**（用户要求 CPU < 5%）：
+            // - 只缩到 1/2（模糊强度 = 0，用户要的是"清晰的桌面"）⇒ 必须
+            //   `HALFTONE`，否则直接丢像素会出现明显锯齿。
+            // - 缩到 1/4 及更小 ⇒ 换 `COLORONCOLOR`。反正后面还有 box blur，
+            //   丢掉的高频细节本来也会被抹平，而 GDI 这一趟能快不少。
+            let ratio = w / dw.max(1);
+            SetStretchBltMode(mem, if ratio <= 2 { HALFTONE } else { COLORONCOLOR });
             if StretchBlt(
                 mem, 0, 0, dw as i32, dh as i32, screen, x, y, w as i32, h as i32, SRCCOPY,
             ) != 0
@@ -732,6 +783,32 @@ mod tests {
             );
             assert_eq!(px[3], 255, "GDI 抓来的 alpha 恒为 0，必须补成 255");
         }
+    }
+
+    /// box blur 必须**上下左右对称**。
+    ///
+    /// 上一版的纵向那趟是"边读边写同一个缓冲"：算第 `y` 行时要读 `[y-r, y+r]`，
+    /// 可 `y-r .. y-1` 已经被写成了模糊后的值 ⇒ 那不是盒式模糊，而是一个
+    /// **向下拖尾**的 IIR 滤波，上下不对称。这条用例专门锁住对称性。
+    #[test]
+    fn box_blur_is_symmetric() {
+        let (w, h) = (9usize, 9usize);
+        let mut buf = vec![0u8; w * h * 4];
+        for px in buf.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+        let at = |x: usize, y: usize| (y * w + x) * 4;
+        let c = at(4, 4);
+        buf[c] = 255;
+        buf[c + 1] = 255;
+        buf[c + 2] = 255;
+        box_blur(&mut buf, w, h, 2);
+
+        let v = |x: usize, y: usize| buf[at(x, y)] as i32;
+        assert_eq!(v(2, 4), v(6, 4), "左右应对称：{} vs {}", v(2, 4), v(6, 4));
+        assert_eq!(v(4, 2), v(4, 6), "上下应对称：{} vs {}", v(4, 2), v(4, 6));
+        assert_eq!(v(3, 4), v(4, 3), "横竖两个方向等价位置应相等");
+        assert!(v(4, 4) > 0, "中心不该被抹成 0");
     }
 
     /// 极端参数不能 panic（0 尺寸、factor 比图还大）

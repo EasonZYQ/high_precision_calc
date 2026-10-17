@@ -26,19 +26,31 @@
 use iced::wgpu;
 use iced::widget::shader;
 use iced::{Rectangle, mouse};
+use std::sync::Arc;
 
 /// 折射玻璃：把一张 RGBA 背景图按"凸面玻璃"扭曲后绘制。
 ///
 /// `pixels` 是**已经模糊过**的背景（抓屏 + 降采样 + box blur 的产物），
 /// 折射只负责"弯"，模糊由 [`crate::backdrop`] 负责 —— 两件事分开，各自可调。
+///
+/// ## ⚠️ 为什么 `pixels` 是 `Arc<Vec<u8>>` 而不是 `Vec<u8>`
+///
+/// `draw()` **每次重绘都会被调用**，如果里面 `self.pixels.clone()`，
+/// 800KB 的图就被 memcpy 一遍 —— 60fps 下是 48MB/s 的纯内存带宽浪费。
+/// 用户实测玻璃模式 CPU 10–30%，这是主因之一。`Arc` 只加一次引用计数。
 #[derive(Debug, Clone)]
 pub struct Refraction {
     /// RGBA8 像素，长度必须是 `width * height * 4`
-    pub pixels: Vec<u8>,
+    pub pixels: Arc<Vec<u8>>,
     pub width: u32,
     pub height: u32,
     /// 扭曲强度：0 = 完全不弯（退化成普通背景图），1 = 最明显
     pub strength: f32,
+    /// **像素版本号**：每次抓到新背景时 +1。
+    ///
+    /// `prepare()` 每帧都会被调用，而 60fps 下重传 800KB 纹理是纯浪费。
+    /// 版本号没变就只更新 uniform，跳过 `write_texture`。
+    pub version: u64,
 }
 
 impl<Message> shader::Program<Message> for Refraction {
@@ -52,21 +64,24 @@ impl<Message> shader::Program<Message> for Refraction {
         _bounds: Rectangle,
     ) -> Self::Primitive {
         RefractionPrimitive {
-            pixels: self.pixels.clone(),
+            // ⚠️ `Arc::clone` 只加引用计数（纳秒级），不复制像素
+            pixels: Arc::clone(&self.pixels),
             width: self.width,
             height: self.height,
             strength: self.strength,
+            version: self.version,
         }
     }
 }
 
-/// 交给 GPU 的那一份数据（自带像素，不借用 `Refraction`）
+/// 交给 GPU 的那一份数据（共享像素，不复制）
 #[derive(Debug)]
 pub struct RefractionPrimitive {
-    pixels: Vec<u8>,
+    pixels: Arc<Vec<u8>>,
     width: u32,
     height: u32,
     strength: f32,
+    version: u64,
 }
 
 impl shader::Primitive for RefractionPrimitive {
@@ -98,6 +113,8 @@ pub struct RefractionPipeline {
     bind_group: Option<wgpu::BindGroup>,
     /// uniform：`size.xy` + `strength` + padding，共 16 字节
     uniform: wgpu::Buffer,
+    /// 上一次上传的像素版本号（相同就跳过 `write_texture`）
+    last_version: u64,
 }
 
 const WGSL: &str = r#"
@@ -255,6 +272,7 @@ impl RefractionPipeline {
             texture: None,
             bind_group: None,
             uniform,
+            last_version: u64::MAX, // 保证第一次一定会传
         }
     }
 
@@ -272,6 +290,22 @@ impl RefractionPipeline {
         let expected = (prim.width as usize) * (prim.height as usize) * 4;
         if prim.pixels.len() < expected {
             // 像素长度对不上就什么都不画（宁可空着，也不要读到越界数据）
+            return;
+        }
+
+        // ── ① uniform **每帧都写**：`strength` 可能被拖滑块改、尺寸也可能变 ──
+        let mut data = [0u8; 16];
+        data[0..4].copy_from_slice(&size.width.to_le_bytes());
+        data[4..8].copy_from_slice(&size.height.to_le_bytes());
+        data[8..12].copy_from_slice(&prim.strength.clamp(0.0, 1.0).to_le_bytes());
+        queue.write_buffer(&self.uniform, 0, &data);
+
+        // ── ② 像素**没变就到此为止** ──────────────────────────────────────
+        //
+        // 用户实测玻璃模式 CPU 10–30%。`prepare()` 是每帧调用的，而抓屏 500ms
+        // 才来一帧新数据 —— 中间那 29 帧全在做 800KB 的 `write_texture`，
+        // 纯浪费。版本号一比对就能跳过。
+        if prim.version == self.last_version && self.bind_group.is_some() {
             return;
         }
 
@@ -325,12 +359,7 @@ impl RefractionPipeline {
             );
         }
 
-        // uniform：size.xy / strength / pad
-        let mut data = [0u8; 16];
-        data[0..4].copy_from_slice(&size.width.to_le_bytes());
-        data[4..8].copy_from_slice(&size.height.to_le_bytes());
-        data[8..12].copy_from_slice(&prim.strength.clamp(0.0, 1.0).to_le_bytes());
-        queue.write_buffer(&self.uniform, 0, &data);
+        // uniform 已经在函数开头写过了（见 ①）—— 这里只补 bind group
 
         if self.bind_group.is_none()
             && let Some((_, view, _)) = &self.texture
@@ -354,6 +383,9 @@ impl RefractionPipeline {
                 ],
             }));
         }
+
+        // 记下这次传的是哪一版像素 —— 下一帧就能靠它跳过重传
+        self.last_version = prim.version;
     }
 
     /// 画全屏三角形

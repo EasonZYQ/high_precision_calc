@@ -29,6 +29,8 @@
 //! （`content.cursor()`）并**局部编辑**（`content.perform(Edit::Insert(..))`）。
 //! 虚拟键盘必须"插到光标处"，`text_input` 做不到这件事。
 
+use std::sync::Arc;
+
 use iced::widget::{
     Column, Row, Space, button, column, container, row, rule, scrollable, slider, stack, text,
     text_input,
@@ -139,7 +141,6 @@ const INPUT_HEIGHT: f32 = 72.0;
 /// 必须显式给一个：用户要求"输入框的光标应当一直显示"。iced 只在**聚焦**时画光标，
 /// 所以要能对它做 `operation::focus` / `operation::is_focused`，
 /// 而这两个操作都得靠 id 定位（见 [`State::ensure_input_focus`]）。
-
 /// 把 `a²` / `aᵇ` 这类键面拆成 `(底, 上标)`。
 ///
 /// 拆开排才能得到"上标"的观感：直接当普通文本排的话，`²` 与 `a` 等高，
@@ -275,7 +276,20 @@ pub struct State {
     /// 为什么除了 `bg` 还要单独存一份：折射 shader 要**自己上传纹理**，
     /// 而 `image::Handle` 是个不透明句柄，拿不回像素数据。
     /// 降采样后的图很小（940×860 / 8 ≈ 118×108 ≈ 51KB），两份并存无所谓。
-    bg_pixels: Option<(Vec<u8>, u32, u32)>,
+    ///
+    /// ⚠️ **必须是 `Arc`**：`draw()` 每帧都跑，以前 `px.clone()` 是每帧 51KB~800KB 的
+    /// 深拷贝。`Arc::clone` 只加一次引用计数。
+    bg_pixels: Option<(Arc<Vec<u8>>, u32, u32)>,
+    /// 抓屏数据的**版本号**，每次 `BgCaptured`（且内容真的变了）自增。
+    ///
+    /// 折射 shader 的 `prepare()` 每帧都调，但抓屏最快 500ms 才来一帧新数据 ——
+    /// 靠版本号比对就能跳过中间那些帧的 `write_texture`（纯浪费）。
+    bg_version: u64,
+    /// 连续多少次抓屏**内容与上次完全一致**。
+    ///
+    /// 桌面静止时这是常态。用来做**自适应轮询**：一直没变就把节奏放慢，
+    /// 一有变化立刻回到最快 —— "实时"和"省电"两边都要。
+    bg_idle: u32,
     /// 是否把设置写回状态文件。
     ///
     /// ⚠️ **测试构造出来的 `State` 必须关掉它**（[`State::default`] 里是 `false`）——
@@ -529,6 +543,8 @@ impl State {
             at_bottom: true,
             bg: None,
             bg_pixels: None,
+            bg_version: 0,
+            bg_idle: 0,
             acrylic_tint: prefs.glass_tint,
             shadow: prefs.shadow,
             persist,
@@ -605,6 +621,16 @@ impl State {
             Message::SetTexture(t) => {
                 self.texture = t;
                 theme::set_texture(t);
+                // ⚠️ **模式一变，旧像素与旧句柄必须整体作废**。
+                //
+                // 否则会撞上这样的 bug：玻璃模式下 `self.bg` 本来就被刻意留成
+                // `None`（它走 shader，见 `BgCaptured`），切到亚克力后抓到的像素
+                // 恰好与上次相同 ⇒ 走"内容没变"的快路径直接返回，
+                // `self.bg` 永远是 `None` ⇒ **亚克力模式没有背景**。
+                self.bg = None;
+                self.bg_pixels = None;
+                self.bg_idle = 0;
+                theme::set_bg_ready(false);
                 // 模式变了：重新起一轮抓屏（`Off` 会被循环自己拒掉）
                 return Task::perform(
                     async { crate::backdrop::capture_window_blurred(blur_factor()) },
@@ -614,6 +640,9 @@ impl State {
             Message::SetGlassBlur(v) => {
                 self.glass_blur = v.clamp(0.0, 1.0);
                 theme::set_glass2_blur(self.glass_blur);
+                // 模糊强度变了 ⇒ 抓屏的降采样倍数变了 ⇒ 下一张一定与现在不同。
+                // 把"静止计数"清掉，让轮询回到 500ms，拖滑条时背景跟得上。
+                self.bg_idle = 0;
             }
             Message::SetGlassTint2(v) => {
                 self.glass_tint2 = v.clamp(0.0, 1.0);
@@ -627,6 +656,8 @@ impl State {
                     self.glass_backup = self.acrylic_blur;
                 }
                 theme::set_glass(self.acrylic_blur);
+                // 与 `SetGlassBlur` 同理：降采样倍数变了，轮询要回到快节奏
+                self.bg_idle = 0;
             }
             Message::SetAcrylicTint(v) => {
                 // 与 `SetGlass` 同一套路：拖动只重绘，落盘在 `CommitGlass`
@@ -754,9 +785,13 @@ impl State {
                 }
             }
             Message::CaptureBg => {
-                // **玻璃关掉就不抓了**（省 CPU），并把旧图丢掉 —— 否则"关闭玻璃"后
-                // 背景图还留着，界面依旧透出桌面（用户实测："并没有完全消失"）。
-                if theme::glass_amount() <= 0.0 {
+                // **玻璃关掉就不抓了**（省 CPU），并把旧图丢掉。
+                //
+                // ⚠️ 判据是**模式**（`Off`），不是模糊强度 —— 用户实测反馈：
+                // "模糊强度为 0 还是纯色，完全无法看到桌面"。强度 0 只是"不模糊"，
+                // 背景**仍要显示**；之前拿 `glass_amount() <= 0.0` 判断，
+                // 强度一归零就把整个抓屏循环停掉、背景层也跳过，于是只剩纯色。
+                if theme::texture() == theme::Texture::Off {
                     if self.bg.is_some() {
                         self.bg = None;
                         theme::set_bg_ready(false);
@@ -774,11 +809,20 @@ impl State {
                 // iced 0.14 里 `iced::time::every` 需要 `tokio` feature
                 //（`iced_futures::backend::default::time`），而本项目用的是默认的
                 // `thread-pool` —— 两者可能冲突，不值得为一次定时抓屏去换 runtime。
-                // 所以用 Task 链：抓 → 睡 500ms → 再发一次 `CaptureBg`。
+                // 所以用 Task 链：抓 → 睡 → 再发一次 `CaptureBg`。
                 // 循环只在"玻璃开着"时成立（上面那个分支会中断它）。
+                //
+                // ⚠️ **间隔是自适应的**（用户要求 CPU < 5%）。
+                //
+                // 实测：玻璃模式空闲时 **80% 的 CPU 都花在抓屏**（GDI 回读桌面）
+                // 上 —— 关掉抓屏后从 1.2% 掉到 0.26%。而"桌面一动不动"是绝大多数
+                // 时候的常态，那时每 500ms 重抓一次纯属浪费。
+                // 连续 2 次内容没变 ⇒ 放慢到 **2s**；一检测到变化立刻回到 500ms。
+                // 拖窗口由 `Moved`/`Resized` 事件**立即**触发一次，不受这个间隔影响。
+                let ms = if self.bg_idle >= 2 { 2000 } else { 500 };
                 let next = Task::perform(
-                    async {
-                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    async move {
+                        std::thread::sleep(std::time::Duration::from_millis(ms));
                     },
                     |_| Message::CaptureBg,
                 );
@@ -786,11 +830,44 @@ impl State {
             }
             Message::BgCaptured(bd) => {
                 if let Some(b) = bd {
-                    // 原始像素留给折射 shader（`image::Handle` 拿不回来）
-                    self.bg_pixels = Some((b.rgba.clone(), b.width, b.height));
-                    self.bg = Some(iced::widget::image::Handle::from_rgba(
-                        b.width, b.height, b.rgba,
-                    ));
+                    // ── ① 内容没变就**什么都不做** ─────────────────────────
+                    //
+                    // 这是本次省 CPU 最关键的一步。原来每一轮抓屏都无条件
+                    // `Handle::from_rgba(..)` —— iced 的 `image::Handle` 每建一次
+                    // 就是一个**全新 id**，图集缓存必然 miss，于是每次都要把
+                    // 几十万像素重新拷一遍、重新传进图集。桌面静止时这纯属白干。
+                    //
+                    // 比一次 memcmp（~0.1ms）就能判定"没变"，代价可以忽略。
+                    let same = match &self.bg_pixels {
+                        Some((px, w, h)) => *w == b.width && *h == b.height && px[..] == b.rgba[..],
+                        None => false,
+                    };
+                    if same {
+                        self.bg_idle += 1;
+                        return Task::none();
+                    }
+                    self.bg_idle = 0;
+
+                    // 原始像素留给折射 shader（`image::Handle` 拿不回来）。
+                    // 一次 `Arc::new` 之后，每帧 `draw()` 只 clone 引用计数。
+                    let px = Arc::new(b.rgba.clone());
+                    self.bg_pixels = Some((Arc::clone(&px), b.width, b.height));
+                    // 版本号 +1 ⇒ shader 下一帧才会真的 `write_texture`
+                    self.bg_version += 1;
+
+                    // ── ② 只有亚克力模式才需要 `image::Handle` ───────────────
+                    //
+                    // 玻璃模式画的是**折射 shader**，它自己上传纹理，
+                    // 根本不看 `self.bg`。以前两种模式都建句柄，玻璃模式下
+                    // 那次图集上传是完全白做的（用户实测玻璃模式 CPU 10–30%，
+                    // 这是其中一块）。
+                    self.bg = if theme::texture() == theme::Texture::Acrylic {
+                        Some(iced::widget::image::Handle::from_rgba(
+                            b.width, b.height, b.rgba,
+                        ))
+                    } else {
+                        None
+                    };
                     // 告诉根容器"下面有东西了，你可以全透了"
                     theme::set_bg_ready(true);
                 }
@@ -1195,31 +1272,44 @@ impl State {
         // 透过它们看到的就是这张图。抓不到时退回氛围底色。
         // ⚠️ **玻璃关掉就不叠这层**（用户实测："关闭后并没有完全消失，
         // 而是还有残留的透明"）。否则背景图会一直透出来，面板再实也挡不住。
-        let layered: Element<'_, Message> = match (&self.bg, &self.bg_pixels) {
-            (Some(handle), Some((px, w, h))) if theme::glass_amount() > 0.0 => {
+        // ⚠️ 只看 `bg_pixels`，**不再要求 `self.bg` 一定存在**：
+        // 玻璃模式走 shader，根本用不到 `image::Handle`（见 `BgCaptured`），
+        // 那里刻意把它留成 `None` 来省掉一次图集上传。
+        let layered: Element<'_, Message> = match &self.bg_pixels {
+            Some((px, w, h)) if theme::texture() != theme::Texture::Off => {
                 // 两种质感看到的是**同一张**模糊背景，但画法不同：
                 // - 亚克力：普通贴图（磨砂玻璃，不做形变）
                 // - 玻璃：走**折射 shader** —— 边缘被"压弯"，像一块凸透镜
-                let bg_layer: Element<'_, Message> = if theme::texture() == theme::Texture::Glass {
-                    iced::widget::shader(crate::refraction::Refraction {
-                        pixels: px.clone(),
-                        width: *w,
-                        height: *h,
-                        // 扭曲强度。0.85 是"看得出边缘弯、中间不晃眼"的折中
-                        strength: 0.85,
-                    })
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into()
-                } else {
-                    iced::widget::image(handle.clone())
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        // 抓的是窗口那块屏幕，尺寸与客户区基本一致，直接拉伸填满
-                        .content_fit(iced::ContentFit::Fill)
-                        .into()
-                };
-                stack![bg_layer, content].into()
+                let bg_layer: Option<Element<'_, Message>> =
+                    if theme::texture() == theme::Texture::Glass {
+                        Some(
+                            iced::widget::shader(crate::refraction::Refraction {
+                                pixels: Arc::clone(px),
+                                width: *w,
+                                height: *h,
+                                // 扭曲强度。0.85 是"看得出边缘弯、中间不晃眼"的折中
+                                strength: 0.85,
+                                version: self.bg_version,
+                            })
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .into(),
+                        )
+                    } else {
+                        self.bg.as_ref().map(|handle| {
+                            iced::widget::image(handle.clone())
+                                .width(Length::Fill)
+                                .height(Length::Fill)
+                                // 抓的是窗口那块屏幕，尺寸与客户区基本一致，直接拉伸填满
+                                .content_fit(iced::ContentFit::Fill)
+                                .into()
+                        })
+                    };
+                match bg_layer {
+                    Some(layer) => stack![layer, content].into(),
+                    // 亚克力模式但句柄还没建好（切模式后那一瞬间）：先不叠
+                    None => content,
+                }
             }
             _ => content,
         };
@@ -2674,6 +2764,54 @@ mod tests {
     fn test_state_never_persists() {
         let s = State::default();
         assert!(!s.persist, "`State::default`（测试路径）必须关掉写盘");
+    }
+
+    /// **内容没变的抓屏结果必须被丢弃** —— 这是玻璃模式省 CPU 的核心。
+    ///
+    /// iced 的架构下**任何一条消息**都会触发 `view()` 重建 + 全量重绘，
+    /// 而桌面静止时抓屏每轮拿到的都是同一张图。若每次都换 `image::Handle`、
+    /// 抬版本号，就白搭一次纹理上传 + 一次重绘。
+    ///
+    /// 这里锁住三件事：内容变了才抬版本号、变了才建句柄、没变时累加"静止计数"。
+    #[test]
+    fn identical_backdrop_is_dropped() {
+        let prev = theme::texture();
+        // ⚠️ **顺序不能反**：`State::default()` 自己会 `theme::set_texture(..)`
+        //（用 `GuiPrefs::default()` 的 `texture`），先设再建 State 会被它覆盖掉。
+        let mut s = State::default();
+        theme::set_texture(theme::Texture::Glass);
+        let mk = |v: u8| crate::backdrop::Backdrop {
+            width: 2,
+            height: 1,
+            rgba: vec![v, v, v, 255, v, v, v, 255],
+        };
+
+        // ① 第一张：收下
+        let _ = s.update(Message::BgCaptured(Some(mk(10))));
+        assert_eq!(s.bg_version, 1, "第一张应当被收下");
+        assert_eq!(s.bg_idle, 0);
+        assert!(
+            s.bg.is_none(),
+            "玻璃模式走 shader，不该再建 `image::Handle`（那次上传是白做的）"
+        );
+
+        // ② 完全相同的第二张：丢弃
+        let _ = s.update(Message::BgCaptured(Some(mk(10))));
+        assert_eq!(s.bg_version, 1, "内容一样就不该抬版本号");
+        assert_eq!(s.bg_idle, 1, "静止计数应累加");
+
+        // ③ 真的变了：重新收下
+        let _ = s.update(Message::BgCaptured(Some(mk(200))));
+        assert_eq!(s.bg_version, 2, "内容变了必须抬版本号");
+        assert_eq!(s.bg_idle, 0, "一有变化立刻回到快节奏");
+
+        // ④ 切到亚克力：旧像素作废，且这一次**必须**建出 `image::Handle`
+        let _ = s.update(Message::SetTexture(theme::Texture::Acrylic));
+        assert!(s.bg_pixels.is_none(), "换模式要丢掉旧像素");
+        let _ = s.update(Message::BgCaptured(Some(mk(200))));
+        assert!(s.bg.is_some(), "亚克力模式用 `image` 画背景，句柄必须存在");
+
+        theme::set_texture(prev);
     }
 
     /// 计算中时**不收新单**：连按求值不会积压（否则 worker 会排着算好几次）
