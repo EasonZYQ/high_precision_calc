@@ -29,10 +29,9 @@
 //! （`content.cursor()`）并**局部编辑**（`content.perform(Edit::Insert(..))`）。
 //! 虚拟键盘必须"插到光标处"，`text_input` 做不到这件事。
 
-use iced::widget::text_editor::{Action, Content as EditorContent, Edit, Motion};
 use iced::widget::{
     Column, Row, Space, button, column, container, row, rule, scrollable, slider, stack, text,
-    text_editor, text_input,
+    text_input,
 };
 // `Element` / `Length` / `Pixels` 在 iced 顶层与 `iced::widget` 都可用；
 // 这里从 `iced` 顶层取，与官方示例一致。
@@ -113,7 +112,6 @@ const INPUT_HEIGHT: f32 = 72.0;
 /// 必须显式给一个：用户要求"输入框的光标应当一直显示"。iced 只在**聚焦**时画光标，
 /// 所以要能对它做 `operation::focus` / `operation::is_focused`，
 /// 而这两个操作都得靠 id 定位（见 [`State::ensure_input_focus`]）。
-const INPUT_ID: &str = "hipercalc-input";
 
 /// 把 `a²` / `aᵇ` 这类键面拆成 `(底, 上标)`。
 ///
@@ -189,7 +187,18 @@ pub struct State {
     /// 求值历史，最新在末尾
     history: Vec<Entry>,
     /// 输入框内容（多行编辑器 —— 能读光标、能局部插入）
-    input: EditorContent,
+    /// 输入栏的**文本**。
+    ///
+    /// 自己维护，**不再依赖 `text_editor`**（用户明确要求"自己手写一个输入栏"）。
+    /// 为什么换掉：`text_editor` 的光标只有"行列"坐标，且只能靠 `Motion` 序列
+    /// **逼近**目标位置；而我们真正需要的是**字符偏移**（排版层画光标、点击定位
+    /// 都按字符算）。两套坐标反复换算，正是"点击不准、一输入就跑偏到 `sum` 前面"
+    /// 的根源。
+    input: String,
+    /// 光标位置：**字符**偏移（`0..=input.chars().count()`）。
+    ///
+    /// 它就是唯一的真相 —— 排版层拿它画竖线，点击拿它直接赋值，插入按它切分。
+    caret: usize,
     /// 深色模式
     pub dark: bool,
     /// 玻璃（liquid glass）强度：`0.0` = 关闭（不透明纯色），`1.0` = 最强。
@@ -299,7 +308,10 @@ impl Modes {
 #[derive(Debug, Clone)]
 pub enum Message {
     /// 编辑器内容变化
-    Edit(Action),
+    /// 剪贴板读回来了（Ctrl+V 的第二段）
+    Pasted(Option<String>),
+    /// 按键（自己处理，不再转给 `text_editor`）
+    KeyPressed(iced::keyboard::Key, iced::keyboard::Modifiers),
     /// 按虚拟键盘的某个键：`(行的下标, 列的下标)`
     Key(usize, usize),
     /// 按函数面板的某项：`(分组下标, 项下标)`
@@ -422,7 +434,8 @@ impl State {
         Self {
             precision_text: modes.precision.to_string(),
             acrylic_checked: false,
-            input: EditorContent::new(),
+            input: String::new(),
+            caret: 0,
             history: Vec::new(),
             dark: prefs.dark,
             glass: prefs.glass,
@@ -453,49 +466,23 @@ impl State {
         theme::set_dark(self.dark);
 
         match message {
-            Message::FocusInput => return self.refocus_input(),
-            Message::PlaceCaret(at) => {
-                // 点了排版层里的空参数框：把光标送进那个位置，然后把焦点还给
-                // 隐形编辑器（不然用户接着打字会没反应）。
-                self.place_caret(at);
-                return self.refocus_input();
-            }
+            // 点排版层空白处：现在没有独立编辑器抢焦点了，什么都不用做
+            Message::FocusInput => {}
+            // 点空参数框：直接把光标挪过去（**精确到字符偏移**，不再靠 Motion 逼近）
+            Message::PlaceCaret(at) => self.place_caret(at),
+            Message::KeyPressed(key, modifiers) => return self.handle_key(key, modifiers),
             Message::Noop => {}
-            Message::Edit(action) => {
-                // ── Enter 的语义：**求值**；Ctrl+Enter 才是**换行** ────────────
-                //
-                // 用户要求（本轮更新）："输入栏按 enter" 应直接求值 —— 与 Windows
-                // 计算器、Desmos 的习惯一致；想输入多行表达式时按 Ctrl+Enter。
-                //
-                // 实现上的坑：iced 的 `text_editor` 把 `Enter` 与 `Ctrl+Enter`
-                // **映射成同一个** `Binding::Enter`（绑定表里
-                // `Named::Enter => Some(Self::Enter)`，不看修饰键），
-                // 所以从 `Action` 上分不出 Ctrl。只能靠键盘订阅自己记的
-                // [`State::ctrl_held`] 来区分：
-                //   * 未按 Ctrl → 拦截，改为求值（**不**把换行符塞进输入框）；
-                //   * 按了 Ctrl → 照常 `perform`，`text_editor` 插入 `\n`。
-                if matches!(action, Action::Edit(Edit::Enter)) && !self.ctrl_held {
-                    return self.evaluate();
-                }
-                self.input.perform(action);
-            }
             Message::Key(r, c) => {
                 if let Some(k) = layout_for(self.panel).get(r).and_then(|row| row.get(c)) {
                     match k.action {
                         KeyAction::Insert => self.insert(k.insert),
-                        KeyAction::Backspace => {
-                            self.input.perform(Action::Edit(Edit::Backspace));
-                        }
-                        KeyAction::Clear => self.input = EditorContent::new(),
+                        KeyAction::Backspace => self.backspace(),
+                        KeyAction::Clear => self.clear_input(),
                         // 求值会清空输入框、把注意力转到结果区，**不还焦点**
                         KeyAction::Evaluate => return self.evaluate(),
                         // Desmos 的左右方向键：把光标挪一格，方便键盘用户改中间的数字
-                        KeyAction::CursorLeft => {
-                            self.input.perform(Action::Move(Motion::Left));
-                        }
-                        KeyAction::CursorRight => {
-                            self.input.perform(Action::Move(Motion::Right));
-                        }
+                        KeyAction::CursorLeft => self.move_caret(-1),
+                        KeyAction::CursorRight => self.move_caret(1),
                         KeyAction::ShowMain => self.panel = Panel::Main,
                         KeyAction::ShowAbc => self.panel = Panel::Abc,
                         // Desmos 的 `aᵇ` / `↑`：插一个 `^`，光标自然停在指数位置
@@ -512,7 +499,7 @@ impl State {
                 // 不还的话，点完数字键焦点就留在那个按钮上，`text_editor` 因为是
                 // 未聚焦状态**不再画光标** —— 用户看到的现象正是"点数字的时候
                 // 都不知道光标在哪里"（原话）。焦点还回去，光标就一直在。
-                return self.refocus_input();
+                return Task::none();
             }
             Message::Function(g, i) => {
                 if let Some(item) = FN_GROUPS.get(g).and_then(|grp| grp.items.get(i)) {
@@ -520,7 +507,7 @@ impl State {
                 }
                 // 选完收起弹窗，并把焦点还给输入框 —— 用户接下来就是要接着打字
                 self.show_funcs = false;
-                return self.refocus_input();
+                return Task::none();
             }
             Message::Evaluate => return self.evaluate(),
             Message::ToggleFuncs => self.show_funcs = !self.show_funcs,
@@ -588,7 +575,14 @@ impl State {
                 self.persist_prefs();
             }
             Message::ClearHistory => self.history.clear(),
-            Message::ClearInput => self.input = EditorContent::new(),
+            Message::Pasted(text) => {
+                // Ctrl+V：把剪贴板内容插到光标处（换行折成空格 —— 表达式不该跨行）
+                if let Some(t) = text {
+                    let one_line = t.replace(['\r', '\n'], " ");
+                    self.insert(&one_line);
+                }
+            }
+            Message::ClearInput => self.clear_input(),
             Message::SetPanel(p) => self.panel = p,
             Message::SetLang(l) => {
                 // ⚠️ 语言**只能**在 UI 线程上同步设，不能发给 worker 代劳。
@@ -732,160 +726,126 @@ impl State {
         }
     }
 
-    /// 光标在源文本里的**字符偏移**（排版层要靠它画那根竖线）。
+    /// 光标在源文本里的**字符偏移**（排版层靠它画那根竖线）。
     ///
-    /// 有选区时不返回（画一根不知该放哪儿的线没有意义）。
+    /// 自己维护之后这就是 `self.caret` —— 不需要再从行列坐标换算，也不会
+    /// 因为选区/换行符而与排版层对不上。
     fn caret_offset(&self) -> Option<usize> {
-        let c = self.input.cursor();
-        if c.selection.is_some() {
-            return None;
-        }
-        let text = self.input_text();
-        let mut off = 0usize;
-        for (i, line) in text.split('\n').enumerate() {
-            if i == c.position.line {
-                return Some(off + c.position.column);
-            }
-            // +1 是那个换行符本身
-            off += line.chars().count() + 1;
-        }
-        Some(text.chars().count())
+        Some(self.caret.min(self.char_len()))
     }
 
-    /// 把光标挪到源文本的第 `at` 个**字符**处。
+    /// 把光标挪到第 `at` 个**字符**处（点排版层里的占位框时用）。
     ///
-    /// 用于"点排版里的空参数框 → 光标进去"（用户要求）。
-    ///
-    /// ## 为什么不是一次 `Action::Click`
-    ///
-    /// iced 的 `Action::Click` 收的是**屏幕坐标**（`Point`），不是字符位置 ——
-    /// 它内部要把坐标换算成 `(行, 列)`，那需要知道字形宽度。
-    /// 而我们点击的是**排版层**（`√2` 的宽度跟背后的 `sqrt(2)` 完全不一样），
-    /// 换算出来的位置必然不对。
-    ///
-    /// 所以我们**自己知道**目标字符偏移，用 `Motion` 序列把光标挪过去：
-    /// 回文首 → 逐行 `Down` → `Home` → 逐列 `Right`。
-    /// 表达式最长也就几十个字符，这点 `perform` 是纯内存操作，代价可以忽略。
+    /// 自己维护光标之后这就是一次赋值。之前用 `Motion` 序列（回文首 → 逐行
+    /// `Down` → `Home` → 逐列 `Right`）**逼近**目标位置，那套在换行/字宽不一致时
+    /// 会偏 —— 用户实测"点了方框，一打字却跑到 `sum` 前面"。
     fn place_caret(&mut self, at: usize) {
-        let text = self.input_text();
-        let mut line = 0usize;
-        let mut col = 0usize;
-        for (i, ch) in text.chars().enumerate() {
-            if i >= at {
-                break;
-            }
-            if ch == '\n' {
-                line += 1;
-                col = 0;
-            } else {
-                col += 1;
-            }
-        }
-        self.input.perform(Action::Move(Motion::DocumentStart));
-        for _ in 0..line {
-            self.input.perform(Action::Move(Motion::Down));
-        }
-        self.input.perform(Action::Move(Motion::Home));
-        for _ in 0..col {
-            self.input.perform(Action::Move(Motion::Right));
-        }
+        self.caret = at.min(self.char_len());
     }
 
-    /// 把文本插到**光标处**，并按需回退光标（函数键补括号后落在括号内）
+    /// 输入文本的**字符**长度（`String::len` 是字节，不能直接用）
+    fn char_len(&self) -> usize {
+        self.input.chars().count()
+    }
+
+    /// 清空输入
+    fn clear_input(&mut self) {
+        self.input.clear();
+        self.caret = 0;
+    }
+
+    /// 把文本插到**光标处**（`keypad::splice` 是纯函数，含多字节与越界光标的单测）
     fn insert(&mut self, text: &str) {
         if text.is_empty() {
             return;
         }
-        for ch in text.chars() {
-            self.input.perform(Action::Edit(Edit::Insert(ch)));
-        }
-        let back = keypad::cursor_back_for(text);
-        for _ in 0..back {
-            // ⚠️ 光标移动是 `Action::Move(Motion)` 这个**顶层变体**，
-            // 不是 `Action::Edit(Edit::Move(..))` —— `Edit` 里只有增删改，没有移动
-            //（第一版就写错在这里）。
-            self.input.perform(Action::Move(Motion::Left));
-        }
+        // `splice` 内部已经处理了"函数键补括号后光标落在括号内"（`cursor_back_for`），
+        // 所以这里直接采用它返回的光标位置。
+        let (next, cursor) = keypad::splice(&self.input, self.caret, text);
+        self.input = next;
+        self.caret = cursor;
     }
 
-    /// 走 [`keypad::splice`] 实现插入（纯函数路径）。
-    ///
-    /// 与 [`State::insert`] 并存是**有意的**：两者的语义必须一致，而
-    /// `keypad::splice` 是纯函数、能被大量单测覆盖（含多字节字符、越界光标）；
-    /// `insert` 走的是 iced 的 `Content::perform`，无法脱离渲染器测试。
-    /// 用 `splice` 算一遍"应该得到什么"，与 `perform` 的结果比对，
-    /// 就得到了一条不依赖渲染器的等价性护栏。见 `debug_assert_insert_matches`。
-    #[allow(dead_code)]
-    fn insert_via_splice(&mut self, text: &str) {
-        if text.is_empty() {
+    /// 退格：删光标**前**一个字符
+    fn backspace(&mut self) {
+        if self.caret == 0 {
             return;
         }
-        let (next, _cursor) = keypad::splice(&self.input_text(), self.cursor_chars(), text);
-        self.input = EditorContent::with_text(&next);
+        let idx = self.caret - 1;
+        let mut chars: Vec<char> = self.input.chars().collect();
+        chars.remove(idx);
+        self.input = chars.into_iter().collect();
+        self.caret = idx;
     }
 
-    /// 当前光标在**字符**下标上的位置（`Content::cursor()` 给的是行列，需要换算）
-    fn cursor_chars(&self) -> usize {
-        let c = self.input.cursor();
-        let mut n = 0;
-        for i in 0..c.position.line {
-            if let Some(l) = self.input.line(i) {
-                n += l.text.chars().count() + 1; // +1 是换行符
+    /// 向前删：删光标**所在**的字符（`Delete` 键）
+    fn delete_forward(&mut self) {
+        if self.caret >= self.char_len() {
+            return;
+        }
+        let mut chars: Vec<char> = self.input.chars().collect();
+        chars.remove(self.caret);
+        self.input = chars.into_iter().collect();
+    }
+
+    /// 光标左右移动（按**字符**，不会把多字节字符切开）
+    fn move_caret(&mut self, delta: isize) {
+        let len = self.char_len();
+        let next = self.caret as isize + delta;
+        self.caret = next.clamp(0, len as isize) as usize;
+    }
+
+    /// 键盘事件的总入口。
+    ///
+    /// 取代原来"把事件丢给 `text_editor`"的做法 —— 现在每一次按键的去向都明确：
+    /// 插入字符 / 删除 / 移动光标 / 求值 / 粘贴。
+    fn handle_key(
+        &mut self,
+        key: iced::keyboard::Key,
+        modifiers: iced::keyboard::Modifiers,
+    ) -> Task<Message> {
+        use iced::keyboard::key::{Key as K, Named};
+
+        // Ctrl 组合键。⚠️ 语义与改动前**保持一致**：
+        //   * `Enter`        → **求值**（Windows 计算器 / Desmos 的直觉）
+        //   * `Ctrl + Enter` → **换行**（想要多行表达式时用）
+        // 第一版我在这里写反过（Ctrl+Enter 也去求值），被老测试挡下来了。
+        if modifiers.control() {
+            match &key {
+                K::Named(Named::Enter) => self.insert("\n"),
+                K::Character(c) if c.as_ref().eq_ignore_ascii_case("v") => {
+                    return iced::clipboard::read().map(Message::Pasted);
+                }
+                _ => {}
             }
+            return Task::none();
         }
-        n + c.position.column
-    }
 
-    /// 开发期护栏：`insert` 与 `insert_via_splice` 必须得到同样的文本。
-    /// 只在 debug 构建下生效，release 里完全编译掉。
-    #[allow(dead_code)]
-    fn debug_assert_insert_matches(&self, before: &str, inserted: &str) {
-        debug_assert!(
-            {
-                let (spliced, _) = keypad::splice(before, self.cursor_chars(), inserted);
-                spliced == self.input_text()
-            },
-            "两种插入实现的语义不一致：splice 与 perform 结果不同（插入 {inserted:?}）"
-        );
-    }
-
-    /// 取输入框当前文本（`Content` 没有直接暴露 `text()`，
-    /// 靠逐行拼接 —— 我们的输入只有一行，但编辑器允许多行，所以按行拼）
-    ///
-    /// ⚠️ **多行之间用换行符拼、不是空格**。
-    ///
-    /// 这里原来拼的是 `' '`（空格），当时"输入只有一行"所以看不出问题。但用户要求
-    /// **Enter 换行**之后多行输入就成了常规操作，空格拼接会直接把表达式改坏：
-    /// 输入 `1+1` ↵ `2+2` 会变成 `"1+1 2+2"`，喂给解析器是**隐式乘法**（`(1+1)*(2+2)`）
-    /// 而不是用户写的两行 —— 用户看到的结果会莫名其妙。
-    ///
-    /// 求值侧对换行的处理见 [`State::evaluate`]：按行分别求值，最后一行当结果。
-    fn input_lines(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        let mut i = 0;
-        while let Some(line) = self.input.line(i) {
-            out.push(line.text.to_string());
-            i += 1;
+        match key {
+            K::Named(Named::Enter) => return self.evaluate(),
+            K::Named(Named::Backspace) => self.backspace(),
+            K::Named(Named::Delete) => self.delete_forward(),
+            K::Named(Named::ArrowLeft) => self.move_caret(-1),
+            K::Named(Named::ArrowRight) => self.move_caret(1),
+            K::Named(Named::Home) => self.caret = 0,
+            K::Named(Named::End) => self.caret = self.char_len(),
+            // 可打印字符直接插入 —— `+ - * / ( ) ^` 与字母数字一视同仁
+            K::Character(text) => {
+                let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+                if !clean.is_empty() {
+                    self.insert(&clean);
+                }
+            }
+            _ => {}
         }
-        out
+        Task::none()
     }
 
     /// 单行版本的输入文本（历史回显、测试用）。
     /// 多行输入时用 `\n` 连接，保证"显示的就是用户敲的"。
     fn input_text(&self) -> String {
-        self.input_lines().join("\n").trim().to_string()
-    }
-
-    /// 把焦点交回输入框，返回要执行的 task。
-    ///
-    /// 用户要求"输入框的光标应当一直显示，不然点数字的时候都不知道光标在哪里"。
-    /// iced 的 `text_editor` **只在聚焦时画光标**，而点虚拟键盘上的按钮会把焦点
-    /// 抢到按钮上 —— 光标于是消失，正好是用户抱怨的那个场景。
-    ///
-    /// 所以规则是：**凡是"点了按钮但意图仍是继续输入"的动作，做完就把焦点还回去**。
-    /// 求值、清空、开弹窗这类会改变上下文的不还（那时用户注意力已经转移了）。
-    fn refocus_input(&self) -> Task<Message> {
-        iced::widget::operation::focus(INPUT_ID)
+        // 自己维护的就是原文：不再需要"逐行拼接 + trim"（那套是给 `Content` 用的）
+        self.input.clone()
     }
 
     /// 求值：把请求**交给后台 worker**，立刻返回一个等待结果的 task。
@@ -918,7 +878,10 @@ impl State {
             return Task::none();
         }
         let lines: Vec<String> = self
-            .input_lines()
+            .input
+            .lines()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
             .into_iter()
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
@@ -931,7 +894,7 @@ impl State {
         self.last_input = src.clone();
         // 求值后清空输入框，符合计算器的直觉（现在就清 —— 结果回来时用户可能
         // 已经在敲下一句了，那时再清会把新打的内容一起抹掉）
-        self.input = EditorContent::new();
+        self.clear_input();
         self.busy = true;
 
         // 记下这次请求（测试要能"补等一次"，见 `await_pending_for_test`）
@@ -1566,28 +1529,10 @@ impl State {
         //
         // ⚠️ `.placeholder()` 不再需要：看不见的东西不用提示，
         // 提示改由上面那层在输入为空时显示。
-        let editor = text_editor(&self.input)
-            .id(INPUT_ID)
-            .on_action(Message::Edit)
-            .size(19)
-            // 内边距与上面那层保持一致，否则两层会错位
-            .padding([12, 14])
-            // ⚠️ **高度必须跟着排版层走**：
-            // 固定 56 会把排版层压住 —— 带上下限的表达式（Σ / ∫）需要更高，
-            // 被压掉的那部分直接看不见（用户实测："下面框没了"：`sum()` 的
-            // `▯ = ▯` 那一行整个消失了；快照里也复现了）。
-            //
-            // 空输入时用固定高度（免得输入区随提示文字忽高忽低），
-            // 有内容时交给 `stack!` 取两者较大的那个。
-            .height(if src.is_empty() {
-                Length::Fixed(INPUT_HEIGHT)
-            } else {
-                Length::Shrink
-            })
-            // 字体：数学衬线体（用户要求"符号和字母用 markdown 那种字体"）。
-            // 中文走不到这里 —— 输入框里的内容应当都是表达式。
-            .font(theme::font_math())
-            .style(theme::invisible_editor);
+        // ⚠️ **这里不再有隐藏的 `text_editor`**（用户要求"自己手写一个输入栏"）。
+        // 输入层只剩排版这一层：键盘从 `subscription` 的 `Message::KeyPressed`
+        // 进来，光标位置由 `self.caret` 决定，插入/删除都在 `handle_key` 里做完。
+        // 好处是**只有一套坐标**（字符偏移）；代价是中文输入法失效（表达式不需要）。
 
         // ── ② 上面那层：用户真正**看得见**的数学排版 ─────────────────────────
         let shown: Element<'_, Message> = if src.is_empty() {
@@ -1625,16 +1570,11 @@ impl State {
         //
         // 外层的 `mouse_area` 是**兜底**：点在排版层的空白处（没有 `At` 覆盖的地方）
         // 时不移动光标，但至少要把焦点还给 editor，否则用户接着打字会没反应。
-        let shown_layer = iced::widget::mouse_area(
-            container(shown)
-                .width(Length::Fill)
-                .padding([12, 14])
-                .align_x(Alignment::Start),
-        )
-        .on_press(Message::FocusInput);
-        let layered = stack![editor, shown_layer];
-
-        let editor_slot = container(layered).width(Length::FillPortion(10));
+        // 排版层直接就是输入栏
+        let editor_slot = container(shown)
+            .width(Length::FillPortion(10))
+            .padding([12, 14])
+            .align_x(Alignment::Start);
 
         // `=` 与 `C` 给**固定宽高**：两者不等宽（56 / 46）是有意的，让 `=` 更醒目。
         //
@@ -1948,8 +1888,17 @@ pub fn subscription(_state: &State) -> iced::Subscription<Message> {
         _ => Message::Noop,
     });
 
+    // 键盘：**一个订阅同时处理**修饰键与按键。
+    //
+    // ⚠️ iced 0.14 没有 `keyboard::on_key_press`（那是别的版本的 API），
+    // 只有 `keyboard::listen()` 这个"原始事件流"。拆成两个订阅也能跑，
+    // 但每个事件会被广播两遍，不如合并成一处。
     let ctrl = iced::keyboard::listen().map(|ev| match ev {
         iced::keyboard::Event::ModifiersChanged(m) => Message::CtrlChanged(m.control()),
+        // 按键：自己处理（不再交给 `text_editor`）
+        iced::keyboard::Event::KeyPressed { key, modifiers, .. } => {
+            Message::KeyPressed(key, modifiers)
+        }
         _ => Message::Noop,
     });
 
@@ -1967,7 +1916,9 @@ pub fn subscription(_state: &State) -> iced::Subscription<Message> {
 impl State {
     /// 直接设置输入框文本（测试用：跳过键盘模拟）
     pub fn set_input_for_test(&mut self, text: &str) {
-        self.input = EditorContent::with_text(text);
+        self.input = text.to_string();
+        // 光标放到末尾（与"用户刚打完这串"的直觉一致）
+        self.caret = self.input.chars().count();
     }
 
     /// **同步求值**（测试用）。
@@ -1984,7 +1935,10 @@ impl State {
     /// 这让快照的右边栏也顺带获得了视觉覆盖。
     pub fn evaluate_blocking_for_test(&mut self) {
         let lines: Vec<String> = self
-            .input_lines()
+            .input
+            .lines()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
             .into_iter()
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
@@ -1994,7 +1948,7 @@ impl State {
         }
         let src = lines.join("\n");
         self.last_input = src.clone();
-        self.input = EditorContent::new();
+        self.clear_input();
         let out = self.evaluator.eval_blocking(src, lines);
         let _ = self.update(Message::Evaluated(out));
     }
@@ -2327,12 +2281,23 @@ mod tests {
         };
         for i in 0..ROWS {
             if i > 0 {
-                let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
+                let _ = s.update(Message::KeyPressed(
+                    iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+                    iced::keyboard::Modifiers::CTRL,
+                ));
             }
             s.insert("10000!");
         }
         s.ctrl_held = false;
-        assert_eq!(s.input_lines().len(), ROWS, "多行输入应被拆成 {ROWS} 行");
+        assert_eq!(
+            s.input
+                .lines()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+                .len(),
+            ROWS,
+            "多行输入应被拆成 {ROWS} 行"
+        );
 
         let t = Instant::now();
         let _task = s.update(Message::Evaluate);
@@ -2547,7 +2512,10 @@ mod tests {
         let mut s = State::default();
         assert!(!s.ctrl_held);
         s.insert("1+1");
-        let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
+        let _ = s.update(Message::KeyPressed(
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+            iced::keyboard::Modifiers::default(),
+        ));
         assert!(s.busy, "裸 Enter 应直接派单求值");
         assert!(
             !s.input_text().contains('\n'),
@@ -2562,12 +2530,22 @@ mod tests {
         let _ = s.update(Message::CtrlChanged(true));
         assert!(s.ctrl_held);
         s.insert("1+1");
-        let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
-        let _ = s.update(Message::Edit(Action::Edit(Edit::Insert('2'))));
+        let _ = s.update(Message::KeyPressed(
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+            iced::keyboard::Modifiers::CTRL,
+        ));
+        let _ = s.update(Message::KeyPressed(
+            iced::keyboard::Key::Character("2".into()),
+            iced::keyboard::Modifiers::default(),
+        ));
 
         assert!(s.history.is_empty(), "Ctrl+Enter 不该求值：{:?}", s.history);
         assert_eq!(
-            s.input_lines().len(),
+            s.input
+                .lines()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+                .len(),
             2,
             "Ctrl+Enter 应插入换行，编辑器变成两行"
         );
@@ -2578,7 +2556,10 @@ mod tests {
         //（末行结果）—— 所以历史从 0 变 1，正好与上面"Ctrl+Enter 不产生历史"对照。
         let _ = s.update(Message::CtrlChanged(false));
         assert!(!s.ctrl_held);
-        let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
+        let _ = s.update(Message::KeyPressed(
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+            iced::keyboard::Modifiers::default(),
+        ));
         s.await_pending_for_test();
         assert_eq!(s.history.len(), 1, "松开 Ctrl 后 Enter 应重新求值");
     }
@@ -2602,7 +2583,10 @@ mod tests {
         // 多行要靠 **Ctrl+Enter** 敲出来（裸 Enter 现在是求值）
         let _ = s.update(Message::CtrlChanged(true));
         s.insert("5!/2");
-        let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
+        let _ = s.update(Message::KeyPressed(
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+            iced::keyboard::Modifiers::CTRL,
+        ));
         s.insert("ans*2");
         s.evaluate_blocking_for_test();
 
@@ -2627,9 +2611,15 @@ mod tests {
         let mut s = State::default();
         let _ = s.update(Message::CtrlChanged(true));
         s.insert("2+3");
-        let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
+        let _ = s.update(Message::KeyPressed(
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+            iced::keyboard::Modifiers::CTRL,
+        ));
         s.insert("ans*10");
-        let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
+        let _ = s.update(Message::KeyPressed(
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+            iced::keyboard::Modifiers::CTRL,
+        ));
         s.insert("ans*10");
         s.evaluate_blocking_for_test();
 
@@ -2648,8 +2638,14 @@ mod tests {
         let mut s = State::default();
         let _ = s.update(Message::CtrlChanged(true));
         s.insert("1+1");
-        let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
-        let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
+        let _ = s.update(Message::KeyPressed(
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+            iced::keyboard::Modifiers::CTRL,
+        ));
+        let _ = s.update(Message::KeyPressed(
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+            iced::keyboard::Modifiers::CTRL,
+        ));
         s.insert("3+4");
         s.evaluate_blocking_for_test();
 
@@ -2671,7 +2667,10 @@ mod tests {
         let mut s = State::default();
         let _ = s.update(Message::CtrlChanged(true));
         s.insert("1+1");
-        let _ = s.update(Message::Edit(Action::Edit(Edit::Enter)));
+        let _ = s.update(Message::KeyPressed(
+            iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+            iced::keyboard::Modifiers::CTRL,
+        ));
         s.insert("2+2");
         assert_eq!(
             s.input_text(),
