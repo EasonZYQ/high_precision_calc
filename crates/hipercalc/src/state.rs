@@ -171,7 +171,9 @@ impl GuiPrefs {
     }
 
     /// 转成可写进状态文件的键值对
-    pub fn to_keys(self) -> Vec<(&'static str, String)> {
+    /// ⚠️ 参数是 `&self`：`GuiPrefs` 里现在有 `String`（模式名），不再是 `Copy` 类型。
+    /// 之前写成 `self` 时靠 `Copy` 蒙混过关，去掉 Copy 后调用方会"prefs 被 move"。
+    pub fn to_keys(&self) -> Vec<(&'static str, String)> {
         vec![
             ("dark", if self.dark { "on" } else { "off" }.to_string()),
             ("glass", format!("{:.2}", self.glass)),
@@ -533,6 +535,9 @@ mod tests {
             glass_tint: 0.55,
             shadow: 0.4,
             wrap: false,
+            texture: "glass".to_string(),
+            glass_blur: 0.7,
+            glass_tint2: 0.45,
         };
         update_keys_at(&path, &prefs.to_keys()).unwrap();
 

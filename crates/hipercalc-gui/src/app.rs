@@ -1513,29 +1513,30 @@ impl State {
         .spacing(6)
         .align_y(Alignment::Center);
 
-        // ⑤ 玻璃（liquid glass）：强度 + **底色浓度**（用户要求"两者都要"）。
-        //
-        // 分工：**强度**是整体玻璃效果（底色透明度、描边高光、投影一起变）；
-        // **底色浓度**只拧一个旋钮 —— 面板底色本身有多实。
-        // 之所以要分开：想让面板"更飘"就调低浓度，想"字更好认"就调高，
-        // 这与"玻璃整体有多强"是两件独立的诉求。
-        let glass_on = self.acrylic_blur > 0.0;
+        // ⑤ 质感（**三选一，互斥**）—— 用户规格：
+        //   第一行 亚克力：背景模糊 + 半透明面板（原来那套）
+        //   第二行 玻璃：iOS liquid glass（折射/高光是后续，先复用同一套背景模糊）
+        //   第三行 关闭：界面完全不透明，连抓屏都停掉
+        // 每个模式有**自己**的「模糊强度」与「底色浓度」，互不影响。
+        let tex = self.texture;
         let pct = |v: f32| t_fmt("{0}%", &[&(v * 100.0).round().to_string()]);
-        let glass_row = row![
-            self.setting_label(t("玻璃质感"), SETTING_LABEL_W),
+
+        let tex_acrylic_row = row![
+            self.setting_label(t("亚克力质感"), SETTING_LABEL_W),
+            // 只有**选中**的那一行写"已开启"，其余写"未启用" ——
+            // 否则三行都写"已开启"（只靠底色区分），一眼看去像三个都开着。
             self.chip(
-                if glass_on {
+                if tex == theme::Texture::Acrylic {
                     t("已开启")
                 } else {
-                    t("已关闭")
+                    t("未启用")
                 },
-                glass_on,
-                Message::ToggleGlass,
+                tex == theme::Texture::Acrylic,
+                Message::SetTexture(theme::Texture::Acrylic),
             ),
-            theme::label(t("玻璃强度")).size(12).style(theme::hint),
+            theme::label(t("模糊强度")).size(12).style(theme::hint),
             slider(0.0..=1.0, self.acrylic_blur, Message::SetAcrylicBlur)
                 .step(0.01_f32)
-                // ⚠️ 拖动时发的是 `SetGlass`（只重绘），**松手**才 `CommitGlass` 写盘
                 .on_release(Message::CommitGlass)
                 .width(Length::Fixed(104.0)),
             theme::label(pct(self.acrylic_blur))
@@ -1553,6 +1554,57 @@ impl State {
         ]
         .spacing(6)
         .align_y(Alignment::Center);
+
+        let tex_glass_row = row![
+            self.setting_label(t("玻璃质感"), SETTING_LABEL_W),
+            // 只有**选中**的那一行写"已开启"，其余写"未启用" ——
+            // 否则三行都写"已开启"（只靠底色区分），一眼看去像三个都开着。
+            self.chip(
+                if tex == theme::Texture::Glass {
+                    t("已开启")
+                } else {
+                    t("未启用")
+                },
+                tex == theme::Texture::Glass,
+                Message::SetTexture(theme::Texture::Glass),
+            ),
+            theme::label(t("模糊强度")).size(12).style(theme::hint),
+            slider(0.0..=1.0, self.glass_blur, Message::SetGlassBlur)
+                .step(0.01_f32)
+                .on_release(Message::CommitGlass)
+                .width(Length::Fixed(104.0)),
+            theme::label(pct(self.glass_blur))
+                .size(13)
+                .style(theme::hint),
+            Space::new().width(Pixels(8.0)),
+            theme::label(t("底色浓度")).size(12).style(theme::hint),
+            slider(0.0..=1.0, self.glass_tint2, Message::SetGlassTint2)
+                .step(0.01_f32)
+                .on_release(Message::CommitGlass)
+                .width(Length::Fixed(104.0)),
+            theme::label(pct(self.glass_tint2))
+                .size(13)
+                .style(theme::hint),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+
+        let tex_off_row = row![
+            self.setting_label(t("关闭"), SETTING_LABEL_W),
+            self.chip(
+                t("已关闭"),
+                tex == theme::Texture::Off,
+                Message::SetTexture(theme::Texture::Off),
+            ),
+            theme::label(t("界面完全不透明：不抓屏、也不模糊"))
+                .size(12)
+                .style(theme::hint),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+
+        // 三行作为**一组**：内部不再插分隔线（它们是一个三选一的整体）
+        let texture_block = column![tex_acrylic_row, tex_glass_row, tex_off_row].spacing(6);
 
         // ⑥ 面板投影（用户要求："阴影的透明调节加到设置里"）。
         // 单独占一行：玻璃那行已经有两根滑条，再塞一根就太挤了。
@@ -1621,7 +1673,7 @@ impl State {
                 rule::horizontal(1.0).style(theme::divider),
                 theme_row,
                 rule::horizontal(1.0).style(theme::divider),
-                glass_row,
+                texture_block,
                 rule::horizontal(1.0).style(theme::divider),
                 shadow_row,
                 rule::horizontal(1.0).style(theme::divider),
@@ -2512,7 +2564,7 @@ mod tests {
         let before = theme::glass_amount();
 
         let _ = s.update(Message::SetAcrylicBlur(0.25));
-        assert!((s.glass - 0.25).abs() < 1e-6, "State 应记下新强度");
+        assert!((s.acrylic_blur - 0.25).abs() < 1e-6, "State 应记下新强度");
         assert!(
             (theme::glass_amount() - 0.25).abs() < 1e-6,
             "进程级开关也该同步（样式函数只读得到它）"
@@ -2520,9 +2572,17 @@ mod tests {
 
         // 越界值被夹进 [0, 1]
         let _ = s.update(Message::SetAcrylicBlur(2.5));
-        assert!((s.glass - 1.0).abs() < 1e-6, "上界应夹到 1.0：{}", s.glass);
+        assert!(
+            (s.acrylic_blur - 1.0).abs() < 1e-6,
+            "上界应夹到 1.0：{}",
+            s.acrylic_blur
+        );
         let _ = s.update(Message::SetAcrylicBlur(-3.0));
-        assert!(s.glass.abs() < 1e-6, "下界应夹到 0.0：{}", s.glass);
+        assert!(
+            s.acrylic_blur.abs() < 1e-6,
+            "下界应夹到 0.0：{}",
+            s.acrylic_blur
+        );
 
         theme::set_glass(before);
     }
@@ -2535,7 +2595,7 @@ mod tests {
 
         let _ = s.update(Message::SetAcrylicBlur(0.83));
         let _ = s.update(Message::ToggleGlass);
-        assert!(s.glass.abs() < 1e-6, "关掉后强度应为 0");
+        assert!(s.acrylic_blur.abs() < 1e-6, "关掉后强度应为 0");
         assert!(
             (s.glass_backup - 0.83).abs() < 1e-6,
             "关掉时应记住原值：{}",
@@ -2544,9 +2604,9 @@ mod tests {
 
         let _ = s.update(Message::ToggleGlass);
         assert!(
-            (s.glass - 0.83).abs() < 1e-6,
+            (s.acrylic_blur - 0.83).abs() < 1e-6,
             "再开应回到 0.83 而不是默认值：{}",
-            s.glass
+            s.acrylic_blur
         );
 
         theme::set_glass(before);
@@ -3048,6 +3108,13 @@ mod tests {
             "玻璃强度",
             "底色浓度",
             "面板投影",
+            "亚克力质感",
+            "模糊强度",
+            "已开启",
+            "已关闭",
+            "未启用",
+            "关闭",
+            "界面完全不透明：不抓屏、也不模糊",
             "桌面模糊",
             "系统未提供",
             "长结果",
