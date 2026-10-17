@@ -168,6 +168,92 @@ pub fn dark() -> bool {
 ///
 /// 与 [`DARK`]、[`ACRYLIC`] 同一套理由：样式函数的签名是 `Fn(&Theme) -> Style`，
 /// 拿不到 `State`，所以这类"全局观感开关"只能走进程级静态量。
+/// **质感模式**（三选一，互斥生效）。
+///
+/// 用户规格：三行三个选项，同一时刻只有一个生效。
+/// - 亚克力：背景模糊 + 半透明面板（原来那套）
+/// - 玻璃：在亚克力之上再叠折射/高光/大圆角（iOS liquid glass）
+/// - 关闭：不透明界面
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Texture {
+    Acrylic,
+    Glass,
+    Off,
+}
+
+impl Texture {
+    /// 存进配置文件的字符串
+    pub fn key(self) -> &'static str {
+        match self {
+            Texture::Acrylic => "acrylic",
+            Texture::Glass => "glass",
+            Texture::Off => "off",
+        }
+    }
+
+    /// 从配置里读回来（不认识的一律当亚克力）
+    pub fn from_key(s: &str) -> Self {
+        match s.trim() {
+            "glass" => Texture::Glass,
+            "off" => Texture::Off,
+            _ => Texture::Acrylic,
+        }
+    }
+}
+
+/// 当前质感模式（0 = 亚克力 / 1 = 玻璃 / 2 = 关闭）
+static TEXTURE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// 设置当前质感模式
+pub fn set_texture(t: Texture) {
+    let v = match t {
+        Texture::Acrylic => 0,
+        Texture::Glass => 1,
+        Texture::Off => 2,
+    };
+    TEXTURE.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 当前质感模式
+pub fn texture() -> Texture {
+    match TEXTURE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => Texture::Glass,
+        2 => Texture::Off,
+        _ => Texture::Acrylic,
+    }
+}
+
+/// **玻璃模式**自己的两个旋钮（与亚克力那套分开存，用户要求各自独立调）
+static GLASS2_BLUR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(60);
+static GLASS2_TINT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(55);
+
+/// 设置玻璃模式的模糊强度
+pub fn set_glass2_blur(v: f32) {
+    GLASS2_BLUR.store(
+        (v.clamp(0.0, 1.0) * 100.0).round() as u8,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// 玻璃模式的模糊强度（0–1）
+pub fn glass2_blur() -> f32 {
+    GLASS2_BLUR.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
+}
+
+/// 设置玻璃模式的底色浓度
+pub fn set_glass2_tint(v: f32) {
+    GLASS2_TINT.store(
+        (v.clamp(0.0, 1.0) * 100.0).round() as u8,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// 玻璃模式的底色浓度（0–1）
+pub fn glass2_tint() -> f32 {
+    GLASS2_TINT.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
+}
+
+/// 亚克力模式的模糊强度（存的是原来的「玻璃强度」那个值）
 static GLASS_PERCENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(60);
 
 /// 玻璃**底色的浓度**（0 = 完全透明，100 = 完全不透明）。
@@ -204,8 +290,17 @@ pub fn bg_ready() -> bool {
 }
 
 /// 当前玻璃强度（0.0 – 1.0）
+/// **当前模式**的模糊强度（0 = 不模糊 / 关闭）。
+///
+/// 它现在只驱动一件事：背景抓屏的模糊程度（`backdrop` 的降采样倍数）。
+/// 面板透明度由 [`glass_tint`] 负责 —— 这两个旋钮在用户规格里是**分开的**。
 pub fn glass_amount() -> f32 {
-    GLASS_PERCENT.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
+    match texture() {
+        Texture::Acrylic => GLASS_PERCENT.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0,
+        Texture::Glass => glass2_blur(),
+        // 关闭 ⇒ 0（抓屏循环会因此停下）
+        Texture::Off => 0.0,
+    }
 }
 
 /// 投影（阴影）强度，同样按百分数存（0 = 完全没有阴影）。
@@ -232,8 +327,16 @@ pub fn set_glass_tint(tint: f32) {
 }
 
 /// 当前玻璃底色浓度（0.0 – 1.0）
+/// **当前模式**的底色浓度（0 = 全透，1 = 完全不透明）。
+///
+/// 用户规格："底色浓度为 100 时那么就遮住亚克力质感" —— 也就是面板变成实心，
+/// 背景再模糊也看不见。`Off` 模式直接给 1.0。
 pub fn glass_tint() -> f32 {
-    GLASS_TINT.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
+    match texture() {
+        Texture::Acrylic => GLASS_TINT.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0,
+        Texture::Glass => glass2_tint(),
+        Texture::Off => 1.0,
+    }
 }
 
 /// 当前色板
@@ -299,16 +402,10 @@ fn glass(c: &Colors, lift: f32, tint: f32) -> container::Style {
     // 底色浓度 = 各面板自己的相对浓度 × 全局旋钮（用户在设置里调，见 [`GLASS_TINT`]）。
     // 玻璃越强 → 底色越透（让氛围底 / DWM 模糊透上来）；0 时是完全不透明的纯色。
     //
-    // ⚠️ **深色下不做透明度衰减**（k = 0）：深色的面底色（#2B2B2B）本来就只比背景
-    //（#202020）亮十来级，一旦变透就直接融进背景 —— 用户看到的不是"玻璃"，
-    // 而是"整个界面糊成一片黑"（快照里实测过：面板全看不见了）。
-    // 所以深色下"强度"只作用于高光描边与投影 —— 那两样才撑得起玻璃感。
-    // 浅色下才真正调透明度（白面板透出氛围底的色彩）。
-    //
-    // 系数 0.72 而不是 0.55：用户实测反馈"开到 100% 也看不出差别" ——
-    // 0.55 时 `(1 - 0.55g)` 在 g∈[0.6, 1] 只从 0.67 变到 0.45，肉眼分不出。
-    let k = if dark() { 0.0 } else { 0.72 };
-    let alpha = tint * glass_tint() * (1.0 - k * g);
+    // ⚠️ **面板透明度只由「底色浓度」决定**（用户规格明确把两个旋钮拆开了）：
+    // 「模糊强度」管背景模糊，「底色浓度」管面板透多少。
+    // 之前两者混在一起，导致"调模糊强度面板也变透"这种说不清的行为。
+    let alpha = tint * glass_tint();
     // 玻璃越强 → 投影越明显。"玻璃厚度"这个观感来自三件事，缺一不可：
     // 半透明底色（上面）、1px 高光描边（下面）、柔和投影（这里）。
     let lift = lift * (0.35 + 1.15 * g);
