@@ -439,7 +439,9 @@ pub fn panel_low(_theme: &Theme) -> container::Style {
 pub fn root(_theme: &Theme) -> container::Style {
     let c = colors();
     container::Style {
-        background: Some(if acrylic() || bg_ready() {
+        // ⚠️ **玻璃关掉时根容器必须给不透明底**：否则底下的模糊图（或窗口透明）
+        // 会透出来，整个界面看起来还是"半透明但没玻璃感"的怪状态。
+        background: Some(if (acrylic() || bg_ready()) && glass_amount() > 0.0 {
             Background::Color(c.backdrop_for(true))
         } else {
             ambient_background(&c)

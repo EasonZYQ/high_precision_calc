@@ -690,12 +690,35 @@ impl State {
                 }
             }
             Message::CaptureBg => {
-                // 抓屏 + 模糊是阻塞的（BitBlt + 两趟 box blur，约几毫秒到十几毫秒），
+                // **玻璃关掉就不抓了**（省 CPU），并把旧图丢掉 —— 否则"关闭玻璃"后
+                // 背景图还留着，界面依旧透出桌面（用户实测："并没有完全消失"）。
+                if theme::glass_amount() <= 0.0 {
+                    if self.bg.is_some() {
+                        self.bg = None;
+                        theme::set_bg_ready(false);
+                    }
+                    return Task::none();
+                }
+                // 抓屏 + 模糊是阻塞的（BitBlt + 两趟 box blur，几毫秒到十几毫秒），
                 // 丢进 Task 让 runtime 在线程池里跑，UI 线程不等。
-                return Task::perform(
+                let capture = Task::perform(
                     async { crate::backdrop::capture_window_blurred(BG_DOWNSCALE) },
                     Message::BgCaptured,
                 );
+                // ⚠️ **实时刷新：抓完自己排下一次**。
+                //
+                // iced 0.14 里 `iced::time::every` 需要 `tokio` feature
+                //（`iced_futures::backend::default::time`），而本项目用的是默认的
+                // `thread-pool` —— 两者可能冲突，不值得为一次定时抓屏去换 runtime。
+                // 所以用 Task 链：抓 → 睡 500ms → 再发一次 `CaptureBg`。
+                // 循环只在"玻璃开着"时成立（上面那个分支会中断它）。
+                let next = Task::perform(
+                    async {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    },
+                    |_| Message::CaptureBg,
+                );
+                return Task::batch([capture, next]);
             }
             Message::BgCaptured(bd) => {
                 if let Some(b) = bd {
@@ -1101,8 +1124,10 @@ impl State {
         // 最底层：**自绘模糊**的背景图（抓屏 + 模糊，见 `crate::backdrop`）。
         // 它必须垫在 `content` **之下** —— 上面的面板是半透明的，
         // 透过它们看到的就是这张图。抓不到时退回氛围底色。
+        // ⚠️ **玻璃关掉就不叠这层**（用户实测："关闭后并没有完全消失，
+        // 而是还有残留的透明"）。否则背景图会一直透出来，面板再实也挡不住。
         let layered: Element<'_, Message> = match &self.bg {
-            Some(handle) => stack![
+            Some(handle) if theme::glass_amount() > 0.0 => stack![
                 iced::widget::image(handle.clone())
                     .width(Length::Fill)
                     .height(Length::Fill)
@@ -1111,7 +1136,7 @@ impl State {
                 content,
             ]
             .into(),
-            None => content,
+            _ => content,
         };
 
         container(layered)
