@@ -937,29 +937,23 @@ mod tests {
     /// "背景变了"必然失败 —— 那正是第一版写错的地方。
     #[test]
     fn glass_strength_changes_panel_alpha() {
-        let before = glass_amount();
+        // ⚠️ 语义已变：**面板透明度只由「底色浓度」决定**（用户规格把两个旋钮拆开了）。
+        // 原来这条测的是"玻璃强度"（现为模糊强度）影响 alpha —— 那个耦合已经去掉，
+        // 所以改成验「底色浓度」这条路。模糊强度只驱动背景抓屏，不在样式里。
+        let before = glass_tint();
         let was_dark = dark();
-        // ⚠️ 样式函数读的是**进程级**的 `dark()`，不是传进去的那个 `Theme` ——
-        // 想在测试里验"浅色那一档"，必须先把全局开关切过去（第一版就栽在这里：
-        // 传 `Theme::Light` 却拿到深色色板，断言于是"看起来莫名其妙"地失败）。
+        set_texture(Texture::Acrylic);
         set_dark(false);
-        set_glass(0.0);
+        set_glass_tint(0.0);
         let solid = format!("{:?}", panel(&Theme::Light).background);
-        set_glass(1.0);
+        set_glass_tint(1.0);
         let clear = format!("{:?}", panel(&Theme::Light).background);
         assert_ne!(
             solid, clear,
-            "浅色下玻璃强度必须真的改变面板底色（否则设置没接上样式）"
+            "底色浓度必须真的改变面板底色（否则设置没接上样式）"
         );
-        // 深色下改的是**描边与投影**，同样必须变
-        set_dark(true);
-        set_glass(0.0);
-        let solid = format!("{:?}", panel(&Theme::Dark).border);
-        set_glass(1.0);
-        let clear = format!("{:?}", panel(&Theme::Dark).border);
-        assert_ne!(solid, clear, "深色下玻璃强度必须改变高光描边");
         set_dark(was_dark);
-        set_glass(before);
+        set_glass_tint(before);
     }
 
     #[test]
