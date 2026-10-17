@@ -76,12 +76,22 @@ fn foreign_lines(path: &Path) -> Vec<String> {
 /// 放在 `state.rs` 而不是 `hipercalc-gui`：状态文件的格式应当由**一个地方**说了算，
 /// 两个 crate 各写一半是最容易漂移的做法。GUI 侧只通过 `hipercalc::session`
 /// 的门面读写它。
-#[derive(Debug, Clone, Copy, PartialEq)]
+// ⚠️ 不能 `Copy` 了：`texture` 是 `String`（模式名要能原样存进配置文件）。
+// 需要按值用两次的地方请 `.clone()`。
+#[derive(Debug, Clone, PartialEq)]
 pub struct GuiPrefs {
     /// 深色模式（默认深色 —— 与 `theme::DARK` 的静态初值一致）
     pub dark: bool,
     /// 玻璃（liquid glass）强度：`0.0` = 关闭（不透明纯色），`1.0` = 最强
     pub glass: f32,
+    /// **质感模式**：`acrylic`（亚克力）/ `glass`（玻璃）/ `off`（关闭）。
+    ///
+    /// 用户规格：三选一、互斥生效。每个模式有自己的一组旋钮（见下）。
+    pub texture: String,
+    /// **玻璃模式**的模糊强度（与亚克力的 `glass` 独立）
+    pub glass_blur: f32,
+    /// **玻璃模式**的底色浓度（与亚克力的 `glass_tint` 独立）
+    pub glass_tint2: f32,
     /// 玻璃**底色的浓度**：`0.0` = 完全透明，`1.0` = 完全不透明。
     ///
     /// 与 `glass` 的分工（用户要求两者都要）：强度是"整体玻璃效果有多强"
@@ -97,6 +107,10 @@ impl Default for GuiPrefs {
     fn default() -> Self {
         Self {
             dark: true,
+            // 默认亚克力（用户规格里的第一项）
+            texture: "acrylic".to_string(),
+            glass_blur: 0.6,
+            glass_tint2: 0.55,
             // 0.6 是"看得出玻璃、又不至于糊成一片"的中间值（滑条默认落在这里）
             glass: 0.6,
             // 0.7 —— 与 `theme::GLASS_TINT` 的静态初值保持一致，见那里的说明
@@ -131,6 +145,16 @@ impl GuiPrefs {
                 && let Ok(f) = v.trim().parse::<f32>()
             {
                 p.glass = f.clamp(0.0, 1.0);
+            } else if let Some(v) = line.strip_prefix("texture=") {
+                p.texture = v.trim().to_string();
+            } else if let Some(v) = line.strip_prefix("glass2_blur=")
+                && let Ok(f) = v.trim().parse::<f32>()
+            {
+                p.glass_blur = f.clamp(0.0, 1.0);
+            } else if let Some(v) = line.strip_prefix("glass2_tint=")
+                && let Ok(f) = v.trim().parse::<f32>()
+            {
+                p.glass_tint2 = f.clamp(0.0, 1.0);
             } else if let Some(v) = line.strip_prefix("glass_tint=")
                 && let Ok(f) = v.trim().parse::<f32>()
             {
@@ -152,6 +176,9 @@ impl GuiPrefs {
             ("dark", if self.dark { "on" } else { "off" }.to_string()),
             ("glass", format!("{:.2}", self.glass)),
             ("glass_tint", format!("{:.2}", self.glass_tint)),
+            ("texture", self.texture.clone()),
+            ("glass2_blur", format!("{:.2}", self.glass_blur)),
+            ("glass2_tint", format!("{:.2}", self.glass_tint2)),
             ("shadow", format!("{:.2}", self.shadow)),
             ("wrap", if self.wrap { "on" } else { "off" }.to_string()),
         ]

@@ -215,14 +215,24 @@ pub struct State {
     /// ⚠️ 与 [`theme::set_glass`] **双写**：样式函数的签名是 `Fn(&Theme) -> Style`、
     /// 拿不到 `State`，所以这类全局观感只能存进程级开关（与 `dark` 同一套路）。
     /// 这里留一份是为了让设置面板的滑条有值可读、也让单测能断言。
-    glass: f32,
+    /// 亚克力模式的**模糊强度**（原「玻璃强度」）。
+    ///
+    /// 只驱动背景抓屏的模糊程度 —— 面板透明度由 `acrylic_tint` 负责（用户规格拆开的）。
+    acrylic_blur: f32,
     /// 关掉玻璃前记住的强度 —— 点"开启"时恢复到它，而不是回到写死的默认值
     glass_backup: f32,
     /// 玻璃**底色的浓度**：`0.0` = 完全透明，`1.0` = 完全不透明。
     ///
     /// 与 [`State::glass`] 的分工（用户要求两者都要）：强度拧的是"整体玻璃效果"，
     /// 这一个只拧"面板底色有多实"。同样与 [`theme::set_glass_tint`] 双写。
-    glass_tint: f32,
+    /// 亚克力模式的**底色浓度**（面板有多不透明）
+    acrylic_tint: f32,
+    /// 当前**质感模式**（亚克力 / 玻璃 / 关闭，三选一互斥）
+    texture: theme::Texture,
+    /// 玻璃模式的模糊强度（与亚克力独立）
+    glass_blur: f32,
+    /// 玻璃模式的底色浓度（与亚克力独立）
+    glass_tint2: f32,
     /// 面板**投影**强度：`0.0` = 完全无阴影。与 [`theme::set_shadow`] 双写，
     /// 同一套理由（样式函数拿不到 `State`）。
     shadow: f32,
@@ -355,9 +365,15 @@ pub enum Message {
     ToggleDark,
     /// 拖动玻璃强度滑条。⚠️ 拖动会**高频**触发，所以这条只改内存 + 重绘，
     /// 写盘交给松手时的 [`Message::CommitGlass`]。
-    SetGlass(f32),
+    SetAcrylicBlur(f32),
     /// 拖动玻璃**底色浓度**滑条（同样只重绘，松手才写盘）
-    SetGlassTint(f32),
+    SetAcrylicTint(f32),
+    /// 切换质感模式（亚克力 / 玻璃 / 关闭）
+    SetTexture(theme::Texture),
+    /// 玻璃模式的模糊强度
+    SetGlassBlur(f32),
+    /// 玻璃模式的底色浓度
+    SetGlassTint2(f32),
     /// 拖动**投影强度**滑条（同上）
     SetShadow(f32),
     /// 玻璃滑条（强度或底色）松手 —— 这时才写配置
@@ -463,6 +479,9 @@ impl State {
         theme::set_dark(prefs.dark);
         theme::set_glass(prefs.glass);
         theme::set_glass_tint(prefs.glass_tint);
+        theme::set_texture(theme::Texture::from_key(&prefs.texture));
+        theme::set_glass2_blur(prefs.glass_blur);
+        theme::set_glass2_tint(prefs.glass_tint2);
         theme::set_shadow(prefs.shadow);
         Self {
             precision_text: modes.precision.to_string(),
@@ -471,7 +490,10 @@ impl State {
             caret: 0,
             history: Vec::new(),
             dark: prefs.dark,
-            glass: prefs.glass,
+            acrylic_blur: prefs.glass,
+            texture: theme::Texture::from_key(&prefs.texture),
+            glass_blur: prefs.glass_blur,
+            glass_tint2: prefs.glass_tint2,
             // 关着启动时，"开启"要回到出厂默认而不是 0
             glass_backup: if prefs.glass > 0.0 {
                 prefs.glass
@@ -482,7 +504,7 @@ impl State {
             // 启动时视作在底部（`anchor_bottom` 也会把初始位置放到底部）
             at_bottom: true,
             bg: None,
-            glass_tint: prefs.glass_tint,
+            acrylic_tint: prefs.glass_tint,
             shadow: prefs.shadow,
             persist,
             show_funcs: false,
@@ -555,19 +577,36 @@ impl State {
                 theme::set_dark(self.dark);
                 self.persist_prefs();
             }
-            Message::SetGlass(v) => {
+            Message::SetTexture(t) => {
+                self.texture = t;
+                theme::set_texture(t);
+                // 模式变了：重新起一轮抓屏（`Off` 会被循环自己拒掉）
+                return Task::perform(
+                    async { crate::backdrop::capture_window_blurred(BG_DOWNSCALE) },
+                    Message::BgCaptured,
+                );
+            }
+            Message::SetGlassBlur(v) => {
+                self.glass_blur = v.clamp(0.0, 1.0);
+                theme::set_glass2_blur(self.glass_blur);
+            }
+            Message::SetGlassTint2(v) => {
+                self.glass_tint2 = v.clamp(0.0, 1.0);
+                theme::set_glass2_tint(self.glass_tint2);
+            }
+            Message::SetAcrylicBlur(v) => {
                 // 拖动中：只改内存 + 重绘。写盘留给 `CommitGlass` ——
                 // 滑条一次拖动会发出几十条消息，每条都写文件既慢又浪费。
-                self.glass = v.clamp(0.0, 1.0);
-                if self.glass > 0.0 {
-                    self.glass_backup = self.glass;
+                self.acrylic_blur = v.clamp(0.0, 1.0);
+                if self.acrylic_blur > 0.0 {
+                    self.glass_backup = self.acrylic_blur;
                 }
-                theme::set_glass(self.glass);
+                theme::set_glass(self.acrylic_blur);
             }
-            Message::SetGlassTint(v) => {
+            Message::SetAcrylicTint(v) => {
                 // 与 `SetGlass` 同一套路：拖动只重绘，落盘在 `CommitGlass`
-                self.glass_tint = v.clamp(0.0, 1.0);
-                theme::set_glass_tint(self.glass_tint);
+                self.acrylic_tint = v.clamp(0.0, 1.0);
+                theme::set_glass_tint(self.acrylic_tint);
             }
             Message::SetShadow(v) => {
                 self.shadow = v.clamp(0.0, 1.0);
@@ -575,19 +614,19 @@ impl State {
             }
             Message::CommitGlass => self.persist_prefs(),
             Message::ToggleGlass => {
-                if self.glass > 0.0 {
+                if self.acrylic_blur > 0.0 {
                     // 关：记住当前值，好让用户再点一次能回到原样
-                    self.glass_backup = self.glass;
-                    self.glass = 0.0;
+                    self.glass_backup = self.acrylic_blur;
+                    self.acrylic_blur = 0.0;
                 } else {
                     // 开：回到上次的强度；若从没调过（备份是 0）就用出厂默认
-                    self.glass = if self.glass_backup > 0.0 {
+                    self.acrylic_blur = if self.glass_backup > 0.0 {
                         self.glass_backup
                     } else {
                         GuiPrefs::default().glass
                     };
                 }
-                theme::set_glass(self.glass);
+                theme::set_glass(self.acrylic_blur);
                 self.persist_prefs();
             }
             Message::SetWrap(on) => {
@@ -804,8 +843,11 @@ impl State {
             ("prec", self.modes.precision.to_string()),
             ("lang", self.modes.lang.code().to_string()),
             ("dark", if self.dark { "on" } else { "off" }.to_string()),
-            ("glass", format!("{:.2}", self.glass)),
-            ("glass_tint", format!("{:.2}", self.glass_tint)),
+            ("glass", format!("{:.2}", self.acrylic_blur)),
+            ("texture", self.texture.key().to_string()),
+            ("glass2_blur", format!("{:.2}", self.glass_blur)),
+            ("glass2_tint", format!("{:.2}", self.glass_tint2)),
+            ("glass_tint", format!("{:.2}", self.acrylic_tint)),
             ("shadow", format!("{:.2}", self.shadow)),
             ("wrap", if self.wrap { "on" } else { "off" }.to_string()),
         ];
@@ -1477,7 +1519,7 @@ impl State {
         // **底色浓度**只拧一个旋钮 —— 面板底色本身有多实。
         // 之所以要分开：想让面板"更飘"就调低浓度，想"字更好认"就调高，
         // 这与"玻璃整体有多强"是两件独立的诉求。
-        let glass_on = self.glass > 0.0;
+        let glass_on = self.acrylic_blur > 0.0;
         let pct = |v: f32| t_fmt("{0}%", &[&(v * 100.0).round().to_string()]);
         let glass_row = row![
             self.setting_label(t("玻璃质感"), SETTING_LABEL_W),
@@ -1491,19 +1533,21 @@ impl State {
                 Message::ToggleGlass,
             ),
             theme::label(t("玻璃强度")).size(12).style(theme::hint),
-            slider(0.0..=1.0, self.glass, Message::SetGlass)
+            slider(0.0..=1.0, self.acrylic_blur, Message::SetAcrylicBlur)
                 .step(0.01_f32)
                 // ⚠️ 拖动时发的是 `SetGlass`（只重绘），**松手**才 `CommitGlass` 写盘
                 .on_release(Message::CommitGlass)
                 .width(Length::Fixed(104.0)),
-            theme::label(pct(self.glass)).size(13).style(theme::hint),
+            theme::label(pct(self.acrylic_blur))
+                .size(13)
+                .style(theme::hint),
             Space::new().width(Pixels(8.0)),
             theme::label(t("底色浓度")).size(12).style(theme::hint),
-            slider(0.0..=1.0, self.glass_tint, Message::SetGlassTint)
+            slider(0.0..=1.0, self.acrylic_tint, Message::SetAcrylicTint)
                 .step(0.01_f32)
                 .on_release(Message::CommitGlass)
                 .width(Length::Fixed(104.0)),
-            theme::label(pct(self.glass_tint))
+            theme::label(pct(self.acrylic_tint))
                 .size(13)
                 .style(theme::hint),
         ]
@@ -2467,7 +2511,7 @@ mod tests {
         let mut s = State::default();
         let before = theme::glass_amount();
 
-        let _ = s.update(Message::SetGlass(0.25));
+        let _ = s.update(Message::SetAcrylicBlur(0.25));
         assert!((s.glass - 0.25).abs() < 1e-6, "State 应记下新强度");
         assert!(
             (theme::glass_amount() - 0.25).abs() < 1e-6,
@@ -2475,9 +2519,9 @@ mod tests {
         );
 
         // 越界值被夹进 [0, 1]
-        let _ = s.update(Message::SetGlass(2.5));
+        let _ = s.update(Message::SetAcrylicBlur(2.5));
         assert!((s.glass - 1.0).abs() < 1e-6, "上界应夹到 1.0：{}", s.glass);
-        let _ = s.update(Message::SetGlass(-3.0));
+        let _ = s.update(Message::SetAcrylicBlur(-3.0));
         assert!(s.glass.abs() < 1e-6, "下界应夹到 0.0：{}", s.glass);
 
         theme::set_glass(before);
@@ -2489,7 +2533,7 @@ mod tests {
         let mut s = State::default();
         let before = theme::glass_amount();
 
-        let _ = s.update(Message::SetGlass(0.83));
+        let _ = s.update(Message::SetAcrylicBlur(0.83));
         let _ = s.update(Message::ToggleGlass);
         assert!(s.glass.abs() < 1e-6, "关掉后强度应为 0");
         assert!(
