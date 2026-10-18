@@ -314,13 +314,17 @@ pub fn capture_blurred(x: i32, y: i32, w: u32, h: u32, factor: u32) -> Option<Ba
     if w == 0 || h == 0 {
         return None;
     }
-    let raw = platform::grab(x, y, w, h)?;
-    Some(blur_downsample(
-        &raw,
-        w as usize,
-        h as usize,
-        factor as usize,
-    ))
+    // ⚠️ **让 GDI 在拷贝时就缩小**（`StretchBlt`），不要"抓全分辨率再在 CPU 上缩"。
+    //
+    // 用户实测：之前抓 940×860 的全分辨率（3.2MB），再在 160 万像素上做 box blur，
+    // **CPU 直接 47%**，界面延迟 5 秒以上（事件循环被饿死，连滑块都拖不动）。
+    // 改成缩放到 1/factor 再抓，数据量降 f² 倍 —— f=8 时只剩 1/64。
+    let f = factor.max(1);
+    let dw = (w / f).max(1);
+    let dh = (h / f).max(1);
+    let raw = platform::grab_scaled(x, y, w, h, dw, dh)?;
+    // ⚠️ factor 传 **1**：图已经是目标尺寸了，只需要模糊，不再降采样
+    Some(blur_downsample(&raw, dw as usize, dh as usize, 1))
 }
 
 /// 抓**本窗口所占的那块屏幕**并模糊。
@@ -490,7 +494,11 @@ mod platform {
         fn CreateCompatibleDC(hdc: Hdc) -> Hdc;
         fn CreateCompatibleBitmap(hdc: Hdc, w: i32, h: i32) -> Hbitmap;
         fn SelectObject(hdc: Hdc, obj: Hgdiobj) -> Hgdiobj;
-        fn BitBlt(
+        /// 缩放拷贝：源矩形 `(sx, sy, sw, sh)` → 目标矩形 `(x, y, w, h)`。
+        ///
+        /// 用它替代"BitBlt 抓全分辨率 + 在 CPU 上缩"—— GDI 在拷贝时就把图缩小，
+        /// 数据量降 `factor²` 倍（940×860 抓成 118×108 时只剩 1/64）。
+        fn StretchBlt(
             dst: Hdc,
             x: i32,
             y: i32,
@@ -499,8 +507,12 @@ mod platform {
             src: Hdc,
             src_x: i32,
             src_y: i32,
+            src_w: i32,
+            src_h: i32,
             rop: u32,
         ) -> Bool;
+        /// 设置缩放模式：`HALFTONE` 会做像素平均（平滑），`COLORONCOLOR` 直接丢像素（更快）。
+        fn SetStretchBltMode(hdc: Hdc, mode: i32) -> i32;
         fn GetDIBits(
             hdc: Hdc,
             bmp: Hbitmap,
@@ -513,6 +525,12 @@ mod platform {
         fn DeleteObject(obj: Hgdiobj) -> Bool;
         fn DeleteDC(hdc: Hdc) -> Bool;
     }
+
+    /// `SetStretchBltMode` 的 `HALFTONE`：缩小的时候做像素平均。
+    ///
+    /// 背景本来就要模糊，用 `COLORONCOLOR`（最快）也行 —— 但 `HALFTONE` 在
+    /// 缩小倍数不大时更不容易出摩尔纹，代价可以忽略（图只有十几万像素）。
+    const HALFTONE: i32 = 4;
 
     #[repr(C)]
     struct Rect {
@@ -550,12 +568,12 @@ mod platform {
         }
     }
 
-    /// 抓屏幕上一块区域，返回 **RGBA** 排列的像素（alpha 恒 255）。
+    /// 抓屏幕上一块区域并**直接缩放到 `dw × dh`**，返回 RGBA（alpha 恒 255）。
     ///
     /// 抓之前把自己的窗口排除在捕获之外，抓完立刻恢复 —— 否则抓到的是
     /// "桌面 + 自己半透明的界面"混在一起，当背景用会出重影。
-    pub fn grab(x: i32, y: i32, w: u32, h: u32) -> Option<Vec<u8>> {
-        // SAFETY: 所有句柄都在本函数内成对获取/释放；缓冲区长度按 w*h*4 分配，
+    pub fn grab_scaled(x: i32, y: i32, w: u32, h: u32, dw: u32, dh: u32) -> Option<Vec<u8>> {
+        // SAFETY: 所有句柄都在本函数内成对获取/释放；缓冲区长度按 dw*dh*4 分配，
         // 与传给 `GetDIBits` 的尺寸一致。
         unsafe {
             let hwnd = super::imp::find_main_window();
@@ -564,7 +582,7 @@ mod platform {
                 None => false,
             };
 
-            let result = grab_inner(x, y, w, h);
+            let result = grab_inner(x, y, w, h, dw, dh);
 
             if excluded {
                 if let Some(h) = hwnd {
@@ -575,14 +593,16 @@ mod platform {
         }
     }
 
-    unsafe fn grab_inner(x: i32, y: i32, w: u32, h: u32) -> Option<Vec<u8>> {
+    unsafe fn grab_inner(x: i32, y: i32, w: u32, h: u32, dw: u32, dh: u32) -> Option<Vec<u8>> {
         unsafe {
             let screen = GetDC(std::ptr::null_mut());
             if screen.is_null() {
                 return None;
             }
             let mem = CreateCompatibleDC(screen);
-            let bmp = CreateCompatibleBitmap(screen, w as i32, h as i32);
+            // ⚠️ **位图按目标尺寸建**（`dw × dh`），不是源尺寸 ——
+            // 这就是"抓屏时就缩小"的关键：GDI 直接往这块小位图里画。
+            let bmp = CreateCompatibleBitmap(screen, dw as i32, dh as i32);
             if mem.is_null() || bmp.is_null() {
                 if !mem.is_null() {
                     DeleteDC(mem);
@@ -593,13 +613,18 @@ mod platform {
             let old = SelectObject(mem, bmp as Hgdiobj);
 
             let mut out = None;
-            if BitBlt(mem, 0, 0, w as i32, h as i32, screen, x, y, SRCCOPY) != 0 {
+            // HALFTONE：缩小的时候做像素平均（不出摩尔纹）
+            SetStretchBltMode(mem, HALFTONE);
+            if StretchBlt(
+                mem, 0, 0, dw as i32, dh as i32, screen, x, y, w as i32, h as i32, SRCCOPY,
+            ) != 0
+            {
                 let mut info = BitmapInfo {
                     header: BitmapInfoHeader {
                         size: std::mem::size_of::<BitmapInfoHeader>() as u32,
-                        width: w as i32,
+                        width: dw as i32,
                         // ⚠️ **负高度 = top-down**：否则位图是倒的
-                        height: -(h as i32),
+                        height: -(dh as i32),
                         planes: 1,
                         bit_count: 32,
                         compression: BI_RGB,
@@ -616,12 +641,12 @@ mod platform {
                         reserved: 0,
                     }],
                 };
-                let mut buf = vec![0u8; (w * h * 4) as usize];
+                let mut buf = vec![0u8; (dw * dh * 4) as usize];
                 let lines = GetDIBits(
                     mem,
                     bmp,
                     0,
-                    h,
+                    dh,
                     buf.as_mut_ptr() as *mut c_void,
                     &mut info,
                     DIB_RGB_COLORS,
@@ -649,7 +674,7 @@ mod platform {
 mod platform {
     /// 非 Windows：暂时没有抓屏实现（iced 自身的 `window::Settings::blur`
     /// 在 macOS/Linux 上已能工作）。返回 `None` ⇒ 界面退回氛围底色。
-    pub fn grab(_x: i32, _y: i32, _w: u32, _h: u32) -> Option<Vec<u8>> {
+    pub fn grab_scaled(_x: i32, _y: i32, _w: u32, _h: u32, _dw: u32, _dh: u32) -> Option<Vec<u8>> {
         None
     }
 
