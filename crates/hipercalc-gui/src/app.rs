@@ -101,11 +101,27 @@ const KEY_GAP: f32 = 5.0;
 /// 排出来大约就是这么宽；窄了会把标签折行。
 const SETTING_LABEL_W: f32 = 118.0;
 
-/// 自绘模糊的降采样倍数：8 意味着 940×860 的窗口先缩到 118×108 再模糊。
+/// 把**当前模式的模糊强度**（0–1）换算成降采样倍数（1–16）。
 ///
-/// 降采样本身就是最强的低通滤波（先缩小再放大天然丢掉高频），
-/// 所以这个值既是"模糊程度"也是"省算力"的旋钮。
-const BG_DOWNSCALE: u32 = 8;
+/// ## 为什么用指数而不是线性
+///
+/// 降采样倍数每翻一倍，模糊程度才明显上一档；线性映射会让滑条后半段
+/// "拧了没反应"。用 `2^(4a)` 正好把 0–1 均分成 5 档：
+/// `a=0 → 1`、`0.25 → 2`、`0.5 → 4`、`0.75 → 8`、`1 → 16`。
+///
+/// ## 为什么这里是函数而不是常量
+///
+/// 用户要求"玻璃模式的模糊强度要跟亚克力**真正分开**"。之前写死 `BG_DOWNSCALE = 8`，
+/// 两个模式的滑条调了完全没反应。现在读 [`theme::glass_amount`] ——
+/// 它返回的正是**当前模式**的强度，所以亚克力和玻璃各调各的，互不影响。
+fn blur_factor() -> u32 {
+    let a = theme::glass_amount().clamp(0.0, 1.0);
+    if a <= 0.0 {
+        // 强度 0 = 不模糊（原分辨率，能看清桌面内容）
+        return 1;
+    }
+    2f32.powf(4.0 * a).round().clamp(1.0, 16.0) as u32
+}
 
 /// 历史区滚动容器的 Id（`snap_to` 用它定位）
 const HISTORY_ID: &str = "hipercalc-history";
@@ -449,7 +465,7 @@ pub fn boot() -> (State, Task<Message>) {
             // 立刻抓第一帧（否则要等定时的第一次触发，头两秒背景是空的）。
             // 窗口刚起来时 `GetWindowRect` 可能还没尺寸，抓失败也不要紧 —— 定时那路会补上。
             Task::perform(
-                async { crate::backdrop::capture_window_blurred(BG_DOWNSCALE) },
+                async { crate::backdrop::capture_window_blurred(blur_factor()) },
                 Message::BgCaptured,
             ),
         ]),
@@ -582,7 +598,7 @@ impl State {
                 theme::set_texture(t);
                 // 模式变了：重新起一轮抓屏（`Off` 会被循环自己拒掉）
                 return Task::perform(
-                    async { crate::backdrop::capture_window_blurred(BG_DOWNSCALE) },
+                    async { crate::backdrop::capture_window_blurred(blur_factor()) },
                     Message::BgCaptured,
                 );
             }
@@ -741,7 +757,7 @@ impl State {
                 // 抓屏 + 模糊是阻塞的（BitBlt + 两趟 box blur，几毫秒到十几毫秒），
                 // 丢进 Task 让 runtime 在线程池里跑，UI 线程不等。
                 let capture = Task::perform(
-                    async { crate::backdrop::capture_window_blurred(BG_DOWNSCALE) },
+                    async { crate::backdrop::capture_window_blurred(blur_factor()) },
                     Message::BgCaptured,
                 );
                 // ⚠️ **实时刷新：抓完自己排下一次**。
