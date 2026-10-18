@@ -268,6 +268,12 @@ pub struct State {
     /// DWM 的亚克力在这套架构下不可用（wgpu 全客户区自绘把它盖住了），
     /// 所以"真的能看到桌面"只能自己抓屏 + 模糊。见 `crate::backdrop`。
     bg: Option<iced::widget::image::Handle>,
+    /// 抓屏的**原始像素** `(RGBA8, w, h)`。
+    ///
+    /// 为什么除了 `bg` 还要单独存一份：折射 shader 要**自己上传纹理**，
+    /// 而 `image::Handle` 是个不透明句柄，拿不回像素数据。
+    /// 降采样后的图很小（940×860 / 8 ≈ 118×108 ≈ 51KB），两份并存无所谓。
+    bg_pixels: Option<(Vec<u8>, u32, u32)>,
     /// 是否把设置写回状态文件。
     ///
     /// ⚠️ **测试构造出来的 `State` 必须关掉它**（[`State::default`] 里是 `false`）——
@@ -520,6 +526,7 @@ impl State {
             // 启动时视作在底部（`anchor_bottom` 也会把初始位置放到底部）
             at_bottom: true,
             bg: None,
+            bg_pixels: None,
             acrylic_tint: prefs.glass_tint,
             shadow: prefs.shadow,
             persist,
@@ -777,6 +784,8 @@ impl State {
             }
             Message::BgCaptured(bd) => {
                 if let Some(b) = bd {
+                    // 原始像素留给折射 shader（`image::Handle` 拿不回来）
+                    self.bg_pixels = Some((b.rgba.clone(), b.width, b.height));
                     self.bg = Some(iced::widget::image::Handle::from_rgba(
                         b.width, b.height, b.rgba,
                     ));
@@ -1184,16 +1193,32 @@ impl State {
         // 透过它们看到的就是这张图。抓不到时退回氛围底色。
         // ⚠️ **玻璃关掉就不叠这层**（用户实测："关闭后并没有完全消失，
         // 而是还有残留的透明"）。否则背景图会一直透出来，面板再实也挡不住。
-        let layered: Element<'_, Message> = match &self.bg {
-            Some(handle) if theme::glass_amount() > 0.0 => stack![
-                iced::widget::image(handle.clone())
+        let layered: Element<'_, Message> = match (&self.bg, &self.bg_pixels) {
+            (Some(handle), Some((px, w, h))) if theme::glass_amount() > 0.0 => {
+                // 两种质感看到的是**同一张**模糊背景，但画法不同：
+                // - 亚克力：普通贴图（磨砂玻璃，不做形变）
+                // - 玻璃：走**折射 shader** —— 边缘被"压弯"，像一块凸透镜
+                let bg_layer: Element<'_, Message> = if theme::texture() == theme::Texture::Glass {
+                    iced::widget::shader(crate::refraction::Refraction {
+                        pixels: px.clone(),
+                        width: *w,
+                        height: *h,
+                        // 扭曲强度。0.85 是"看得出边缘弯、中间不晃眼"的折中
+                        strength: 0.85,
+                    })
                     .width(Length::Fill)
                     .height(Length::Fill)
-                    // 抓的是窗口那块屏幕，尺寸与客户区基本一致，直接拉伸填满
-                    .content_fit(iced::ContentFit::Fill),
-                content,
-            ]
-            .into(),
+                    .into()
+                } else {
+                    iced::widget::image(handle.clone())
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        // 抓的是窗口那块屏幕，尺寸与客户区基本一致，直接拉伸填满
+                        .content_fit(iced::ContentFit::Fill)
+                        .into()
+                };
+                stack![bg_layer, content].into()
+            }
             _ => content,
         };
 

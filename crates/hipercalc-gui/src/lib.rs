@@ -42,4 +42,5 @@ pub mod evaluator;
 pub mod fonts;
 pub mod keypad;
 pub mod mathrender;
+pub mod refraction;
 pub mod theme;
