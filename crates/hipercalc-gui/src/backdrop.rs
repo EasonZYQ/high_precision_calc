@@ -320,10 +320,24 @@ pub fn capture_blurred(x: i32, y: i32, w: u32, h: u32, factor: u32) -> Option<Ba
     // **CPU 直接 47%**，界面延迟 5 秒以上（事件循环被饿死，连滑块都拖不动）。
     // 改成缩放到 1/factor 再抓，数据量降 f² 倍 —— f=8 时只剩 1/64。
     let f = factor.max(1);
-    let dw = (w / f).max(1);
-    let dh = (h / f).max(1);
+    // **`f == 1` 表示"不模糊"**（用户要求："模糊强度为 0 时不是不模糊，
+    // 而是直接关闭所有模糊，这是 bug" ⇒ 0 就该是清晰的桌面）。
+    //
+    // 但仍然做 **2 倍**降采样：3.2MB 的全分辨率在 500ms 一轮的循环里太重，
+    // 而 2 倍像素平均带来的轻微平滑肉眼接近清晰，代价只有 1/4 数据量。
+    let sample = if f == 1 { 2 } else { f };
+    let dw = (w / sample).max(1);
+    let dh = (h / sample).max(1);
     let raw = platform::grab_scaled(x, y, w, h, dw, dh)?;
-    // ⚠️ factor 传 **1**：图已经是目标尺寸了，只需要模糊，不再降采样
+    if f == 1 {
+        // 不模糊：`grab_scaled` 已经做完 BGRA→RGBA，直接当背景用
+        return Some(Backdrop {
+            width: dw,
+            height: dh,
+            rgba: raw,
+        });
+    }
+    // ⚠️ factor 传 **1**：图已经是目标尺寸，只需要 box blur，不再降采样
     Some(blur_downsample(&raw, dw as usize, dh as usize, 1))
 }
 

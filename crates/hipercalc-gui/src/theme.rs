@@ -420,7 +420,14 @@ fn glass(c: &Colors, lift: f32, tint: f32) -> container::Style {
     // - 玻璃：**上亮下暗**的渐变 + 更大的圆角 + 更亮的边 —— 模拟"光线从上方
     //   穿过一块有厚度的玻璃"。这是 iOS liquid glass 里最容易做、也最出效果的一层。
     let is_glass = texture() == Texture::Glass;
-    let solid = base.scale_alpha(base.a * alpha);
+    // ⚠️ **alpha 直接设成 `alpha`，不要再乘 `base.a`**。
+    //
+    // `base` 是面板色，它本身就带 alpha（深色 0.86 / 浅色 0.78）。原来写的是
+    // `base.scale_alpha(base.a * alpha)` —— 等于乘了**两遍** `base.a`：
+    // 浓度 100% 时 alpha 只有 0.86×0.86 = 0.74，还能透出 26% 的背景。
+    // 用户实测："底色浓度为 100 时应当完全无法看到背景，约等于关闭，
+    // 但是实际上还是可以浅浅看到" —— 就是这里。
+    let solid = Color { a: alpha, ..base };
     let background = if is_glass {
         // 顶部掺白（受光面）、底部掺黑（背光面）。8% / 6% 是实测"看得出厚度
         // 又不至于变成两条色带"的比例。
