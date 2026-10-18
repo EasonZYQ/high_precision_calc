@@ -428,7 +428,11 @@ fn glass(c: &Colors, lift: f32, tint: f32) -> container::Style {
         let bottom = mix_alpha(solid, Color::BLACK, 0.07);
         gradient_background([(0.0, top), (1.0, bottom)])
     } else {
-        gradient_background([(0.0, solid), (1.0, solid.scale_alpha(solid.a * 0.62))])
+        // ⚠️ 底部只乘 **0.62**，不要再乘 `solid.a`。
+        // `scale_alpha` 是"乘以因子"，不是"设为该值" —— 写成
+        // `solid.scale_alpha(solid.a * 0.62)` 会把 alpha 乘**两遍**，
+        // 面板一下子透得看不见（10 张快照全红）。
+        gradient_background([(0.0, solid), (1.0, solid.scale_alpha(0.62))])
     };
     container::Style {
         background: Some(background),
