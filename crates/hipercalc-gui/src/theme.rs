@@ -383,6 +383,11 @@ pub fn theme(_state: &super::app::State) -> Theme {
 
 /// 窗口级大面板
 pub const RADIUS_PANEL: f32 = 12.0;
+/// **玻璃模式**的圆角：明显比普通面板大，接近 iOS 的 squircle 观感。
+///
+/// iOS liquid glass 的形状特征之一就是"很圆的方"—— 圆角小的时候看起来
+/// 只是个圆角矩形，圆角一大（接近边长的一半）才有"玻璃片"的质感。
+pub const RADIUS_GLASS: f32 = 20.0;
 /// 卡片 / 输入框
 pub const RADIUS_CARD: f32 = 8.0;
 /// 按钮 / 按键
@@ -410,23 +415,44 @@ fn glass(c: &Colors, lift: f32, tint: f32) -> container::Style {
     // 半透明底色（上面）、1px 高光描边（下面）、柔和投影（这里）。
     let lift = lift * (0.35 + 1.15 * g);
     let base = c.surface;
+    // 质感模式决定面板"看起来像什么"：
+    // - 亚克力：均匀的半透明色（磨砂塑料片）
+    // - 玻璃：**上亮下暗**的渐变 + 更大的圆角 + 更亮的边 —— 模拟"光线从上方
+    //   穿过一块有厚度的玻璃"。这是 iOS liquid glass 里最容易做、也最出效果的一层。
+    let is_glass = texture() == Texture::Glass;
+    let solid = base.scale_alpha(base.a * alpha);
+    let background = if is_glass {
+        // 顶部掺白（受光面）、底部掺黑（背光面）。8% / 6% 是实测"看得出厚度
+        // 又不至于变成两条色带"的比例。
+        let top = mix_alpha(solid, Color::WHITE, 0.10);
+        let bottom = mix_alpha(solid, Color::BLACK, 0.07);
+        gradient_background([(0.0, top), (1.0, bottom)])
+    } else {
+        gradient_background([(0.0, solid), (1.0, solid.scale_alpha(solid.a * 0.62))])
+    };
     container::Style {
-        background: Some(gradient_background([
-            (0.0, base.scale_alpha(base.a * alpha)),
-            (1.0, base.scale_alpha(base.a * alpha * 0.62)),
-        ])),
+        background: Some(background),
         text_color: Some(c.text),
         border: Border {
             // 描边是"玻璃边缘那道高光"。深色主题下 `stroke` 本来就是浅色（白 0.09），
             // 提亮即可；**浅色主题下 `stroke` 是黑 0.07**，直接用会变成一条分隔线
             //（那是"卡片边框"的观感，不是玻璃）—— 所以浅色下换成**白色**高光。
-            color: if dark() {
+            //
+            // 玻璃模式下这条边**更亮也更粗**：iOS 的玻璃边缘是一圈明显的高光环，
+            // 不只是一条 1px 的分隔线。
+            color: if is_glass {
+                Color::WHITE.scale_alpha(0.55 + 0.25 * g)
+            } else if dark() {
                 c.stroke.scale_alpha(1.0 + 1.2 * g)
             } else {
                 Color::WHITE.scale_alpha(0.30 + 0.45 * g)
             },
-            width: 1.0,
-            radius: RADIUS_PANEL.into(),
+            width: if is_glass { 1.6 } else { 1.0 },
+            radius: if is_glass {
+                RADIUS_GLASS.into()
+            } else {
+                RADIUS_PANEL.into()
+            },
         },
         shadow: {
             // 用户的"投影强度"旋钮：0 时连偏移一起归零（只把 alpha 调零会留下
@@ -453,6 +479,22 @@ fn mix(base: Color, over: Color, t: f32) -> Color {
         g: base.g + (over.g - base.g) * t,
         b: base.b + (over.b - base.b) * t,
         a: 1.0,
+    }
+}
+
+/// 两个色按 `t` 插值，**保留 `base` 的 alpha**。
+///
+/// 与 [`mix`] 的区别：`mix` 强制不透明（那是给 [`ambient_background`] 用的，
+/// 氛围底色必须是实色，否则会透出桌面变成花屏）；而**面板底色本身是半透明的**，
+/// 掺白/掺黑之后必须保持原来的 alpha —— 否则玻璃模式一混就变成不透明，
+/// 等于把质感直接关掉了。
+fn mix_alpha(base: Color, over: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    Color {
+        r: base.r + (over.r - base.r) * t,
+        g: base.g + (over.g - base.g) * t,
+        b: base.b + (over.b - base.b) * t,
+        a: base.a,
     }
 }
 
