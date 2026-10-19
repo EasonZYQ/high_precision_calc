@@ -32,8 +32,8 @@
 use std::sync::Arc;
 
 use iced::widget::{
-    Column, Row, Space, button, column, container, row, rule, scrollable, slider, stack, text,
-    text_input,
+    Column, Row, Space, Stack, button, column, container, row, rule, scrollable, slider, stack,
+    text, text_input,
 };
 // `Element` / `Length` / `Pixels` 在 iced 顶层与 `iced::widget` 都可用；
 // 这里从 `iced` 顶层取，与官方示例一致。
@@ -47,6 +47,7 @@ use hipercalc_core::trig::AngleMode;
 
 use crate::evaluator::{Command, Evaluated, Evaluator};
 use crate::keypad::{self, FN_GROUPS, KeyAction, KeyKind, Panel, layout_for};
+use crate::liquid;
 use crate::mathrender;
 use crate::theme::{self, MathFont};
 
@@ -191,6 +192,9 @@ pub fn window_title(_state: &State) -> String {
     t("HiPerCalc — 超高精度计算器")
 }
 
+/// 抓屏数据的进程级快照：`(像素, 抓屏原点x, y, 宽, 高)`，见 [`State::bg_pixels`]。
+type BgPixels = (std::sync::Arc<Vec<u8>>, i32, i32, u32, u32);
+
 /// 应用状态
 pub struct State {
     /// 求值会话句柄。
@@ -252,6 +256,12 @@ pub struct State {
     glass_blur: f32,
     /// 玻璃模式的底色浓度（与亚克力独立）
     glass_tint2: f32,
+    /// **设置面板自己**的浓度（亚克力模式下）：0 = 全透，1 = 与主面板同档。
+    ///
+    /// 与 [`theme::set_dialog_tint`] 双写（样式函数拿不到 State）。
+    acrylic_dialog_tint: f32,
+    /// **设置面板自己**的浓度（玻璃模式下）—— 两种质感各存一份，互不干扰。
+    glass_dialog_tint: f32,
     /// 面板**投影**强度：`0.0` = 完全无阴影。与 [`theme::set_shadow`] 双写，
     /// 同一套理由（样式函数拿不到 `State`）。
     shadow: f32,
@@ -266,30 +276,63 @@ pub struct State {
     /// 用户明确要求："当历史已经拉到最新的计算，那么再计算新的就应该自动滑动到最下面，
     /// 如果原来不在最新的计算，就不需要滚动" —— 翻旧记录时不能被强行拽回底部。
     at_bottom: bool,
-    /// **自绘模糊**得到的背景图（`None` = 还没抓到 / 抓不到）。
+    /// 抓屏得到的**原始像素** `(RGBA8, 抓屏原点x, y, w, h)`（`None` = 还没抓到）。
     ///
     /// DWM 的亚克力在这套架构下不可用（wgpu 全客户区自绘把它盖住了），
-    /// 所以"真的能看到桌面"只能自己抓屏 + 模糊。见 `crate::backdrop`。
-    bg: Option<iced::widget::image::Handle>,
-    /// 抓屏的**原始像素** `(RGBA8, w, h)`。
+    /// 所以"真的能看到桌面"只能自己抓屏 + 模糊（见 `crate::backdrop`），
+    /// 再由 [`crate::refraction`] 画出来。
     ///
-    /// 为什么除了 `bg` 还要单独存一份：折射 shader 要**自己上传纹理**，
-    /// 而 `image::Handle` 是个不透明句柄，拿不回像素数据。
-    /// 降采样后的图很小（940×860 / 8 ≈ 118×108 ≈ 51KB），两份并存无所谓。
+    /// ⚠️ 抓屏区域比窗口**大一圈**（`backdrop::margin`），原点也一并记下 ——
+    /// 窗口挪动时按原点差平移采样（`backdrop::uv_map`），拖动全程零抓屏。
     ///
-    /// ⚠️ **必须是 `Arc`**：`draw()` 每帧都跑，以前 `px.clone()` 是每帧 51KB~800KB 的
-    /// 深拷贝。`Arc::clone` 只加一次引用计数。
-    bg_pixels: Option<(Arc<Vec<u8>>, u32, u32)>,
+    /// ⚠️ 为什么存**像素**而不是 `image::Handle`：两种质感现在都走折射 shader，
+    /// shader 得自己 `write_texture`，而 `image::Handle` 是不透明句柄、拿不回像素；
+    /// 何况 `image` widget 走 iced 的图集缓存 —— 新句柄必然 cache miss，上传时
+    /// 还要 `device.poll(Wait)` 同步等 GPU，且缓存**永不淘汰**。
+    ///
+    /// ⚠️ **必须是 `Arc`**：`draw()` 每帧都跑，`Arc::clone` 只加一次引用计数。
+    bg_pixels: Option<BgPixels>,
+    /// **抓屏那一刻的窗口矩形** `(x, y, w, h)`（屏幕物理像素）。
+    ///
+    /// 拖动检测要用它〔见 `bg_cycle`〕：拿"当前窗口矩形"和它比，位置差非零
+    /// 且尺寸不变 ⇒ 窗口正在被拖动，可以跳过这一轮抓屏。
+    ///
+    /// ⚠️ 不能拿 `bg_pixels` 里的原点/宽高代替：那里存的是**抓屏区域的**原点
+    /// （比窗口原点小一个 `margin`）和**降采样后的**宽高（比窗口小一个倍数），
+    /// 两组数字根本不在同一个坐标系里。
+    bg_win: Option<(i32, i32, u32, u32)>,
     /// 抓屏数据的**版本号**，每次 `BgCaptured`（且内容真的变了）自增。
     ///
     /// 折射 shader 的 `prepare()` 每帧都调，但抓屏最快 500ms 才来一帧新数据 ——
     /// 靠版本号比对就能跳过中间那些帧的 `write_texture`（纯浪费）。
     bg_version: u64,
+    /// 自上一轮 `bg_cycle` 以来，窗口是否**又**动过。
+    ///
+    /// 这是"拖动中"的判据（光看位置差不够：拖完停下之后位置差仍然非零，
+    /// 只靠它会永远跳过抓屏 ⇒ 桌面上放个视频背景就再也不刷新了）。
+    /// 只有"移动事件还在持续到达"才算真的在拖。
+    bg_moved: bool,
     /// 连续多少次抓屏**内容与上次完全一致**。
     ///
     /// 桌面静止时这是常态。用来做**自适应轮询**：一直没变就把节奏放慢，
     /// 一有变化立刻回到最快 —— "实时"和"省电"两边都要。
     bg_idle: u32,
+    /// ⚠️ **抓屏链是否已经在跑**。
+    ///
+    /// 这是本次修复的核心。抓屏循环是"抓 → 睡 → 再抓"的 **Task 链**，
+    /// 而每一条 `CaptureBg` 消息都会**再续一条** —— 于是任何一次
+    /// `Moved` / `Resized` 窗口事件都会**永久**多出一条链。
+    ///
+    /// 实测：程序一启动就有 **3 条**（winit 建窗时会连发几次 `Resized`），
+    /// 65 秒里一直是 3 条并发抓屏；用户拖一下窗口就是几十条。
+    /// 每条链除了每轮做一次 40–95ms 的 GDI 抓屏，**还常驻占着一条 runtime
+    /// 线程池线程睡觉**（`std::thread::sleep` 不释放线程）。链一多，线程池就被
+    /// 睡满 ⇒ 别的 `Task` 排不上队 ⇒ 界面延迟越来越高、且**永远不恢复**。
+    ///
+    /// 现在外部请求只置 `bg_dirty`，链**有且只有一条**。
+    bg_running: bool,
+    /// 有外部事件（窗口移动 / 尺寸变化 / 换质感）要求"尽快再抓一次"。
+    bg_dirty: bool,
     /// 是否把设置写回状态文件。
     ///
     /// ⚠️ **测试构造出来的 `State` 必须关掉它**（[`State::default`] 里是 `false`）——
@@ -412,6 +455,10 @@ pub enum Message {
     SetGlassBlur(f32),
     /// 玻璃模式的底色浓度
     SetGlassTint2(f32),
+    /// 设置面板的浓度（亚克力模式下）—— 用户要求两种质感各配一个
+    SetAcrylicDialogTint(f32),
+    /// 设置面板的浓度（玻璃模式下）
+    SetGlassDialogTint(f32),
     /// 拖动**投影强度**滑条（同上）
     SetShadow(f32),
     /// 玻璃滑条（强度或底色）松手 —— 这时才写配置
@@ -442,8 +489,20 @@ pub enum Message {
     SetLang(UiLang),
     /// 设置面板：切换数学字体（传 [`MathFont::ALL`] 的下标）
     SetMathFont(usize),
-    /// 抓一帧自绘模糊背景（定时触发）
+    /// **外部**请求抓一帧自绘模糊背景（窗口移动 / 尺寸变化 / 换质感模式）。
+    ///
+    /// ⚠️ 语义是"请尽快再抓一次"，**不是**"再起一条循环"。
+    /// 真正的循环由 [`Message::BgTick`] 承担，全局只有一条。
     CaptureBg,
+    /// 窗口**被移动**了（只要求重绘，不要求重抓 —— 背景靠 uv 偏移跟手，
+    /// 见 [`State::bg_cycle`] 里"拖动中跳过抓屏"的说明）。
+    WindowMoved,
+    /// 抓屏链的**内部续期**（只有链自己会发，外部不许发）。
+    ///
+    /// 与 `CaptureBg` 分开是"单链"能成立的关键：`CaptureBg` 在链已经跑着时
+    /// 直接返回（只置 `bg_dirty`），而 `BgTick` 无条件续 —— 于是无论外部
+    /// 触发多少次，循环都只有一条。
+    BgTick,
     /// 抓回来了
     BgCaptured(Option<crate::backdrop::Backdrop>),
     /// 历史区滚动（用来记住"用户是不是停在底部"）
@@ -478,18 +537,16 @@ impl Default for State {
 /// **已经创建**（这里拿不到 HWND），二来探测是阻塞的 FFI 调用，
 /// 不该占 UI 线程 —— 丢进 Task 后 runtime 会在线程池里跑。
 pub fn boot() -> (State, Task<Message>) {
-    let s = State::load();
+    let mut s = State::load();
     let dark = s.dark;
+    // ⚠️ 首帧走 `bg_request` 而不是"自己发一条抓屏 Task" —— 后者会和链并存，
+    // 又变成两条。这里直接把唯一的链起起来（`Off` 模式会被 `bg_cycle` 拒掉）。
+    let bg = s.bg_request();
     (
         s,
         Task::batch([
             Task::perform(crate::backdrop::probe(dark), Message::AcrylicProbed),
-            // 立刻抓第一帧（否则要等定时的第一次触发，头两秒背景是空的）。
-            // 窗口刚起来时 `GetWindowRect` 可能还没尺寸，抓失败也不要紧 —— 定时那路会补上。
-            Task::perform(
-                async { crate::backdrop::capture_window_blurred(blur_factor()) },
-                Message::BgCaptured,
-            ),
+            bg,
         ]),
     )
 }
@@ -541,11 +598,16 @@ impl State {
             wrap: prefs.wrap,
             // 启动时视作在底部（`anchor_bottom` 也会把初始位置放到底部）
             at_bottom: true,
-            bg: None,
             bg_pixels: None,
+            bg_win: None,
             bg_version: 0,
+            bg_moved: false,
             bg_idle: 0,
+            bg_running: false,
+            bg_dirty: false,
             acrylic_tint: prefs.glass_tint,
+            acrylic_dialog_tint: prefs.acrylic_dialog_tint,
+            glass_dialog_tint: prefs.glass_dialog_tint,
             shadow: prefs.shadow,
             persist,
             show_funcs: false,
@@ -621,21 +683,22 @@ impl State {
             Message::SetTexture(t) => {
                 self.texture = t;
                 theme::set_texture(t);
-                // ⚠️ **模式一变，旧像素与旧句柄必须整体作废**。
+                // 设置页浓度是**按模式**存的：切质感时把对应那份推给 theme
+                theme::set_dialog_tint(match t {
+                    theme::Texture::Glass => self.glass_dialog_tint,
+                    _ => self.acrylic_dialog_tint,
+                });
+                // ⚠️ **模式一变，旧像素必须整体作废**。
                 //
-                // 否则会撞上这样的 bug：玻璃模式下 `self.bg` 本来就被刻意留成
-                // `None`（它走 shader，见 `BgCaptured`），切到亚克力后抓到的像素
-                // 恰好与上次相同 ⇒ 走"内容没变"的快路径直接返回，
-                // `self.bg` 永远是 `None` ⇒ **亚克力模式没有背景**。
-                self.bg = None;
+                // 否则会撞上这样的 bug：换模式后抓到的像素恰好与上次相同 ⇒ 走
+                // "内容没变"的快路径直接返回 ⇒ **切过去之后没有背景**。
                 self.bg_pixels = None;
+                self.bg_win = None;
                 self.bg_idle = 0;
                 theme::set_bg_ready(false);
-                // 模式变了：重新起一轮抓屏（`Off` 会被循环自己拒掉）
-                return Task::perform(
-                    async { crate::backdrop::capture_window_blurred(blur_factor()) },
-                    Message::BgCaptured,
-                );
+                // 模式变了：请链尽快再抓一帧（`Off` 会被 `bg_cycle` 拒掉并停链）。
+                // ⚠️ 走 `bg_request` 而不是自己发一条抓屏 Task —— 后者会多出一条链。
+                return self.bg_request();
             }
             Message::SetGlassBlur(v) => {
                 self.glass_blur = v.clamp(0.0, 1.0);
@@ -663,6 +726,14 @@ impl State {
                 // 与 `SetGlass` 同一套路：拖动只重绘，落盘在 `CommitGlass`
                 self.acrylic_tint = v.clamp(0.0, 1.0);
                 theme::set_glass_tint(self.acrylic_tint);
+            }
+            Message::SetAcrylicDialogTint(v) => {
+                self.acrylic_dialog_tint = v.clamp(0.0, 1.0);
+                theme::set_dialog_tint(self.acrylic_dialog_tint);
+            }
+            Message::SetGlassDialogTint(v) => {
+                self.glass_dialog_tint = v.clamp(0.0, 1.0);
+                theme::set_dialog_tint(self.glass_dialog_tint);
             }
             Message::SetShadow(v) => {
                 self.shadow = v.clamp(0.0, 1.0);
@@ -792,41 +863,30 @@ impl State {
                 // 背景**仍要显示**；之前拿 `glass_amount() <= 0.0` 判断，
                 // 强度一归零就把整个抓屏循环停掉、背景层也跳过，于是只剩纯色。
                 if theme::texture() == theme::Texture::Off {
-                    if self.bg.is_some() {
-                        self.bg = None;
+                    if self.bg_pixels.is_some() {
+                        self.bg_pixels = None;
+                        self.bg_win = None;
                         theme::set_bg_ready(false);
                     }
+                    self.bg_running = false;
                     return Task::none();
                 }
-                // 抓屏 + 模糊是阻塞的（BitBlt + 两趟 box blur，几毫秒到十几毫秒），
-                // 丢进 Task 让 runtime 在线程池里跑，UI 线程不等。
-                let capture = Task::perform(
-                    async { crate::backdrop::capture_window_blurred(blur_factor()) },
-                    Message::BgCaptured,
-                );
-                // ⚠️ **实时刷新：抓完自己排下一次**。
+                // ⚠️ **链已经在跑就只打个标记，绝不再起第二条**。
                 //
-                // iced 0.14 里 `iced::time::every` 需要 `tokio` feature
-                //（`iced_futures::backend::default::time`），而本项目用的是默认的
-                // `thread-pool` —— 两者可能冲突，不值得为一次定时抓屏去换 runtime。
-                // 所以用 Task 链：抓 → 睡 → 再发一次 `CaptureBg`。
-                // 循环只在"玻璃开着"时成立（上面那个分支会中断它）。
-                //
-                // ⚠️ **间隔是自适应的**（用户要求 CPU < 5%）。
-                //
-                // 实测：玻璃模式空闲时 **80% 的 CPU 都花在抓屏**（GDI 回读桌面）
-                // 上 —— 关掉抓屏后从 1.2% 掉到 0.26%。而"桌面一动不动"是绝大多数
-                // 时候的常态，那时每 500ms 重抓一次纯属浪费。
-                // 连续 2 次内容没变 ⇒ 放慢到 **2s**；一检测到变化立刻回到 500ms。
-                // 拖窗口由 `Moved`/`Resized` 事件**立即**触发一次，不受这个间隔影响。
-                let ms = if self.bg_idle >= 2 { 2000 } else { 500 };
-                let next = Task::perform(
-                    async move {
-                        std::thread::sleep(std::time::Duration::from_millis(ms));
-                    },
-                    |_| Message::CaptureBg,
-                );
-                return Task::batch([capture, next]);
+                // 这是"延迟越来越高、且永远不恢复"的根因（详见 [`State::bg_running`]
+                // 的注释）：实测启动即有 3 条链并发抓屏，拖一下窗口就是几十条。
+                return self.bg_request();
+            }
+            // 链的内部续期：无条件再跑一轮（唯一的循环入口）
+            Message::BgTick => return self.bg_cycle(),
+            // 窗口移动：只重绘（view 里现算 uv 偏移），不重抓屏。
+            //
+            // 但**要留下"还在动"的痕迹**：`bg_moved` 让 `bg_cycle` 知道本轮可以
+            // 跳过抓屏；`bg_dirty` 让"停下来之后的那一轮"立刻补抓一帧
+            //（否则要等 `bg_idle` 把间隔放慢到 2s，拖完会有明显的一段旧背景）。
+            Message::WindowMoved => {
+                self.bg_moved = true;
+                self.bg_dirty = true;
             }
             Message::BgCaptured(bd) => {
                 if let Some(b) = bd {
@@ -839,38 +899,36 @@ impl State {
                     //
                     // 比一次 memcmp（~0.1ms）就能判定"没变"，代价可以忽略。
                     let same = match &self.bg_pixels {
-                        Some((px, w, h)) => *w == b.width && *h == b.height && px[..] == b.rgba[..],
+                        Some((px, _, _, w, h)) => {
+                            *w == b.width && *h == b.height && px[..] == b.rgba[..]
+                        }
                         None => false,
                     };
                     if same {
                         self.bg_idle += 1;
-                        return Task::none();
+                        // ⚠️ **必须照样续链**：早期版本这里直接 `return Task::none()`，
+                        // 于是"桌面静止"反而把唯一的循环掐断了 —— 之后再也无法刷新。
+                        return self.bg_cycle();
                     }
                     self.bg_idle = 0;
 
-                    // 原始像素留给折射 shader（`image::Handle` 拿不回来）。
+                    // 原始像素留给折射 shader。
                     // 一次 `Arc::new` 之后，每帧 `draw()` 只 clone 引用计数。
-                    let px = Arc::new(b.rgba.clone());
-                    self.bg_pixels = Some((Arc::clone(&px), b.width, b.height));
+                    let px = Arc::new(b.rgba);
+                    self.bg_pixels = Some((Arc::clone(&px), b.x, b.y, b.width, b.height));
+                    // 记下"这张图对应窗口在哪" —— 拖动检测靠它（见 [`State::bg_win`]）。
+                    //
+                    // ⚠️ 抓屏本身要 40–95ms，期间窗口可能又挪了一点：那这一轮记的
+                    // 位置会略微滞后，表现为"多跳过一轮"。下一轮位置对上了会立刻
+                    // 补抓，是自愈的。
+                    self.bg_win = crate::backdrop::window_rect();
                     // 版本号 +1 ⇒ shader 下一帧才会真的 `write_texture`
                     self.bg_version += 1;
-
-                    // ── ② 只有亚克力模式才需要 `image::Handle` ───────────────
-                    //
-                    // 玻璃模式画的是**折射 shader**，它自己上传纹理，
-                    // 根本不看 `self.bg`。以前两种模式都建句柄，玻璃模式下
-                    // 那次图集上传是完全白做的（用户实测玻璃模式 CPU 10–30%，
-                    // 这是其中一块）。
-                    self.bg = if theme::texture() == theme::Texture::Acrylic {
-                        Some(iced::widget::image::Handle::from_rgba(
-                            b.width, b.height, b.rgba,
-                        ))
-                    } else {
-                        None
-                    };
                     // 告诉根容器"下面有东西了，你可以全透了"
                     theme::set_bg_ready(true);
                 }
+                // 抓完一轮，续下一次（链的唯一出口）
+                return self.bg_cycle();
             }
             Message::HistoryScrolled(viewport) => {
                 // 0.98 的余量：滚动条取整后很难精确等于 1.0
@@ -952,6 +1010,12 @@ impl State {
             ("glass2_blur", format!("{:.2}", self.glass_blur)),
             ("glass2_tint", format!("{:.2}", self.glass_tint2)),
             ("glass_tint", format!("{:.2}", self.acrylic_tint)),
+            // 设置面板自己的浓度（两种质感各一个）
+            (
+                "acrylic_dlg_tint",
+                format!("{:.2}", self.acrylic_dialog_tint),
+            ),
+            ("glass2_dlg_tint", format!("{:.2}", self.glass_dialog_tint)),
             ("shadow", format!("{:.2}", self.shadow)),
             ("wrap", if self.wrap { "on" } else { "off" }.to_string()),
         ];
@@ -1027,6 +1091,107 @@ impl State {
         let len = self.char_len();
         let next = self.caret as isize + delta;
         self.caret = next.clamp(0, len as isize) as usize;
+    }
+
+    /// 跑**一轮**抓屏循环：抓一帧 → 睡一会儿 → 发 [`Message::BgTick`] 续下一轮。
+    ///
+    /// ## ⚠️ 这是全进程唯一的一条抓屏链
+    ///
+    /// 见 [`State::bg_running`] 的注释：老写法是"每条 `CaptureBg` 都自我续期"，
+    /// 于是窗口每来一次 `Moved` / `Resized` 就永久多出一条链（实测启动即 3 条，
+    /// 拖窗口后几十条），每条链还常驻占一条 runtime 线程睡觉 —— 线程池被睡满后
+    /// 界面延迟一路涨到十几秒且**永不恢复**。
+    ///
+    /// 现在 `CaptureBg` 只置 `bg_dirty`，循环本体只有这里一个入口，
+    /// 所以链的数量**恒等于 1**。
+    fn bg_cycle(&mut self) -> Task<Message> {
+        // 关掉质感 ⇒ 链到此为止（把 `bg_running` 放开，下次开质感时由
+        // `SetTexture` 那条路径重新起链）
+        if theme::texture() == theme::Texture::Off {
+            if self.bg_pixels.is_some() {
+                self.bg_pixels = None;
+                self.bg_win = None;
+                theme::set_bg_ready(false);
+            }
+            self.bg_running = false;
+            return Task::none();
+        }
+        self.bg_running = true;
+
+        // ── ⚠️ 拖动中：跳过抓屏 ──────────────────────────────────────────
+        //
+        // 窗口原点与抓屏原点已经错开 ⇒ 说明窗口正在被拖动。此时背景**完全
+        // 不需要重抓**：着色器按原点差平移采样（`backdrop::uv_map`），
+        // 几何上就是精确的（抓屏区域还外扩了半个窗口的余量）。
+        //
+        // 老版本在这里每 500ms 重抓一次（抓屏 40–95ms 的 GDI 回读）：
+        // 背景刷新率掉到 2fps，而且每次都是一次 CPU 尖峰 ——
+        // 用户实测"拖动窗口时背景一卡一卡，目测小于 1 帧"。
+        // 跳过之后拖动全程**零抓屏**，刷新跟着事件的 60Hz 走，CPU 也只剩重绘。
+        //
+        // ⚠️ **判定必须拿"抓屏那一刻的窗口矩形"来比**（见 [`State::bg_win`]）：
+        // `bg_pixels` 里存的是**抓屏**原点与**降采样后**的宽高，
+        // 拿它们去和 `window_rect()` 比是永远比不上的（抓屏原点比窗口原点
+        // 小一个 `margin`，宽高又差一个降采样倍数）⇒ 上一版这条分支是死代码，
+        // 拖动时照样每 500ms 重抓一次（实测拖动 CPU 1.10%，正是这 40–95ms 的
+        // GDI 回读在 2Hz 上重复）。
+        let dragging = std::mem::take(&mut self.bg_moved);
+        if dragging
+            && let Some((cx, cy, cw, ch)) = self.bg_win
+            && let Some((wx, wy, ww, wh)) = crate::backdrop::window_rect()
+        {
+            let m = crate::backdrop::margin(ww, wh);
+            let dx = (wx - cx).abs();
+            let dy = (wy - cy).abs();
+            // ① 尺寸没变（变了 ⇒ 抓屏区域对不上，必须重抓）；
+            // ② 位移还在外扩余量内 ⇒ 偏移采样仍落在真实像素上（超出就是 clamp 拖影）
+            if cw == ww && ch == wh && dx <= m && dy <= m {
+                // 只走一遍"睡 → BgCaptured(None) → 续链"，不做 GDI 回读
+                return Task::perform(
+                    async move {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        None
+                    },
+                    Message::BgCaptured,
+                );
+            }
+        }
+
+        // ⚠️ **间隔是自适应的**（用户要求 CPU < 5%）。
+        //
+        // 实测：一次抓屏 40–95ms，其中 99% 花在 GDI 的 `StretchBlt` 上
+        //（从屏幕 DC 回读桌面）。而"桌面一动不动"是绝大多数时候的常态，
+        // 那时高频重抓纯属浪费 —— 连续 2 次内容没变就放慢到 **2s**；
+        // 有外部事件（`Moved` / `Resized` / 换质感，即 `bg_dirty`）就回到 500ms。
+        let idle = self.bg_idle >= 2 && !self.bg_dirty;
+        let wait_ms: u64 = if idle { 2000 } else { 500 };
+        self.bg_dirty = false;
+
+        // 抓屏 + 模糊是阻塞的（GDI 回读 + 两趟 box blur），
+        // 丢进 Task 让 runtime 在线程池里跑，UI 线程不等。
+        //
+        // ⚠️ **睡觉也放进同一个 Task**：以前"抓"和"睡"是两个并行的 Task，
+        // 等于每一轮要占两条线程池线程；合成一条后每轮只占一条。
+        Task::perform(
+            async move {
+                let r = crate::backdrop::capture_window_blurred(blur_factor());
+                std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+                r
+            },
+            Message::BgCaptured,
+        )
+    }
+
+    /// 外部（窗口移动 / 尺寸变化 / 换质感 / 启动）请求"尽快抓一帧"。
+    ///
+    /// ⚠️ 链已经在跑时**什么都不做**，只置 `bg_dirty` —— 这一条守卫是整个
+    /// "单链"设计成立的地方。
+    fn bg_request(&mut self) -> Task<Message> {
+        self.bg_dirty = true;
+        if self.bg_running {
+            return Task::none();
+        }
+        self.bg_cycle()
     }
 
     /// 键盘事件的总入口。
@@ -1166,6 +1331,30 @@ impl State {
 
     /// 视图
     pub fn view(&self) -> Element<'_, Message> {
+        // 把最新背景同步给玻璃着色器（`liquid` 的管线在版本号变化时才重传
+        // 纹理）。这里每帧调用是刻意的：质感切到"关闭"时 `bg_pixels` 会被
+        // update 清成 None，只有从 view 这条每帧必经的路同步，着色器才能
+        // 可靠地知道"现在没有背景可采样"。
+        //
+        // 同时算出**窗口→背景图**的 uv 映射：窗口挪动时原点差跟着变，
+        // 着色器按它平移采样 —— 拖动全程零抓屏、零 CPU（用户要求 60fps）。
+        let (bw, bh) = self
+            .bg_pixels
+            .as_ref()
+            .map_or((0, 0), |(_, _, _, w, h)| (*w, *h));
+        let bg_map = self
+            .bg_pixels
+            .as_ref()
+            .and_then(|(_, x, y, w, h)| crate::backdrop::uv_map((*x, *y, *w, *h)))
+            .unwrap_or(([1.0, 1.0], [0.0, 0.0]));
+        liquid::sync_backdrop(
+            self.bg_pixels.as_ref().map(|(p, ..)| p),
+            bw,
+            bh,
+            self.bg_version,
+            bg_map,
+        );
+
         let body = column![
             self.toolbar(),
             self.results(),
@@ -1276,40 +1465,31 @@ impl State {
         // 玻璃模式走 shader，根本用不到 `image::Handle`（见 `BgCaptured`），
         // 那里刻意把它留成 `None` 来省掉一次图集上传。
         let layered: Element<'_, Message> = match &self.bg_pixels {
-            Some((px, w, h)) if theme::texture() != theme::Texture::Off => {
+            Some((px, _cx, _cy, w, h)) if theme::texture() != theme::Texture::Off => {
                 // 两种质感看到的是**同一张**模糊背景，但画法不同：
                 // - 亚克力：普通贴图（磨砂玻璃，不做形变）
                 // - 玻璃：走**折射 shader** —— 边缘被"压弯"，像一块凸透镜
-                let bg_layer: Option<Element<'_, Message>> =
-                    if theme::texture() == theme::Texture::Glass {
-                        Some(
-                            iced::widget::shader(crate::refraction::Refraction {
-                                pixels: Arc::clone(px),
-                                width: *w,
-                                height: *h,
-                                // 扭曲强度。0.85 是"看得出边缘弯、中间不晃眼"的折中
-                                strength: 0.85,
-                                version: self.bg_version,
-                            })
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .into(),
-                        )
-                    } else {
-                        self.bg.as_ref().map(|handle| {
-                            iced::widget::image(handle.clone())
-                                .width(Length::Fill)
-                                .height(Length::Fill)
-                                // 抓的是窗口那块屏幕，尺寸与客户区基本一致，直接拉伸填满
-                                .content_fit(iced::ContentFit::Fill)
-                                .into()
-                        })
-                    };
-                match bg_layer {
-                    Some(layer) => stack![layer, content].into(),
-                    // 亚克力模式但句柄还没建好（切模式后那一瞬间）：先不叠
-                    None => content,
-                }
+                // 扭曲强度：玻璃要"边缘被压弯"（0.85），亚克力是磨砂、**不做形变**（0.0）。
+                let strength = if theme::texture() == theme::Texture::Glass {
+                    0.85
+                } else {
+                    0.0
+                };
+                // 窗口→背景图的 uv 映射（拖动时随原点差变化，零抓屏跟手）
+                let layer: Element<'_, Message> =
+                    iced::widget::shader(crate::refraction::Refraction {
+                        pixels: Arc::clone(px),
+                        width: *w,
+                        height: *h,
+                        strength,
+                        version: self.bg_version,
+                        uv_scale: bg_map.0,
+                        uv_off: bg_map.1,
+                    })
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into();
+                stack![layer, content].into()
             }
             _ => content,
         };
@@ -1332,29 +1512,62 @@ impl State {
         // 工具条上的文字都是"拉丁/数学"标签（MathIO、RAD…），走数学字体；
         // 中文标签（快速/死算/清空）走等线。`theme::label` 自动按内容挑。
         //
+        // ⚠️ **padding 必须给内容、不给 button**：
+        // 玻璃层是 `.width/height(Fill)`，它撑的是 **button 的内容盒** ——
+        // 而内容盒 = button 边界减去 padding。把 padding 留在 button 上，
+        // 玻璃就会比按键窄一圈（四周露出没盖到的直角）。
+        // 所以 button 自己 `.padding(0)`，padding 由里面的 `container` 给。
+        // ⚠️ **下面这个必须是 `fn`，不能写成闭包**：闭包参数的生命周期会被推断成
+        // **不变的**，而 `Button<'_, Message>` 对生命周期也是不变的 ——
+        // 于是"传入 `Element<'_>` → 包进 `button(..)` → 返回"会报
+        // `lifetime may not live long enough`。写成 `fn` 就能显式标出 `'a`。
+        //
+        // ⚠️ **padding 在这里给，不给 button**：液态玻璃是 `.width/height(Fill)` 的
+        // 着色器层，在 `Stack` 里它必须排在**文字之后**才能由文字决定尺寸（见下）。
+        // 而文字外还得留一圈内边距 —— 所以 padding 包在文字外面、玻璃垫在整块下面，
+        // 玻璃才盖得到 chip 的全部面积（含内边距）。
+        fn chip<'a>(content: Element<'a, Message>, on: bool, msg: Message) -> Element<'a, Message> {
+            let padded: Element<'a, Message> = container(content).padding([5, 12]).into();
+            // ⚠️ **玻璃层必须 `push_under`，不能写成 `stack![glass, 文字]`**：
+            // `Stack` 的 `base_layer` 默认是 **0**，尺寸取自**第一个**子元素 ——
+            // 而玻璃是 `Fill`，放进第 0 位就等于"把 chip 撑满可用空间"，
+            // 实际效果是工具条上的选项被拉成 180px 高的大板子（第一版快照的惨状）。
+            // `push_under` 把玻璃插到第 0 位并把 `base_layer` 加 1 ⇒
+            // 尺寸由文字决定、玻璃铺满文字那一圈、绘制顺序在文字**下面**。
+            let body: Element<'a, Message> = if theme::liquid_on() {
+                Stack::new()
+                    .push(padded)
+                    .push_under(liquid::layer(theme::chip_glass(
+                        on,
+                        theme::CHIP_RADIUS_GLASS,
+                    )))
+                    .into()
+            } else {
+                padded
+            };
+            button(body)
+                .padding(0)
+                .style(move |t, s| theme::mode_chip(t, s, on))
+                .on_press(msg)
+                .into()
+        }
         // `seg` 收 `&'static str`（字面量，无需翻译的那些：MathIO / RAD / DEG）；
         // `seg_t` 收**已翻译的 `String`** —— 界面里会跟随语言变化的那几个标签用它。
         let seg = |label: &'static str, on: bool, msg: Message| {
-            button(theme::label(label).size(14))
-                .padding([5, 12])
-                .style(move |t, s| theme::mode_chip(t, s, on))
-                .on_press(msg)
+            chip(theme::label(label).size(14).into(), on, msg)
         };
         let seg_t = |label: String, on: bool, msg: Message| {
-            button(theme::label(label).size(14))
-                .padding([5, 12])
-                .style(move |t, s| theme::mode_chip(t, s, on))
-                .on_press(msg)
+            chip(theme::label(&label).size(14).into(), on, msg)
         };
 
         // 图标按钮：固定最小宽度，否则 `☾` / `⚙` 这类单字符按钮会缩成很小的方块，
         // 点在它旁边一点就落空（第一版快照里它们明显偏小偏挤）
         let icon = |label: &'static str, on: bool, msg: Message| {
-            button(text(label).size(15).font(theme::font_math()))
-                .width(Length::Fixed(38.0))
-                .padding([5, 0])
-                .style(move |t, s| theme::mode_chip(t, s, on))
-                .on_press(msg)
+            chip(
+                text(label).size(15).font(theme::font_math()).into(),
+                on,
+                msg,
+            )
         };
 
         let mut r = Row::new().spacing(6).align_y(Alignment::Center);
@@ -1398,12 +1611,7 @@ impl State {
         r = r.push(icon("⚙", self.show_settings, Message::ToggleSettings));
         // 清空历史：这条**必须**翻译（工具条上最显眼的中文之一）。
         // 注意键用的是"清空历史"而不是"清空" —— 后者在 CLI 里可能被当成别的片段。
-        r = r.push(
-            button(theme::label(t("清空历史")).size(14))
-                .padding([5, 12])
-                .style(|tt, s| theme::mode_chip(tt, s, false))
-                .on_press(Message::ClearHistory),
-        );
+        r = r.push(seg_t(t("清空历史"), false, Message::ClearHistory));
 
         container(r)
             .padding([8, 12])
@@ -1684,6 +1892,20 @@ impl State {
             theme::label(pct(self.acrylic_tint))
                 .size(13)
                 .style(theme::hint),
+            Space::new().width(Pixels(8.0)),
+            // 设置页自己的浓度（用户要求：两种质感各配一个）
+            theme::label(t("设置页浓度")).size(12).style(theme::hint),
+            slider(
+                0.0..=1.0,
+                self.acrylic_dialog_tint,
+                Message::SetAcrylicDialogTint
+            )
+            .step(0.01_f32)
+            .on_release(Message::CommitGlass)
+            .width(Length::Fixed(96.0)),
+            theme::label(pct(self.acrylic_dialog_tint))
+                .size(13)
+                .style(theme::hint),
         ]
         .spacing(6)
         .align_y(Alignment::Center);
@@ -1716,6 +1938,19 @@ impl State {
                 .on_release(Message::CommitGlass)
                 .width(Length::Fixed(104.0)),
             theme::label(pct(self.glass_tint2))
+                .size(13)
+                .style(theme::hint),
+            Space::new().width(Pixels(8.0)),
+            theme::label(t("设置页浓度")).size(12).style(theme::hint),
+            slider(
+                0.0..=1.0,
+                self.glass_dialog_tint,
+                Message::SetGlassDialogTint
+            )
+            .step(0.01_f32)
+            .on_release(Message::CommitGlass)
+            .width(Length::Fixed(96.0)),
+            theme::label(pct(self.glass_dialog_tint))
                 .size(13)
                 .style(theme::hint),
         ]
@@ -1831,8 +2066,24 @@ impl State {
     /// 收 `String`（已翻译）而不是 `&str`：`theme::mode_chip` 需要 `Move` 闭包
     /// 捕获 `selected`，而按钮文案是运行时翻译出来的。
     fn chip(&self, label: String, selected: bool, msg: Message) -> Element<'_, Message> {
-        button(theme::label(label).size(13))
-            .padding([5, 12])
+        // ⚠️ 结构与工具条的 `chip` 同一套（见 `toolbar` 里的长注释）：
+        // padding 给内层 container（玻璃层要盖到 padding），玻璃用 `push_under`
+        // 垫在文字**下面**且让文字当 base 层决定尺寸 —— 写成 `stack![玻璃, 文字]`
+        // 会让 `Fill` 的玻璃成为 base 把 chip 撑满可用空间。
+        let padded = container(theme::label(label).size(13)).padding([5, 12]);
+        let body: Element<'_, Message> = if theme::liquid_on() {
+            Stack::new()
+                .push(padded)
+                .push_under(liquid::layer(theme::chip_glass(
+                    selected,
+                    theme::CHIP_RADIUS_GLASS,
+                )))
+                .into()
+        } else {
+            padded.into()
+        };
+        button(body)
+            .padding(0)
             .style(move |t, s| theme::mode_chip(t, s, selected))
             .on_press(msg)
             .into()
@@ -2076,6 +2327,23 @@ impl State {
                     _ => Length::FillPortion(1),
                 };
                 let face = self.key_face(k.label, k.kind);
+                // 键面四向居中（容器宽高都填满）—— 见下面 `.center_x/.center_y` 的注释
+                let face = container(face)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill);
+                // 玻璃质感下，键面底下垫一层**液态玻璃**（见 `crate::liquid`）。
+                // 它只管外观；尺寸与 hover 由着色器自己从 bounds / cursor 取。
+                let inner: Element<'_, Message> = if theme::liquid_on() {
+                    stack![
+                        liquid::layer(theme::key_glass(k.kind, theme::KEY_RADIUS_GLASS)),
+                        face
+                    ]
+                    .into()
+                } else {
+                    face.into()
+                };
                 r = r.push(
                     // ⚠️ **`button` 的内容默认贴在左上角**，不是居中。
                     // `iced_widget::button` 的 `layout` 走 `layout::padded`，
@@ -2086,18 +2354,15 @@ impl State {
                     // 所以只看宽度的 `container(face).width(Fill).center_x(Fill)` 会让键面
                     // **偏上**：容器撑满宽度但高度只有文字高，button 把它钉在顶部。
                     // 修法：容器**宽高都填满**并四向居中，内容才会落在键面正中心。
-                    button(
-                        container(face)
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .center_x(Length::Fill)
-                            .center_y(Length::Fill),
-                    )
-                    .width(w)
-                    .height(Length::Fixed(KEY_HEIGHT))
-                    .padding([0, 2])
-                    .style(move |t, s| theme::key(t, k.kind, s))
-                    .on_press(Message::Key(ri, ci)),
+                    button(inner)
+                        .width(w)
+                        .height(Length::Fixed(KEY_HEIGHT))
+                        // ⚠️ **padding 必须是 0**：玻璃层撑的是 button 的**内容盒**
+                        //（= 边界 - padding），留 padding 玻璃就盖不到按键边缘。
+                        // 键面本来就是居中的，不需要靠 padding 定位。
+                        .padding(0)
+                        .style(move |t, s| theme::key(t, k.kind, s))
+                        .on_press(Message::Key(ri, ci)),
                 );
             }
             rows = rows.push(r);
@@ -2248,14 +2513,16 @@ fn elapsed_text(d: std::time::Duration) -> String {
 pub fn subscription(_state: &State) -> iced::Subscription<Message> {
     let window_events = iced::window::events().map(|(_id, ev)| match ev {
         iced::window::Event::Opened { .. } => Message::WindowOpened,
-        // ⚠️ **窗口动了就重抓背景**。背景图是"窗口背后那块屏幕"的快照，
-        // 窗口一移动它就和实际位置错开了 —— 看起来像贴了张不动的壁纸。
+        // ⚠️ **只有尺寸变化才要重抓背景**（抓屏区域是跟着窗口尺寸算的）。
         //
-        // ⚠️ iced 0.14 没有 `iced::time::every`（那需要额外的 feature），
-        // 所以这里**没有定时刷新**：桌面内容变化（别的窗口动了）不会自动跟上。
-        // 拖动窗口时会重抓，够用；要更实时就得引入 `time` feature 或自己写
-        // `Subscription::run`。
-        iced::window::Event::Moved(_) | iced::window::Event::Resized(_) => Message::CaptureBg,
+        // 单纯**移动**不重抓：着色器按"当前窗口原点 − 抓屏原点"平移采样，
+        // 几何上完全等价（`backdrop::uv_map`），而且**零 CPU** ——
+        // 用户实测"拖动窗口时背景一卡一卡，目测小于 1 帧"就是每 500ms
+        // 重抓一次（GDI 回读 40–95ms）造成的。
+        // `WindowMoved` 唯一的作用就是触发一次重绘，让新偏移在下一帧生效
+        //（iced 收到任意消息都会重建 view + 重绘 ⇒ 刷新率跟着事件的 60Hz 走）。
+        iced::window::Event::Moved(_) => Message::WindowMoved,
+        iced::window::Event::Resized(_) => Message::CaptureBg,
         // 其余窗口事件本项目暂时不关心，映射成一个不会被处理的占位
         _ => Message::Noop,
     });
@@ -2772,7 +3039,7 @@ mod tests {
     /// 而桌面静止时抓屏每轮拿到的都是同一张图。若每次都换 `image::Handle`、
     /// 抬版本号，就白搭一次纹理上传 + 一次重绘。
     ///
-    /// 这里锁住三件事：内容变了才抬版本号、变了才建句柄、没变时累加"静止计数"。
+    /// 这里锁住两件事：内容变了才抬版本号、没变时累加"静止计数"。
     #[test]
     fn identical_backdrop_is_dropped() {
         let prev = theme::texture();
@@ -2781,6 +3048,8 @@ mod tests {
         let mut s = State::default();
         theme::set_texture(theme::Texture::Glass);
         let mk = |v: u8| crate::backdrop::Backdrop {
+            x: 0,
+            y: 0,
             width: 2,
             height: 1,
             rgba: vec![v, v, v, 255, v, v, v, 255],
@@ -2790,10 +3059,7 @@ mod tests {
         let _ = s.update(Message::BgCaptured(Some(mk(10))));
         assert_eq!(s.bg_version, 1, "第一张应当被收下");
         assert_eq!(s.bg_idle, 0);
-        assert!(
-            s.bg.is_none(),
-            "玻璃模式走 shader，不该再建 `image::Handle`（那次上传是白做的）"
-        );
+        assert!(s.bg_pixels.is_some(), "第一张要留下像素给 shader");
 
         // ② 完全相同的第二张：丢弃
         let _ = s.update(Message::BgCaptured(Some(mk(10))));
@@ -2805,11 +3071,13 @@ mod tests {
         assert_eq!(s.bg_version, 2, "内容变了必须抬版本号");
         assert_eq!(s.bg_idle, 0, "一有变化立刻回到快节奏");
 
-        // ④ 切到亚克力：旧像素作废，且这一次**必须**建出 `image::Handle`
+        // ④ 切到亚克力：旧像素作废，且换模式后**同一张图也必须被重新收下**
+        //（否则会走"内容没变"的快路径直接返回 ⇒ 切过去之后一片空白）
         let _ = s.update(Message::SetTexture(theme::Texture::Acrylic));
         assert!(s.bg_pixels.is_none(), "换模式要丢掉旧像素");
         let _ = s.update(Message::BgCaptured(Some(mk(200))));
-        assert!(s.bg.is_some(), "亚克力模式用 `image` 画背景，句柄必须存在");
+        assert!(s.bg_pixels.is_some(), "换模式后必须重新收下像素");
+        assert_eq!(s.bg_version, 3, "换模式后那张图要重新抬版本号");
 
         theme::set_texture(prev);
     }
@@ -3288,6 +3556,7 @@ mod tests {
             "点面板外任意处关闭",
             "玻璃强度",
             "底色浓度",
+            "设置页浓度",
             "面板投影",
             "亚克力质感",
             "模糊强度",

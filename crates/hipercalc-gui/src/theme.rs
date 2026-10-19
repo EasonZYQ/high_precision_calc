@@ -339,6 +339,24 @@ pub fn glass_tint() -> f32 {
     }
 }
 
+/// **设置页自己的浓度**（0 = 完全透明，1 = 与主面板同档）。
+///
+/// 用户要求："在亚克力和玻璃质感里，都单独为设置页面添加一个浓度的滑条"
+/// —— 设置面板是浮层，压在历史上面，需要比主面板更实一点才好用；
+/// 但要不要全实（100%）交给用户拧，所以另开一个旋钮而不是写死。
+static DIALOG_TINT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(100);
+
+/// 设置设置页浓度（0.0 – 1.0）
+pub fn set_dialog_tint(tint: f32) {
+    let pct = (tint.clamp(0.0, 1.0) * 100.0).round() as u8;
+    DIALOG_TINT.store(pct, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 当前设置页浓度（0.0 – 1.0）
+pub fn dialog_tint() -> f32 {
+    DIALOG_TINT.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
+}
+
 /// 当前色板
 pub fn colors() -> Colors {
     Colors::of(dark())
@@ -392,6 +410,17 @@ pub const RADIUS_GLASS: f32 = 20.0;
 pub const RADIUS_CARD: f32 = 8.0;
 /// 按钮 / 按键
 pub const RADIUS_BUTTON: f32 = 6.0;
+/// **玻璃模式下的按键圆角**：胶囊形（圆角 = 高度的一半）。
+///
+/// 用户拍板用胶囊形（照抄参考稿的 `radius: 9999px`）。按键高 40px ⇒ 圆角 20px。
+/// ⚠️ 必须与 `app.rs` 里 `KEY_HEIGHT` 保持一半的关系 —— 改按键高度时要一起改，
+/// 否则盖子会出现"圆角被削平"的破面（`liquid` 的 SDF 会把 r 夹到短边的一半）。
+pub const KEY_RADIUS_GLASS: f32 = 20.0;
+/// **玻璃模式下工具条 chip / 图标按钮的圆角**：也是胶囊形。
+///
+/// chip 的高度不固定（= 文字高 + 上下各 5），约 26~28px ⇒ 圆角取 13 即为胶囊。
+/// 与上面 `KEY_RADIUS_GLASS` 同理，只是对象不同（那边是 40px 高的键盘按键）。
+pub const CHIP_RADIUS_GLASS: f32 = 13.0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 样式函数
@@ -401,8 +430,18 @@ pub const RADIUS_BUTTON: f32 = 6.0;
 ///
 /// 这是"liquid glass"的核心。三个参数分别控制：
 /// - `lift`：投影强度（0 = 贴底，1 = 浮得最高）——用于区分主面板与次级面板
-/// - `tint`：背景 tint 的 alpha 倍数（键盘区比结果区更透，视觉分层）
+/// - `tint`：背景 tint 的 alpha 倍数。⚠️ 历史上各面板靠它做"键盘更透"的视觉
+///   分层，用户实测"输入框和顶部栏比虚拟键盘和计算框颜色要浓一点"——
+///   现在**四个栏全部传 1.0**，浓度完全由滑条统一控制。
 fn glass(c: &Colors, lift: f32, tint: f32) -> container::Style {
+    glass_with(c, lift, tint, glass_tint())
+}
+
+/// [`glass`] 的变体：全局浓度 `t` 由调用方给（而不是读当前模式的滑条）。
+///
+/// 设置面板用它传**自己的**浓度（用户要求给设置页单独一个滑条）——
+/// 设置页是压在历史上面的浮层，需要独立于主面板地调透度。
+fn glass_with(c: &Colors, lift: f32, tint: f32, t: f32) -> container::Style {
     let g = glass_amount();
     // 底色浓度 = 各面板自己的相对浓度 × 全局旋钮（用户在设置里调，见 [`GLASS_TINT`]）。
     // 玻璃越强 → 底色越透（让氛围底 / DWM 模糊透上来）；0 时是完全不透明的纯色。
@@ -410,13 +449,22 @@ fn glass(c: &Colors, lift: f32, tint: f32) -> container::Style {
     // ⚠️ **面板透明度只由「底色浓度」决定**（用户规格明确把两个旋钮拆开了）：
     // 「模糊强度」管背景模糊，「底色浓度」管面板透多少。
     // 之前两者混在一起，导致"调模糊强度面板也变透"这种说不清的行为。
-    let t = glass_tint();
-    // ⚠️ **浓度拉满时所有面板都必须不透明**：
+    // ⚠️ **浓度拉满时所有面板都必须不透明**，但必须**连续**地到 1。
+    //
+    // 上一版写的是 `if t >= 0.999 { 1.0 } else { tint * t }`：于是浓度 99%
+    // 时键盘的 alpha 还是 0.45×0.99 ≈ 0.45，滑到 100% 骤然跳成 1.0 ——
+    // 用户实测"浓度从 99 到 100 时，虚拟键盘和计算框会忽然变成纯色"。
+    //
+    // 现在是 `tint·t + t⁸·(1−tint)`：
+    // - `t = 0`   ⇒ 0（全透，与原来一致）
+    // - `t = 1`   ⇒ tint + (1−tint) = **1**（完全不透明，满足"浓度 100 看不见背景"）
+    // - 中间连续，且 `t⁸` 让"最后 20% 才明显变实"，前段观感与原来几乎相同
+    //   （tint = 1 的面板退化成 `t`，正是原来那条直线）。
     // 各面板的 `tint` 是**相对浓度**（键盘比结果区更透，用来做视觉层次），
     // 只在半透明状态下有意义。用户实测："底色浓度为 100 时输入栏和顶部一栏
     // 是纯色，但是历史框和虚拟键盘还是可以看到背景" —— 就是这里：
     // 键盘的 tint 是 0.62，乘上 1.0 还是 0.62，照样透。
-    let alpha = if t >= 0.999 { 1.0 } else { tint * t };
+    let alpha = (tint * t + t.powi(8) * (1.0 - tint)).clamp(0.0, 1.0);
     // 玻璃越强 → 投影越明显。"玻璃厚度"这个观感来自三件事，缺一不可：
     // 半透明底色（上面）、1px 高光描边（下面）、柔和投影（这里）。
     let lift = lift * (0.35 + 1.15 * g);
@@ -441,11 +489,21 @@ fn glass(c: &Colors, lift: f32, tint: f32) -> container::Style {
         let bottom = mix_alpha(solid, Color::BLACK, 0.07);
         gradient_background([(0.0, top), (1.0, bottom)])
     } else {
-        // ⚠️ 底部只乘 **0.62**，不要再乘 `solid.a`。
-        // `scale_alpha` 是"乘以因子"，不是"设为该值" —— 写成
-        // `solid.scale_alpha(solid.a * 0.62)` 会把 alpha 乘**两遍**，
-        // 面板一下子透得看不见（10 张快照全红）。
-        gradient_background([(0.0, solid), (1.0, solid.scale_alpha(0.62))])
+        // ⚠️ **渐变要靠「颜色」制造层次，不能靠「透明度」**。
+        //
+        // 原来写的是 `gradient_background([(0.0, solid), (1.0, solid.scale_alpha(0.62))])`
+        // —— 底部 alpha 被压到 `solid.a × 0.62`。于是**底色浓度拉到 100% 时，
+        // 亚克力面板的底部仍然透出 38% 的背景**：
+        // 用户实测"玻璃质感浓度 100 看不见背景（这是正确的），亚克力却还能看见"。
+        //
+        // 玻璃分支用的 `mix_alpha` 会**保留 alpha**，所以那里浓度 100% 能全遮住。
+        // 这里照抄同一套：上亮下暗改成掺白/掺黑，alpha 全程恒等于 `solid.a`。
+        //
+        // 掺色幅度（0.05 / 0.04）**刻意比玻璃（0.10 / 0.07）小**：亚克力的观感是
+        // "磨砂塑料片"，接近均匀才对；那点明暗只是为了不让面板看起来像纯色块。
+        let top = mix_alpha(solid, Color::WHITE, 0.05);
+        let bottom = mix_alpha(solid, Color::BLACK, 0.04);
+        gradient_background([(0.0, top), (1.0, bottom)])
     };
     container::Style {
         background: Some(background),
@@ -576,18 +634,20 @@ pub fn preview_strip(_theme: &Theme) -> container::Style {
     }
 }
 
-/// 结果区的卡片。
+/// 结果区的卡片 —— 与另外三个栏**同一档浓度**（用户要求"同步四个栏的浓度"）。
 ///
-/// 走与工具条同一套玻璃语言（用户要求："liquidglass 不仅仅窗口栏有，
-/// 整个计算器都应该有"），只是 `lift` 给得小一点 —— 它托在工具条下面，
-/// 层次该低一档，否则整屏的投影会互相打架。
+/// ⚠️ `tint` 参数只留 `lift`（投影）的差别：历史上历史框是 0.7、键盘是 0.45，
+/// 于是同一浓度下它们比工具条/输入栏明显更透 —— 用户实测"输入框和顶部栏
+/// 比虚拟键盘和计算框颜色要浓一点"。四个栏现在都给 `1.0`，浓度完全由滑条
+/// 统一控制，层级只靠投影（`lift`）区分。
 pub fn panel_card(_theme: &Theme) -> container::Style {
-    glass(&colors(), 0.7, 0.78)
+    glass(&colors(), 0.7, 1.0)
 }
 
-/// 次级面板（键盘底座，浮得低一点，避免和主面板抢视线）
+/// 次级面板（键盘底座，浮得低一点，避免和主面板抢视线）—— 见 [`panel_card`]
+/// 的说明：tint 同样是 1.0，只把 `lift` 调低。
 pub fn panel_low(_theme: &Theme) -> container::Style {
-    glass(&colors(), 0.45, 0.72)
+    glass(&colors(), 0.45, 1.0)
 }
 
 /// 窗口根容器：亚克力成功时**完全透明**（让 DWM 的模糊透上来 —— 那才是真正的
@@ -619,17 +679,44 @@ pub fn root(_theme: &Theme) -> container::Style {
 /// 而且 hover/press 的反馈必须**看得见**，否则用户不知道点中了没有。
 pub fn mode_chip(_theme: &Theme, status: button::Status, selected: bool) -> button::Style {
     let c = colors();
-    let (bg, fg, border) = match (selected, status) {
-        (true, button::Status::Hovered) => (c.accent.scale_alpha(0.92), c.on_accent, c.accent),
-        (true, button::Status::Pressed) => (c.accent.scale_alpha(0.78), c.on_accent, c.accent),
-        (true, _) => (c.accent, c.on_accent, c.accent),
-        (false, button::Status::Hovered) => (
-            c.surface_alt.scale_alpha(1.35),
-            c.text,
-            c.stroke.scale_alpha(1.8),
-        ),
-        (false, button::Status::Pressed) => (c.surface_alt.scale_alpha(0.65), c.text, c.stroke),
-        (false, _) => (c.surface_alt.scale_alpha(0.0), c.text_dim, c.stroke),
+    // 未选中的 chip 平时文字要弱一档（这是原来就有的观感，别在改玻璃时顺手弄丢）
+    // ⚠️ 玻璃质感下选中的 chip **不能**用 `on_accent`（白/深蓝按 accent 配的对色）：
+    // 玻璃模式的底是通透的（accent 只有一层淡色 0.30），白字叠上去就是
+    // "白底白字"直接消失（用户实测 bug：选中变白色且不显示文字）。
+    // 改用**强调蓝本身**：深色主题 #4CC2FF 亮天蓝 / 浅色 #0F6CBD 深蓝，
+    // 在任何玻璃底上都可读（用户拍板的方案）。
+    let fg = if liquid_on() && selected {
+        c.accent
+    } else if selected {
+        c.on_accent
+    } else if status == button::Status::Active {
+        c.text_dim
+    } else {
+        c.text
+    };
+    // 玻璃质感下：chip 的外观交给 `crate::liquid`，这里只留**状态反馈**那一层薄色
+    //（透过半透明的玻璃显出来），圆角也跟着变胶囊形。
+    let (bg, border, radius) = if liquid_on() {
+        let tint = match status {
+            button::Status::Hovered => Color::WHITE.scale_alpha(0.08),
+            button::Status::Pressed => Color::BLACK.scale_alpha(0.14),
+            _ => Color::TRANSPARENT,
+        };
+        let edge = c.stroke.scale_alpha(if dark() { 0.25 } else { 0.45 });
+        (tint, edge, CHIP_RADIUS_GLASS)
+    } else {
+        let (bg, border) = match (selected, status) {
+            (true, button::Status::Hovered) => (c.accent.scale_alpha(0.92), c.accent),
+            (true, button::Status::Pressed) => (c.accent.scale_alpha(0.78), c.accent),
+            (true, _) => (c.accent, c.accent),
+            // 未选中的 chip 平时**不铺底**（`scale_alpha(0.0)`），只有悬停/按下才浮出来
+            (false, button::Status::Hovered) => {
+                (c.surface_alt.scale_alpha(1.35), c.stroke.scale_alpha(1.8))
+            }
+            (false, button::Status::Pressed) => (c.surface_alt.scale_alpha(0.65), c.stroke),
+            (false, _) => (c.surface_alt.scale_alpha(0.0), c.stroke),
+        };
+        (bg, border, RADIUS_BUTTON)
     };
     button::Style {
         background: Some(Background::Color(bg)),
@@ -637,7 +724,7 @@ pub fn mode_chip(_theme: &Theme, status: button::Status, selected: bool) -> butt
         border: Border {
             color: border,
             width: 1.0,
-            radius: RADIUS_BUTTON.into(),
+            radius: radius.into(),
         },
         shadow: Shadow::default(),
         snap: false,
@@ -735,6 +822,17 @@ pub fn bare_button(_theme: &Theme, _status: button::Status) -> button::Style {
 /// 但底色用**接近不透明**的面板色。
 pub fn dialog(_theme: &Theme) -> container::Style {
     let c = colors();
+    // ⚠️ **质感开着时跟随两种质感**（用户要求："把设置菜单也做一下两种质感"）：
+    // 直接复用 [`glass`] 的主面板配方 —— 透明度由「底色浓度」旋钮统一决定
+    //（浓度 100% 时自动变成完全不透明，不会再出现早期"设置与计算结果
+    // 重叠"的问题 —— 那次的问题是把 alpha 硬编码成 0.5，浓度管不到它）。
+    if texture() != Texture::Off {
+        // ⚠️ 设置页用**自己的**浓度（用户要求单独一个滑条）：
+        // 它是绝对值 —— 100% = 完全不透明（压得住身后的历史），
+        // 调低 = 变透。传给 `glass_with` 时 tint=1.0、t=设置页浓度，
+        // 走同一条连续渐变曲线。
+        return glass_with(&c, 1.0, 1.0, dialog_tint());
+    }
     let g = glass_amount();
     let sh = shadow_amount();
     // 把面板色的 alpha 拉到 1：`surface` 的 RGB 本来就是"面板该有的颜色"，
@@ -783,7 +881,65 @@ pub enum KeyKind {
     Equals,
 }
 
+/// 液态玻璃只在**玻璃质感**下启用（用户拍板：亚克力保持磨砂扁平）。
+pub fn liquid_on() -> bool {
+    texture() == Texture::Glass
+}
+
+/// 高光总强度。中等档（用户拍板："白色 0.45~0.5"）为基准，
+/// 再让"玻璃强度"旋钮在它上下浮动。
+pub fn glass_spec() -> f32 {
+    (0.40 + 0.30 * glass_amount()).clamp(0.0, 1.0)
+}
+
+/// 按键的液态玻璃外观参数（尺寸留给布局，见 [`crate::liquid::Glass`]）。
+///
+/// ⚠️ **分组色保留但大幅减淡**（用户拍板）。原来各组的 alpha 是 0.16~0.72，
+/// 那会盖住 `liquid` 的高光 —— 看上去就是一块实色，不像玻璃。
+/// 现在压到 0.12~0.34：仍一眼分得出"这是运算符 / 这是等号"，
+/// 但主导观感的是玻璃的通透与高光。
+pub fn key_glass(kind: KeyKind, radius: f32) -> crate::liquid::Glass {
+    let c = colors();
+    let (rgb, a) = match kind {
+        // 数字与括号是最多的键，越淡越好 —— 玻璃感全靠高光撑
+        KeyKind::Digit => (c.surface_alt, 0.20),
+        KeyKind::Structural => (c.surface_alt, 0.14),
+        KeyKind::Operator => (c.accent, 0.18),
+        KeyKind::Function => (c.accent, 0.13),
+        KeyKind::Control => (c.danger, 0.14),
+        // 等号是唯一的主操作键，留最实（否则看不出它是"主按钮"）
+        KeyKind::Equals => (c.accent, 0.34),
+    };
+    crate::liquid::Glass {
+        radius,
+        base: [rgb.r, rgb.g, rgb.b, a],
+        dark: dark(),
+        spec: glass_spec(),
+    }
+}
+
+/// 工具条 chip / 图标按钮的液态玻璃外观（选中态用强调色，否则近乎无色）
+pub fn chip_glass(on: bool, radius: f32) -> crate::liquid::Glass {
+    let c = colors();
+    let (rgb, a) = if on {
+        (c.accent, 0.30)
+    } else {
+        (c.surface_alt, 0.16)
+    };
+    crate::liquid::Glass {
+        radius,
+        base: [rgb.r, rgb.g, rgb.b, a],
+        dark: dark(),
+        spec: glass_spec(),
+    }
+}
+
 /// 按键样式：分组定底色，四态定亮度。
+///
+/// ⚠️ **玻璃质感下这里只留"状态反馈"**：真正的外观由 [`crate::liquid`] 的
+/// 着色器画，它铺在按键内容底下。所以这里的 `background` 退化成一层
+/// **很淡的状态色**，透过半透明的玻璃显出来（按键按下时整体压暗）。
+/// 直接把底色涂满会盖住高光，玻璃感就没了。
 pub fn key(_theme: &Theme, kind: KeyKind, status: button::Status) -> button::Style {
     let c = colors();
     let base = match kind {
@@ -810,6 +966,18 @@ pub fn key(_theme: &Theme, kind: KeyKind, status: button::Status) -> button::Sty
         button::Status::Disabled => base.scale_alpha(base.a * 0.30),
         _ => base,
     };
+    // 玻璃质感下：底色换成一层薄薄的状态色，圆角跟着玻璃层一起变胶囊形
+    let (bg, radius) = if liquid_on() {
+        let tint = match status {
+            button::Status::Hovered => Color::WHITE.scale_alpha(0.07),
+            button::Status::Pressed => Color::BLACK.scale_alpha(0.13),
+            button::Status::Disabled => Color::TRANSPARENT,
+            _ => Color::TRANSPARENT,
+        };
+        (tint, KEY_RADIUS_GLASS)
+    } else {
+        (bg, RADIUS_CARD)
+    };
     button::Style {
         background: Some(Background::Color(bg)),
         text_color: if status == button::Status::Disabled {
@@ -818,13 +986,18 @@ pub fn key(_theme: &Theme, kind: KeyKind, status: button::Status) -> button::Sty
             fg
         },
         border: Border {
-            color: if status == button::Status::Hovered {
+            // 玻璃模式下**几乎不要描边**：玻璃的边缘那是 `liquid` 的高光环负责的，
+            // 再描一道实边会把"玻璃片"画成"圆角矩形 + 边框"。
+            // 只在浅色主题下留一丝，免得按键在浅底上糊掉。
+            color: if liquid_on() {
+                c.stroke.scale_alpha(if dark() { 0.25 } else { 0.45 })
+            } else if status == button::Status::Hovered {
                 c.stroke.scale_alpha(2.2)
             } else {
                 c.stroke
             },
             width: 1.0,
-            radius: RADIUS_CARD.into(),
+            radius: radius.into(),
         },
         shadow: Shadow {
             color: Color::BLACK.scale_alpha(0.20),

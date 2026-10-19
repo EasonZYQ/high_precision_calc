@@ -101,6 +101,10 @@ pub struct GuiPrefs {
     pub shadow: f32,
     /// 长结果的处理方式：`true` = 自动换行，`false` = 横向滚动
     pub wrap: bool,
+    /// **设置面板自己的浓度**（亚克力模式）：0 = 全透，1 = 与主面板同档
+    pub acrylic_dialog_tint: f32,
+    /// **设置面板自己的浓度**（玻璃模式）
+    pub glass_dialog_tint: f32,
 }
 
 impl Default for GuiPrefs {
@@ -118,6 +122,9 @@ impl Default for GuiPrefs {
             // 100% —— 与 `theme::SHADOW_PERCENT` 的静态初值一致（不改变现有观感）
             shadow: 1.0,
             wrap: true,
+            // 设置面板默认与主面板同档（不额外加实）
+            acrylic_dialog_tint: 1.0,
+            glass_dialog_tint: 1.0,
         }
     }
 }
@@ -163,6 +170,14 @@ impl GuiPrefs {
                 && let Ok(f) = v.trim().parse::<f32>()
             {
                 p.shadow = f.clamp(0.0, 1.0);
+            } else if let Some(v) = line.strip_prefix("acrylic_dlg_tint=")
+                && let Ok(f) = v.trim().parse::<f32>()
+            {
+                p.acrylic_dialog_tint = f.clamp(0.0, 1.0);
+            } else if let Some(v) = line.strip_prefix("glass2_dlg_tint=")
+                && let Ok(f) = v.trim().parse::<f32>()
+            {
+                p.glass_dialog_tint = f.clamp(0.0, 1.0);
             } else if let Some(v) = line.strip_prefix("wrap=") {
                 p.wrap = v.trim() != "off";
             }
@@ -182,6 +197,11 @@ impl GuiPrefs {
             ("glass2_blur", format!("{:.2}", self.glass_blur)),
             ("glass2_tint", format!("{:.2}", self.glass_tint2)),
             ("shadow", format!("{:.2}", self.shadow)),
+            (
+                "acrylic_dlg_tint",
+                format!("{:.2}", self.acrylic_dialog_tint),
+            ),
+            ("glass2_dlg_tint", format!("{:.2}", self.glass_dialog_tint)),
             ("wrap", if self.wrap { "on" } else { "off" }.to_string()),
         ]
     }
@@ -538,6 +558,8 @@ mod tests {
             texture: "glass".to_string(),
             glass_blur: 0.7,
             glass_tint2: 0.45,
+            acrylic_dialog_tint: 0.8,
+            glass_dialog_tint: 0.9,
         };
         update_keys_at(&path, &prefs.to_keys()).unwrap();
 

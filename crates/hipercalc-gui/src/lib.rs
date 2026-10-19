@@ -14,6 +14,8 @@
 //! | [`fonts`] | 打包字体（等线 + 数学衬线）、字体选择、按内容挑字体 |
 //! | [`keypad`] | 虚拟键盘与函数目录的**纯数据 + 纯函数**（可脱离 GUI 单测） |
 //! | [`mathrender`] | 把 MathIO 文本排成真正的数学式（分数、竖排、根号、幂、π） |
+//! | [`liquid`] | **液态玻璃按键外观**（shader + 圆角矩形 SDF，仿 iOS liquid glass） |
+//! | [`refraction`] | 背景的"折射扭曲"shader（凸面玻璃） |
 //! | [`backdrop`] | 桌面模糊（DWM 亚克力）；Windows 走手写 Win32 FFI |
 //!
 //! ## 求值为什么在别的线程
@@ -41,6 +43,7 @@ pub mod backdrop;
 pub mod evaluator;
 pub mod fonts;
 pub mod keypad;
+pub mod liquid;
 pub mod mathrender;
 pub mod refraction;
 pub mod theme;

@@ -14,14 +14,14 @@
 //!    并把"扭曲强度"写进 uniform；
 //! 3. [`RefractionPrimitive::draw`]：画一个**全屏三角形**（三个顶点盖满整个
 //!    bounds，比分两个三角形少一次顶点）；
-//! 4. WGSL 里按"到中心的距离"偏移 UV —— 中心几乎不动、边缘明显偏移，
-//!    这就是凸面玻璃的成像特征。
+//! 4. WGSL 里按"到最近窗口边缘的距离"加权偏移 UV —— **中间一大块不动**，
+//!    只有靠边的环带（短边的 25%）逐渐弯曲，像一块有厚度的玻璃。
 //!
 //! ## 为什么不是真的曲面折射
 //!
 //! 真折射要追光线（Snell 定律），成本高且参数难调。这里用的是**视觉近似**：
-//! `偏移量 ∝ pow(半径, 3)`，中心平坦、边缘陡峭 —— 人眼看上去就是一块
-//! 有厚度的玻璃，而实现只有一行公式。
+//! 偏移量 = 「边缘权重 × 强度」，中心平坦、贴边陡峭 —— 人眼看上去就是一块
+//! 有厚度的玻璃，而实现只有几行公式。
 
 use iced::wgpu;
 use iced::widget::shader;
@@ -51,6 +51,13 @@ pub struct Refraction {
     /// `prepare()` 每帧都会被调用，而 60fps 下重传 800KB 纹理是纯浪费。
     /// 版本号没变就只更新 uniform，跳过 `write_texture`。
     pub version: u64,
+    /// 背景→窗口的 uv 映射：`图像uv = 窗口uv × uv_scale + uv_off`（y 向下）。
+    ///
+    /// 由 `app::view` 每帧从「抓屏原点 vs 当前窗口原点」算出来
+    ///（`backdrop::uv_map`）—— 窗口挪动时它跟着变，背景就"跟手"了，
+    /// 拖动全程不需要重抓屏（用户要求拖动 60fps、CPU < 1%）。
+    pub uv_scale: [f32; 2],
+    pub uv_off: [f32; 2],
 }
 
 impl<Message> shader::Program<Message> for Refraction {
@@ -70,6 +77,8 @@ impl<Message> shader::Program<Message> for Refraction {
             height: self.height,
             strength: self.strength,
             version: self.version,
+            uv_scale: self.uv_scale,
+            uv_off: self.uv_off,
         }
     }
 }
@@ -82,6 +91,8 @@ pub struct RefractionPrimitive {
     height: u32,
     strength: f32,
     version: u64,
+    uv_scale: [f32; 2],
+    uv_off: [f32; 2],
 }
 
 impl shader::Primitive for RefractionPrimitive {
@@ -119,11 +130,13 @@ pub struct RefractionPipeline {
 
 const WGSL: &str = r#"
 struct Uniforms {
-    // 目标区域尺寸（逻辑像素）—— 目前只用于让偏移量跟尺寸成比例，
-    // 真正的比例常数写在下面的 `0.08` 里。
+    // 目标区域尺寸（逻辑像素）—— 边缘环带宽度按它算
     size: vec2<f32>,
     strength: f32,
     _pad: f32,
+    // 背景图映射：图像uv = 窗口uv × map.xy + map.zw
+    //（窗口挪动时按原点差平移采样 —— 拖动全程零抓屏、零 CPU）
+    map: vec4<f32>,
 };
 
 @group(0) @binding(0) var bg: texture_2d<f32>;
@@ -154,16 +167,38 @@ fn vs(@builtin(vertex_index) i: u32) -> VOut {
 
 @fragment
 fn fs(in: VOut) -> @location(0) vec4<f32> {
-    // 中心为 0、边缘为 1 的径向坐标
-    let c = in.uv * 2.0 - vec2<f32>(1.0);
-    let r = length(c);
-    // 折射的核心：偏移量 ∝ r³。
-    // 一次方会让整块均匀偏移（像平移），平方会让中间也明显变形；
-    // 三次方让**中心几乎不动、边缘陡增** —— 这正是凸透镜的成像特征。
-    let k = pow(r, 3.0) * u.strength * 0.08;
-    // 沿径向向外偏移（采样更外面一点的内容 = 图像被"压"向边缘）
-    let uv = clamp(in.uv + c * k, vec2<f32>(0.002), vec2<f32>(0.998));
-    return textureSample(bg, samp, uv);
+    // ⚠️ **先把 uv 转成 y 向下的屏幕坐标**。`in.uv` 来自 NDC（y 向上：
+    // uv.y = 1 是顶边），而抓屏的行序是 top-down（第 0 行 = 屏幕最上面，
+    // 对应纹理 v = 0）。直接拿 in.uv 当 v 采样就会**上下颠倒**
+    //（用户实测 bug：两种质感的背景都是倒的）。转成 y 向下之后
+    // v = s.y 与抓屏行序天然一致，两层 shader 都按这个约定来。
+    let s = vec2<f32>(in.uv.x, 1.0 - in.uv.y);
+
+    // ── 边缘环带扭曲（用户规格：中间一大块不动，只有靠窗口边缘才扭曲）─────
+    //
+    // 旧版是纯径向公式 `偏移 ∝ r³`：全窗口都有形变，实测观感是"整个背景
+    // 都被拧过"。现在改成**按"到最近窗口边缘的距离"加权**：
+    // - `d` = 到最近边的距离（像素，取四面里最近的那个）
+    // - 环带宽度 = 短边的 25%（用户拍板）：环带内扭曲线性增强，出环带严格为 0
+    // - `pow(.., 1.6)` 让贴边处弯得最狠、环带外沿平滑收零 —— 模仿按键边缘
+    //   那种"玻璃有厚度"的观感
+    let dx = min(s.x, 1.0 - s.x) * u.size.x;
+    let dy = min(s.y, 1.0 - s.y) * u.size.y;
+    let band = 0.25 * min(u.size.x, u.size.y);
+    let w = pow(1.0 - smoothstep(0.0, band, min(dx, dy)), 1.6);
+    // 偏移方向仍用径向：在边缘附近它近似垂直于边缘（= 玻璃厚度的法线），
+    // 在角上则指向对角 —— 与按键拐角的弯法一致。
+    // `+ 1e-5` 防 `normalize(0)`：中心处 w 已是 0，方向随便给个非零向量即可。
+    let c = s * 2.0 - vec2<f32>(1.0);
+    let n = normalize(c + vec2<f32>(1e-5));
+    // 峰值偏移 10% 采样距离（× 滑条强度）。中心 0，边缘最弯。
+    let k = w * u.strength * 0.10;
+    // ── 窗口→背景图映射：窗口挪动时按原点差平移采样（拖动零抓屏）────────
+    // 抓屏区域带外扩余量（见 backdrop::margin），余量内的偏移都落在
+    // 真实像素上 —— 不再 clamp 到抓屏边缘（那会把最外一行拉成高饱和色块）。
+    var f = s * u.map.xy + u.map.zw + n * k;
+    f = clamp(f, vec2<f32>(0.001), vec2<f32>(0.999));
+    return textureSample(bg, samp, f);
 }
 "#;
 
@@ -259,8 +294,8 @@ impl RefractionPipeline {
 
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hipercalc-refraction-uniform"),
-            // vec2<f32> + f32 + f32 = 16 字节（std140 对齐要求）
-            size: 16,
+            // vec2 + f32 + f32 + vec4 = 32 字节（std140 对齐要求）
+            size: 32,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -293,11 +328,15 @@ impl RefractionPipeline {
             return;
         }
 
-        // ── ① uniform **每帧都写**：`strength` 可能被拖滑块改、尺寸也可能变 ──
-        let mut data = [0u8; 16];
+        // ── ① uniform **每帧都写**：`strength` 可能被拖滑块改、映射随窗口位置变 ──
+        let mut data = [0u8; 32];
         data[0..4].copy_from_slice(&size.width.to_le_bytes());
         data[4..8].copy_from_slice(&size.height.to_le_bytes());
         data[8..12].copy_from_slice(&prim.strength.clamp(0.0, 1.0).to_le_bytes());
+        data[16..20].copy_from_slice(&prim.uv_scale[0].to_le_bytes());
+        data[20..24].copy_from_slice(&prim.uv_scale[1].to_le_bytes());
+        data[24..28].copy_from_slice(&prim.uv_off[0].to_le_bytes());
+        data[28..32].copy_from_slice(&prim.uv_off[1].to_le_bytes());
         queue.write_buffer(&self.uniform, 0, &data);
 
         // ── ② 像素**没变就到此为止** ──────────────────────────────────────

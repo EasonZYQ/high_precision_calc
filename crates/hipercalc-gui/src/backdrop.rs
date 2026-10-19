@@ -135,7 +135,32 @@ mod imp {
     ///
     /// `pub(super)`：下面的抓屏实现也要用它（抓之前要把自己排除在捕获之外，
     /// 否则抓到的会是自己）。
+    ///
+    /// ## ⚠️ 结果**必须缓存**
+    ///
+    /// `EnumWindows` 是**全系统**的窗口遍历，实测一次 0.2–2.3ms。而
+    /// `capture_window_blurred` 一轮里会调它 **两遍**（`window_rect` 一次、
+    /// `grab_scaled` 一次）—— 抓屏本来就 40–95ms，再白扔几毫秒纯属浪费。
+    /// 主窗口句柄建好之后**不会再变**（本进程只开这一个顶层窗口），
+    /// 所以第一次找到就存下来，之后直接读。
+    ///
+    /// 缓存**失败结果**（`null`）会永久卡死，所以只有成功才写进缓存。
     pub(super) fn find_main_window() -> Option<Hwnd> {
+        let cached = HWND_CACHE.load(std::sync::atomic::Ordering::Relaxed);
+        if cached != 0 {
+            return Some(cached as Hwnd);
+        }
+        let r = find_main_window_inner();
+        if let Some(h) = r {
+            HWND_CACHE.store(h as isize, std::sync::atomic::Ordering::Relaxed);
+        }
+        r
+    }
+
+    /// 主窗口句柄缓存（`0` = 还没找到）
+    static HWND_CACHE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+    fn find_main_window_inner() -> Option<Hwnd> {
         let pid = std::process::id();
         let mut search = Search {
             pid,
@@ -296,10 +321,57 @@ mod imp {
 /// 一张可以直接当背景用的图（RGBA8）
 #[derive(Debug, Clone)]
 pub struct Backdrop {
+    /// 抓屏区域**左上角在屏幕上的位置**（物理像素）。
+    ///
+    /// 抓屏区域比窗口**大一圈**（见 [`capture_window_blurred`]），所以窗口
+    /// 挪动时不必立刻重抓 —— 着色器按 `(当前窗口原点 - 抓屏原点)` 平移采样，
+    /// 拖动全程背景都是几何正确的，一滴 CPU 都不花（用户要求拖动 60fps）。
+    pub x: i32,
+    pub y: i32,
     pub width: u32,
     pub height: u32,
     /// `width * height * 4` 字节，顺序是 R,G,B,A
     pub rgba: Vec<u8>,
+}
+
+/// 抓屏区域向外扩多少：**短边的一半**。
+///
+/// 抓大一点都不增加成本 —— `StretchBlt` 的开销主要在目标尺寸（降采样后很小），
+/// 源矩形大一些只是多读点屏。换来的是：
+///
+/// 1. 拖动窗口时，偏移采样在半个窗口范围内都落在真实像素上（而不是 clamp 拖影）；
+/// 2. 玻璃的边缘环带扭曲往外采样时采到的也是真实桌面 ——
+///    之前 clamp 到抓屏边缘会把最外一行像素拉成**高饱和色块**
+///    （用户反馈"背景饱和度比桌面高"主要就是这些色块）。
+pub fn margin(w: u32, h: u32) -> i32 {
+    (w.min(h) / 2).max(1) as i32
+}
+
+/// 当前窗口 → 背景图的 uv 映射：`图像uv = 窗口uv × scale + offset`。
+///
+/// 坐标系是 **y 向下**的屏幕坐标（与抓屏行序一致）—— 着色器里必须先把
+/// `in.uv`（wgpu 的 NDC，y 向上）转成 y 向下再用这个映射，否则背景上下颠倒
+///（用户实测 bug：两种质感的背景都是倒的）。
+///
+/// - `cap` = 抓屏区域 `(x, y, w, h)`（屏幕物理像素，存在 [`Backdrop::x`] 里）
+/// - 拿不到当前窗口位置（非 Windows / 句柄丢失）时返回 `None`，
+///   调用方退回恒等映射（不偏移，仅首次布局时短暂出现）。
+pub fn uv_map(cap: (i32, i32, u32, u32)) -> Option<([f32; 2], [f32; 2])> {
+    let (wx, wy, ww, wh) = platform::window_rect()?;
+    let sw = cap.2 as f32;
+    let sh = cap.3 as f32;
+    if sw <= 0.0 || sh <= 0.0 {
+        return None;
+    }
+    Some((
+        [ww as f32 / sw, wh as f32 / sh],
+        [(wx - cap.0) as f32 / sw, (wy - cap.1) as f32 / sh],
+    ))
+}
+
+/// 当前主窗口的屏幕矩形（转发 [`platform::window_rect`]，给拖动检测用）。
+pub fn window_rect() -> Option<(i32, i32, u32, u32)> {
+    platform::window_rect()
 }
 
 /// 抓屏幕上一块区域，降采样 `factor` 倍后再模糊。
@@ -323,7 +395,7 @@ pub fn capture_blurred(x: i32, y: i32, w: u32, h: u32, factor: u32) -> Option<Ba
     // **`f == 1` 表示"不模糊"**（用户要求："模糊强度为 0 时不是不模糊，
     // 而是直接关闭所有模糊，这是 bug" ⇒ 0 就该是清晰的桌面）。
     //
-    // 但仍然做 **2 倍**降采样：3.2MB 的全分辨率在 500ms 一轮的循环里太重，
+    // 但仍然做 **2 倍**降采样：全分辨率在轮询循环里太重，
     // 而 2 倍像素平均带来的轻微平滑肉眼接近清晰，代价只有 1/4 数据量。
     let sample = if f == 1 { 2 } else { f };
     let dw = (w / sample).max(1);
@@ -332,22 +404,44 @@ pub fn capture_blurred(x: i32, y: i32, w: u32, h: u32, factor: u32) -> Option<Ba
     if f == 1 {
         // 不模糊：`grab_scaled` 已经做完 BGRA→RGBA，直接当背景用
         return Some(Backdrop {
+            x,
+            y,
             width: dw,
             height: dh,
             rgba: raw,
         });
     }
     // ⚠️ factor 传 **1**：图已经是目标尺寸，只需要 box blur，不再降采样
-    Some(blur_downsample(&raw, dw as usize, dh as usize, 1))
+    let mut bd = blur_downsample(&raw, dw as usize, dh as usize, 1);
+    bd.x = x;
+    bd.y = y;
+    Some(bd)
 }
 
-/// 抓**本窗口所占的那块屏幕**并模糊。
+/// 抓**窗口周围一块更大的区域**（含 [`margin`] 外扩）并模糊。
 ///
-/// 窗口在屏幕上的位置由 `GetWindowRect` 现取 —— 这样上层完全不用知道坐标，
-/// 也就不必跟着 `Moved` / `Resized` 事件同步状态（少一处可能不同步的地方）。
+/// 窗口在屏幕上的位置由 `GetWindowRect` 现取 —— 这样上层完全不用知道坐标。
+/// 外扩的余量让"拖动窗口时按偏移采样旧图"成为可能（见 [`Backdrop::x`]）。
 pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
-    let (x, y, w, h) = platform::window_rect()?;
-    capture_blurred(x, y, w, h, factor)
+    let (wx, wy, ww, wh) = platform::window_rect()?;
+    let m = margin(ww, wh);
+    let x0 = wx - m;
+    let y0 = wy - m;
+    let x1 = wx + ww as i32 + m;
+    let y1 = wy + wh as i32 + m;
+    // ⚠️ **裁进虚拟屏幕**：越界的源矩形在 GDI 里是未定义行为（实测给黑色），
+    // 窗口贴边时那圈黑会被玻璃的边缘环带采样到，背景就"发黑/发脏"。
+    // 裁完之后外扩余量在贴边那侧会变小 —— 无所谓，`uv_map` 用的是**实际**
+    // 抓屏原点，映射照样精确；只是那一侧的拖动免抓范围相应缩短。
+    let (sx0, sy0, sx1, sy1) = platform::screen_bounds();
+    let x0 = x0.max(sx0);
+    let y0 = y0.max(sy0);
+    let x1 = x1.min(sx1);
+    let y1 = y1.min(sy1);
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    capture_blurred(x0, y0, (x1 - x0) as u32, (y1 - y0) as u32, factor)
 }
 
 /// 降采样 + 两趟 box blur（近似高斯）。
@@ -393,7 +487,10 @@ fn blur_downsample(src: &[u8], w: usize, h: usize, factor: usize) -> Backdrop {
     // ② 横竖各一趟 box blur
     let radius = 4usize;
     box_blur(&mut out, dw, dh, radius);
+    // x/y 由调用方填（这里不知道屏幕坐标），默认 0 占位
     Backdrop {
+        x: 0,
+        y: 0,
         width: dw as u32,
         height: dh as u32,
         rgba: out,
@@ -593,6 +690,11 @@ mod platform {
     const HALFTONE: i32 = 4;
     /// `COLORONCOLOR`：直接**丢掉**多余的行列，不做平均。快得多。
     const COLORONCOLOR: i32 = 3;
+    /// `GetSystemMetrics` 下标：虚拟屏幕原点与尺寸（多显示器合并后的整块桌面）
+    const SM_XVIRTUALSCREEN: i32 = 76;
+    const SM_YVIRTUALSCREEN: i32 = 77;
+    const SM_CXVIRTUALSCREEN: i32 = 78;
+    const SM_CYVIRTUALSCREEN: i32 = 79;
 
     #[repr(C)]
     struct Rect {
@@ -605,6 +707,7 @@ mod platform {
     #[link(name = "user32")]
     unsafe extern "system" {
         fn GetWindowRect(hwnd: Hwnd, rect: *mut Rect) -> Bool;
+        fn GetSystemMetrics(index: i32) -> i32;
     }
 
     /// 本进程主窗口在屏幕上的矩形 `(x, y, w, h)`
@@ -630,6 +733,25 @@ mod platform {
         }
     }
 
+    /// **虚拟屏幕**的边界 `(left, top, right, bottom)`（多显示器合并后的整块桌面）。
+    ///
+    /// 抓屏区域必须裁到这块里：越界的 `StretchBlt` 源矩形在 GDI 里是未定义行为，
+    /// 实测拿到的是**黑色**，于是窗口贴着屏幕边缘时背景外圈会出现黑带
+    ///（玻璃边缘环带往外采样正好采到它们）。
+    pub fn screen_bounds() -> (i32, i32, i32, i32) {
+        // SAFETY: 无参数、无指针，`GetSystemMetrics` 失败时返回 0
+        unsafe {
+            let x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            let y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            let w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            let h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+            if w <= 0 || h <= 0 {
+                return (0, 0, i32::MAX, i32::MAX);
+            }
+            (x, y, x + w, y + h)
+        }
+    }
+
     /// 抓屏幕上一块区域并**直接缩放到 `dw × dh`**，返回 RGBA（alpha 恒 255）。
     ///
     /// 抓之前把自己的窗口排除在捕获之外，抓完立刻恢复 —— 否则抓到的是
@@ -643,9 +765,7 @@ mod platform {
                 Some(h) => SetWindowDisplayAffinity(h, WDA_EXCLUDEFROMCAPTURE) != 0,
                 None => false,
             };
-
             let result = grab_inner(x, y, w, h, dw, dh);
-
             if excluded && let Some(h) = hwnd {
                 SetWindowDisplayAffinity(h, WDA_NONE);
             }
@@ -745,6 +865,11 @@ mod platform {
 
     pub fn window_rect() -> Option<(i32, i32, u32, u32)> {
         None
+    }
+
+    /// 非 Windows 没有抓屏，边界给"无限大"即可（裁剪变成恒等）。
+    pub fn screen_bounds() -> (i32, i32, i32, i32) {
+        (i32::MIN, i32::MIN, i32::MAX, i32::MAX)
     }
 }
 

@@ -268,6 +268,65 @@ fn math_font_switch_snapshot() {
     let _ = state.update(Message::SetMathFont(0));
 }
 
+/// **玻璃质感下的液态玻璃按键**（用户要求："虚拟键盘的按键和顶部的选项都要液态玻璃"）。
+///
+/// ⚠️ 这两张是那套外观的**唯一视觉证据**：默认质感是亚克力（`GuiPrefs::default`），
+/// 而液态玻璃只在 `Texture::Glass` 下启用 —— 其他 10 张快照里根本看不到它们。
+/// 所以改动 `crate::liquid` 之后，必须来这里肉眼确认。
+fn liquid_glass(dark: bool) {
+    let _guard = lock();
+    let mut state = populated_state();
+    state.set_dark_for_test(dark);
+    // ⚠️ **顺序不能反**：`State::default()` 自己会 `theme::set_texture(prefs.texture)`，
+    // 先设再建 State 会被它覆盖回亚克力（与 `identical_backdrop_is_dropped` 同一个坑）。
+    let _ = state.update(Message::SetTexture(hipercalc_gui::theme::Texture::Glass));
+
+    let snapshot = snap(&state);
+    let path = format!("{SNAP_DIR}/liquid-{}", if dark { "dark" } else { "light" });
+    assert!(
+        snapshot.matches_image(&path).expect("快照比对/写入失败"),
+        "玻璃质感（{}）界面与基线不一致：{path}",
+        if dark { "深色" } else { "浅色" }
+    );
+    // 还原默认质感（进程级开关，不还原会污染后面的测试）
+    let _ = state.update(Message::SetTexture(hipercalc_gui::theme::Texture::Acrylic));
+}
+
+#[test]
+fn liquid_glass_dark_snapshot() {
+    liquid_glass(true);
+}
+
+#[test]
+fn liquid_glass_light_snapshot() {
+    liquid_glass(false);
+}
+
+/// **玻璃质感下的设置面板**（用户反馈的 bug："设置里的按钮在玻璃质感下选中
+/// 会变成白色且不显示文字"）。
+///
+/// 这张快照是该修复的**视觉证据**：玻璃模式 + 打开设置，能看到
+/// - 设置面板本体跟随玻璃质感（半透明）；
+/// - 所有 chip 垫液态玻璃层；
+/// - 选中的 chip 是 **accent 蓝文字**（修复前是"白底白字"直接消失）。
+#[test]
+fn liquid_glass_settings_snapshot() {
+    let _guard = lock();
+    let mut state = populated_state();
+    state.set_dark_for_test(true);
+    // ⚠️ 顺序不能反：先建 State 再切玻璃（见 `liquid_glass` 里的说明）
+    let _ = state.update(Message::SetTexture(hipercalc_gui::theme::Texture::Glass));
+    let _ = state.update(Message::ToggleSettings);
+
+    let snapshot = snap(&state);
+    let path = format!("{SNAP_DIR}/liquid-settings.png");
+    assert!(
+        snapshot.matches_image(&path).expect("快照比对/写入失败"),
+        "玻璃质感（设置面板）界面与基线不一致：{path}"
+    );
+    let _ = state.update(Message::SetTexture(hipercalc_gui::theme::Texture::Acrylic));
+}
+
 /// 把状态渲染成一张离屏快照。
 ///
 /// 视口尺寸**必须固定**：`Simulator::new` 用的是 `window::Settings::default().size`，
