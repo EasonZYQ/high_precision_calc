@@ -330,6 +330,15 @@ pub struct Backdrop {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+    /// **抓屏区域的物理尺寸** `(宽, 高)`（＝窗口 + 外扩余量，裁进屏幕之前算好的）。
+    ///
+    /// ⚠️ 与 [`Backdrop::width`]（降采样后的**纹理像素**尺寸）是两回事：
+    /// uv 映射必须用**区域**尺寸 —— `图像uv = 窗口uv × 窗口宽/区域宽 + 原点差/区域宽`。
+    /// 上一版把纹理像素尺寸当区域尺寸传给 [`uv_map`]，scale 和 offset 全部
+    /// 按降采样倍数翻倍 ⇒ 窗口里显示的是"整个桌面被压扁再 clamp"的鬼影
+    /// （用户实测："背景截取的位置非常偏，与实际位置不符，且缩小了很多"）。
+    pub rw: u32,
+    pub rh: u32,
     /// `width * height * 4` 字节，顺序是 R,G,B,A
     pub rgba: Vec<u8>,
 }
@@ -353,25 +362,43 @@ pub fn margin(w: u32, h: u32) -> i32 {
 /// `in.uv`（wgpu 的 NDC，y 向上）转成 y 向下再用这个映射，否则背景上下颠倒
 ///（用户实测 bug：两种质感的背景都是倒的）。
 ///
-/// - `cap` = 抓屏区域 `(x, y, w, h)`（屏幕物理像素，存在 [`Backdrop::x`] 里）
+/// - `cap` = 抓屏区域 `(x, y, w, h)`（屏幕**物理**像素；宽高是**区域**尺寸，
+///   存在 [`Backdrop::rw`] / [`Backdrop::rh`] —— 不是降采样后的纹理像素尺寸！）
 /// - 拿不到当前窗口位置（非 Windows / 句柄丢失）时返回 `None`，
 ///   调用方退回恒等映射（不偏移，仅首次布局时短暂出现）。
 pub fn uv_map(cap: (i32, i32, u32, u32)) -> Option<([f32; 2], [f32; 2])> {
-    let (wx, wy, ww, wh) = platform::window_rect()?;
+    let win = platform::window_rect()?;
+    uv_map_with(cap, win)
+}
+
+/// [`uv_map`] 的纯函数版本：窗口矩形由调用方给（可测试、不碰 Win32）。
+///
+/// 数学：窗口内归一化坐标 `s` 对应的屏幕点 = `win.xy + s × win.wh`，
+/// 它在抓屏图里的归一化位置 = `(屏幕点 - cap.xy) / cap.wh`。
+/// 展开 ⇒ `图像uv = s × (win.wh / cap.wh) + (win.xy - cap.xy) / cap.wh`。
+pub fn uv_map_with(
+    cap: (i32, i32, u32, u32),
+    win: (i32, i32, u32, u32),
+) -> Option<([f32; 2], [f32; 2])> {
     let sw = cap.2 as f32;
     let sh = cap.3 as f32;
     if sw <= 0.0 || sh <= 0.0 {
         return None;
     }
     Some((
-        [ww as f32 / sw, wh as f32 / sh],
-        [(wx - cap.0) as f32 / sw, (wy - cap.1) as f32 / sh],
+        [win.2 as f32 / sw, win.3 as f32 / sh],
+        [(win.0 - cap.0) as f32 / sw, (win.1 - cap.1) as f32 / sh],
     ))
 }
 
 /// 当前主窗口的屏幕矩形（转发 [`platform::window_rect`]，给拖动检测用）。
 pub fn window_rect() -> Option<(i32, i32, u32, u32)> {
     platform::window_rect()
+}
+
+/// 开/关"本窗口不出现在任何捕获里"（转发 [`platform::exclude_from_capture`]）
+pub fn exclude_from_capture(on: bool) -> bool {
+    platform::exclude_from_capture(on)
 }
 
 /// 抓屏幕上一块区域，降采样 `factor` 倍后再模糊。
@@ -408,6 +435,8 @@ pub fn capture_blurred(x: i32, y: i32, w: u32, h: u32, factor: u32) -> Option<Ba
             y,
             width: dw,
             height: dh,
+            rw: w,
+            rh: h,
             rgba: raw,
         });
     }
@@ -415,6 +444,8 @@ pub fn capture_blurred(x: i32, y: i32, w: u32, h: u32, factor: u32) -> Option<Ba
     let mut bd = blur_downsample(&raw, dw as usize, dh as usize, 1);
     bd.x = x;
     bd.y = y;
+    bd.rw = w;
+    bd.rh = h;
     Some(bd)
 }
 
@@ -441,7 +472,56 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
     if x1 <= x0 || y1 <= y0 {
         return None;
     }
-    capture_blurred(x0, y0, (x1 - x0) as u32, (y1 - y0) as u32, factor)
+    let w = (x1 - x0) as u32;
+    let h = (y1 - y0) as u32;
+
+    // ── ⚠️ 桌面复制优先（Windows）────────────────────────────────────────
+    //
+    // 它能在 60Hz 上轮询（桌面没变化时每次 0.1ms），把 GDI 那 65–90ms 的
+    // 回读换成 GPU 侧缩小 + 读小图（3–5ms）⇒ 背景终于能到 60fps。
+    //
+    // 三态必须分开：`Unchanged` 直接返回 `None`（上层沿用上一张纹理，
+    // **绝不能**顺手退回 GDI）；只有 `Unsupported` 才走下面 GDI 那条路。
+    #[cfg(windows)]
+    {
+        let sample = if factor == 1 { 2 } else { factor.max(1) };
+        match crate::dupl::poll(x0, y0, w, h, sample) {
+            crate::dupl::Poll::Fresh {
+                rgba,
+                w: fw,
+                h: fh,
+                x: fx,
+                y: fy,
+                rw: frw,
+                rh: frh,
+            } => {
+                // ⚠️ **GPU 的 mip 链已经把 2×2 盒式平均做了 log2(sample) 遍**，
+                // 再加 CPU 那两趟 radius=4 的 box blur 是**重复劳动**
+                //（实测每次 0.3–0.6ms，在 30fps 上就是 1–2% 单核）。
+                // 1/8 那一层本身就是"8×8 像素平均"，与 GDI 路径（降采样 +
+                // box blur）的观感等价 —— 所以这里直接用 mip 的结果。
+                let mut bd = Backdrop {
+                    x: 0,
+                    y: 0,
+                    width: fw,
+                    height: fh,
+                    rw: 0,
+                    rh: 0,
+                    rgba,
+                };
+                bd.x = fx;
+                bd.y = fy;
+                // ⚠️ 必须是**实际**抓到的矩形（可能比请求的小 —— 裁进显示器后）
+                bd.rw = frw;
+                bd.rh = frh;
+                return Some(bd);
+            }
+            crate::dupl::Poll::Unchanged => return None,
+            crate::dupl::Poll::Unsupported => {}
+        }
+    }
+
+    capture_blurred(x0, y0, w, h, factor)
 }
 
 /// 降采样 + 两趟 box blur（近似高斯）。
@@ -487,12 +567,14 @@ fn blur_downsample(src: &[u8], w: usize, h: usize, factor: usize) -> Backdrop {
     // ② 横竖各一趟 box blur
     let radius = 4usize;
     box_blur(&mut out, dw, dh, radius);
-    // x/y 由调用方填（这里不知道屏幕坐标），默认 0 占位
+    // x/y/rw/rh 由调用方填（这里不知道屏幕坐标），默认 0 占位
     Backdrop {
         x: 0,
         y: 0,
         width: dw as u32,
         height: dh as u32,
+        rw: 0,
+        rh: 0,
         rgba: out,
     }
 }
@@ -704,16 +786,28 @@ mod platform {
         bottom: i32,
     }
 
+    #[repr(C)]
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+
     #[link(name = "user32")]
     unsafe extern "system" {
-        fn GetWindowRect(hwnd: Hwnd, rect: *mut Rect) -> Bool;
+        fn GetClientRect(hwnd: Hwnd, rect: *mut Rect) -> Bool;
+        fn ClientToScreen(hwnd: Hwnd, pt: *mut Point) -> Bool;
         fn GetSystemMetrics(index: i32) -> i32;
     }
 
-    /// 本进程主窗口在屏幕上的矩形 `(x, y, w, h)`
+    /// 本进程主窗口**客户区**在屏幕上的矩形 `(x, y, w, h)`（物理像素）。
+    ///
+    /// ⚠️ 必须用**客户区**而不是 `GetWindowRect`：后者包含 DWM 的不可见
+    /// 阴影边框（四边各 ~7px），拿它做 uv 映射会让背景整体偏移、比例也差一点
+    ///（用户实测："背景截取的位置非常偏，与实际位置不符"）。
+    /// 客户区才是 iced 真正渲染内容的那块 —— `uv [0,1]` 应当恰好铺在它上面。
     pub fn window_rect() -> Option<(i32, i32, u32, u32)> {
         let hwnd = super::imp::find_main_window()?;
-        // SAFETY: `hwnd` 是本进程的主窗口；`rect` 是栈上的、大小正确
+        // SAFETY: `hwnd` 是本进程的主窗口；`rect` / `pt` 是栈上的、大小正确
         unsafe {
             let mut r = Rect {
                 left: 0,
@@ -721,7 +815,11 @@ mod platform {
                 right: 0,
                 bottom: 0,
             };
-            if GetWindowRect(hwnd, &mut r) == 0 {
+            if GetClientRect(hwnd, &mut r) == 0 {
+                return None;
+            }
+            let mut pt = Point { x: 0, y: 0 };
+            if ClientToScreen(hwnd, &mut pt) == 0 {
                 return None;
             }
             let w = (r.right - r.left).max(0) as u32;
@@ -729,7 +827,7 @@ mod platform {
             if w == 0 || h == 0 {
                 return None;
             }
-            Some((r.left, r.top, w, h))
+            Some((pt.x, pt.y, w, h))
         }
     }
 
@@ -749,6 +847,25 @@ mod platform {
                 return (0, 0, i32::MAX, i32::MAX);
             }
             (x, y, x + w, y + h)
+        }
+    }
+
+    /// **开/关**"本窗口不出现在任何捕获里"（`WDA_EXCLUDEFROMCAPTURE`）。
+    ///
+    /// 抓屏必须排除自己 —— 否则抓到的是"桌面 + 自己半透明的界面"混在一起，
+    /// 当背景用会出重影；桌面复制更是会形成**自激循环**（见 [`crate::dupl`]）：
+    /// 界面重绘 → 桌面变了 → 抓 → 触发重绘 → ……
+    ///
+    /// ⚠️ 副作用：开着它的时候，用户的截图/录屏里本窗口会是"看穿"的。
+    /// 所以 GDI 那条路只在抓屏那一刻开（约 90ms）；桌面复制若要 60fps
+    /// 就必须常开。
+    pub fn exclude_from_capture(on: bool) -> bool {
+        let Some(hwnd) = super::imp::find_main_window() else {
+            return false;
+        };
+        // SAFETY: `hwnd` 是本进程主窗口；affinity 是该 API 的两个合法取值之一
+        unsafe {
+            SetWindowDisplayAffinity(hwnd, if on { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE }) != 0
         }
     }
 
@@ -871,6 +988,11 @@ mod platform {
     pub fn screen_bounds() -> (i32, i32, i32, i32) {
         (i32::MIN, i32::MIN, i32::MAX, i32::MAX)
     }
+
+    /// 非 Windows：没有抓屏，也就不需要排除
+    pub fn exclude_from_capture(_on: bool) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -944,5 +1066,50 @@ mod tests {
             let bd = blur_downsample(&src, w, h, f);
             assert!(bd.width >= 1 && bd.height >= 1, "尺寸不能塌成 0");
         }
+    }
+
+    /// uv 映射的**端到端数学**：抓屏区域里"窗口那一块"必须映射回 `[0,1]²`。
+    ///
+    /// 这是 change_log81 真实屏幕 bug 的回归测试：上一版把**纹理像素尺寸**
+    /// 当区域尺寸传进来，scale/offset 全部翻倍 ⇒ 窗口里显示的是整个桌面
+    /// 被压扁的鬼影。快照测试（无真实抓屏）根本测不出来，只能在这里锁。
+    #[test]
+    fn uv_map_maps_window_rect_onto_unit_square() {
+        // 桌面 1920×1080，窗口客户区 (400, 200, 1000, 800)，
+        // 抓屏区域 = 窗口 ± margin(500)，即 (-100, -300, 2000, 1800)
+        let win = (400, 200, 1000, 800);
+        let cap = (-100, -300, 2000u32, 1800u32);
+        let (scale, off) = uv_map_with(cap, win).expect("合法参数必须给映射");
+
+        // 四个角必须精确落回图像的对应位置
+        for (sx, sy) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+            let u = sx * scale[0] + off[0];
+            let v = sy * scale[1] + off[1];
+            // 屏幕点 = win 原点 + s×win 尺寸；图像坐标 = (屏幕点 - cap 原点)/cap 尺寸
+            let eu = (win.0 as f32 + sx * win.2 as f32 - cap.0 as f32) / cap.2 as f32;
+            let ev = (win.1 as f32 + sy * win.3 as f32 - cap.1 as f32) / cap.3 as f32;
+            assert!((u - eu).abs() < 1e-5, "u({sx}) = {u} ≠ {eu}");
+            assert!((v - ev).abs() < 1e-5, "v({sy}) = {v} ≠ {ev}");
+        }
+
+        // 窗口恰好等于抓屏区域时必须退化成恒等映射
+        let (scale, off) = uv_map_with((10, 20, 800, 600), (10, 20, 800, 600)).unwrap();
+        assert_eq!(scale, [1.0, 1.0]);
+        assert_eq!(off, [0.0, 0.0]);
+    }
+
+    /// 拿**纹理像素尺寸**冒充区域尺寸必须被测试抓住（就是这次的 bug 形态）
+    #[test]
+    fn uv_map_with_pixel_dims_would_break_alignment() {
+        let win = (400, 200, 1000, 800);
+        let region = (-100, -300, 2000u32, 1800u32);
+        // 正确：区域尺寸
+        let (_, off_ok) = uv_map_with(region, win).unwrap();
+        // 错误：把降采样 1/2 后的像素尺寸当区域尺寸
+        let (_, off_bad) = uv_map_with((-100, -300, 1000, 900), win).unwrap();
+        assert!(
+            (off_ok[0] - off_bad[0]).abs() > 0.1,
+            "两种传法的 offset 必须差得远，否则这条测试没有分辨力"
+        );
     }
 }

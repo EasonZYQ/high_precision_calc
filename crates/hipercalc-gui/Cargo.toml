@@ -33,6 +33,20 @@ hipercalc = { path = "../hipercalc", version = "1.3.0" }
 # canvas 不在 iced 的默认 feature 里，所以要显式打开。
 iced = { workspace = true, features = ["image", "canvas"] }
 
+# 桌面复制（Desktop Duplication）：**只有 Windows 需要**，所以放在
+# `[target.'cfg(windows)'.dependencies]` —— 否则 Linux / macOS 的 CI 也要
+# 去编译这套 Win32 绑定（而且那两个平台上根本用不到）。
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    # `DXGI_OUTPUT_DESC` 里带了 `HMONITOR`，所以还要 Gdi
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }
+
 # `oneshot` 通道：后台求值线程算完后用它把结果**非阻塞**地交给 iced 的 task future。
 #
 # ⚠️ 这是"界面永不卡死"的关键一环。早期版本用的是「std mpsc + 自旋等待」，

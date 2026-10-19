@@ -116,6 +116,13 @@ pub struct Glass {
     pub dark: bool,
     /// 高光总强度（0 = 无高光的纯色块，1 = 照抄参考稿）
     pub spec: f32,
+    /// **边缘折射厚度**（逻辑像素）：从边缘向内这么深的范围里，背景被
+    /// "凸透镜"式地弯出去 —— 越厚玻璃显得越厚。按键 ~15px，大面板要
+    /// 30px+ 才有"厚玻璃板"的分量（用户反馈："做好四周的折射"）。
+    pub thick: f32,
+    /// 边缘折射**强度**：边缘处背景最大偏移（归一化 uv）。
+    /// 按键 0.05（小件轻弯），面板 0.10~0.14（大板的边看得见明显的弯）。
+    pub bend: f32,
 }
 
 impl<Message> shader::Program<Message> for Glass {
@@ -164,6 +171,8 @@ impl GlassPrimitive {
             h: (self.h * 2.0).round() as i32,
             radius: (self.radius() * 2.0).round() as i32,
             spec: (self.glass.spec * 100.0).round() as i32,
+            thick: (self.glass.thick * 2.0).round() as i32,
+            bend: (self.glass.bend * 1000.0).round() as i32,
             hover: self.hover,
             dark: self.glass.dark,
             base: [
@@ -180,13 +189,13 @@ impl GlassPrimitive {
         self.glass.radius.min(self.w.min(self.h) * 0.5).max(0.0)
     }
 
-    /// uniform 内容（80 字节，std140：所有字段按 vec4 对齐）。
+    /// uniform 内容（96 字节，std140：所有字段按 vec4 对齐）。
     ///
     /// ⚠️ 窗口尺寸在这里（而不是 `Glass` 里）传入：只有 `prepare` 拿得到
     /// `shader::Viewport`（= 整个窗口的逻辑尺寸），`Program::draw` 没有。
-    fn data(self, win: (f32, f32), has_bg: bool, map: ([f32; 2], [f32; 2])) -> [u8; 80] {
+    fn data(self, win: (f32, f32), has_bg: bool, map: ([f32; 2], [f32; 2])) -> [u8; 96] {
         let g = self.glass;
-        let mut d = [0u8; 80];
+        let mut d = [0u8; 96];
         d[0..4].copy_from_slice(&self.w.to_le_bytes());
         d[4..8].copy_from_slice(&self.h.to_le_bytes());
         d[8..12].copy_from_slice(&self.radius().to_le_bytes());
@@ -208,6 +217,9 @@ impl GlassPrimitive {
         d[68..72].copy_from_slice(&map.0[1].to_le_bytes());
         d[72..76].copy_from_slice(&map.1[0].to_le_bytes());
         d[76..80].copy_from_slice(&map.1[1].to_le_bytes());
+        // edge：x = 边缘折射厚度（px），y = 折射强度（边缘最大偏移）
+        d[80..84].copy_from_slice(&g.thick.to_le_bytes());
+        d[84..88].copy_from_slice(&g.bend.to_le_bytes());
         d
     }
 }
@@ -218,6 +230,10 @@ struct Key {
     h: i32,
     radius: i32,
     spec: i32,
+    /// 边缘折射厚度（0.5px 量化）—— 不同厚度的面板/按键不能共享槽位
+    thick: i32,
+    /// 边缘折射强度（1/1000 量化）
+    bend: i32,
     hover: bool,
     dark: bool,
     base: [i32; 4],
@@ -267,7 +283,10 @@ pub struct GlassPipeline {
     ///
     /// ⚠️ **必须要有上限**：窗口拖动时按键宽度是连续变化的，量化到 0.5px 之后
     /// 仍然会有很多种尺寸；不加限制的话这张表会一直长。
-    slots: std::collections::HashMap<Key, (wgpu::Buffer, wgpu::BindGroup)>,
+    ///
+    /// 第三项是**上次写进 buffer 的字节**，用来跳过没变化的 `write_buffer`
+    ///（见 [`GlassPipeline::upload`]）。
+    slots: std::collections::HashMap<Key, (wgpu::Buffer, wgpu::BindGroup, [u8; 96])>,
     /// 背景纹理（抓屏 + 模糊的产物，与 `refraction.rs` 看到的是同一份像素）。
     /// 没有背景时绑 `fallback`（1×1 黑）—— WGSL 不能"不绑定"，用 uniform 里的
     /// `has_bg` 标志决定是否采样。
@@ -294,6 +313,8 @@ struct U {
     origin: vec2<f32>,
     // 窗口→背景图 uv 映射：图像uv = 窗口uv × map.xy + map.zw（y 向下）
     map: vec4<f32>,
+    // x = 边缘折射厚度（px），y = 边缘折射强度（边缘处背景最大偏移）
+    edge: vec2<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -379,11 +400,19 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
         // 强度 = 到边缘距离的平方衰减。`+ 1e-4` 防 `normalize(0)`。
         // ⚠️ `p` 是 y 向上的局部坐标，采样空间是 y 向下 ⇒ 方向的 y 要取反。
         let nloc = normalize(p + vec2<f32>(1e-4));
-        // 厚度感随圆角走：胶囊键几乎整条边都在弯，方一点的地方只弯边框一圈
-        let thick = u.radius * 0.9 + 2.0;
-        let bend = pow(clamp(1.0 - inward / thick, 0.0, 1.0), 2.0);
-        suv = suv + vec2<f32>(nloc.x, -nloc.y) * (bend * 0.05);
-        let bgc = textureSample(bg, samp, clamp(suv, vec2<f32>(0.001), vec2<f32>(0.999))).rgb;
+        // 厚度与强度由 uniform 给（按键薄、大面板厚 —— 用户要求"做好四周的折射"）
+        let thick = max(u.edge.x, 1.0);
+        let bend = pow(clamp(1.0 - inward / thick, 0.0, 1.0), 2.0) * u.edge.y;
+        let dloc = vec2<f32>(nloc.x, -nloc.y);
+        // ⚠️ **色散（chromatic aberration）**：真实玻璃对 R/G/B 的折射率不同，
+        // 边缘会把颜色拆开 —— 这是"一眼看出是玻璃"最关键的一笔。
+        // 三次采样成本换来的观感提升远超其它手段，且三通道只差 3 个采样点。
+        let lo = vec2<f32>(0.001);
+        let hi = vec2<f32>(0.999);
+        let kr = textureSample(bg, samp, clamp(suv + dloc * (bend * 1.12), lo, hi)).r;
+        let kg = textureSample(bg, samp, clamp(suv + dloc * bend, lo, hi)).g;
+        let kb = textureSample(bg, samp, clamp(suv + dloc * (bend * 0.88), lo, hi)).b;
+        let bgc = vec3<f32>(kr, kg, kb);
         // 玻璃本体 = 折射后的背景染上分组底色。底色 alpha 越大越"实"，
         // 0.18 的保底让全透明的分组也带一点玻璃白。
         let tint_k = clamp(u.base.a * 1.6 + 0.18, 0.0, 1.0);
@@ -626,9 +655,18 @@ impl GlassPipeline {
         Some(b.map)
     }
 
-    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: Key, data: [u8; 80]) {
+    fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: Key, data: [u8; 96]) {
         if self.slots.len() > MAX_SLOTS {
             self.slots.clear();
+        }
+        // ⚠️ **uniform 内容没变就不写**：`write_buffer` 每次都有固定的驱动开销，
+        // 44 个玻璃件 × 60fps = 每秒 2600 次纯浪费的驱动调用。
+        // 槽位里记下上次写过的字节，逐字节相同就跳过 —— 静止桌面/静止鼠标时
+        // 绝大多数帧一次都不用写（用户要求 CPU < 0.5%）。
+        if let Some((_, _, last)) = self.slots.get(&key)
+            && *last == data
+        {
+            return;
         }
         // ⚠️ 借用拆分：下面的闭包要读 `layout` / 纹理 view / `sampler`，
         // 而 `slots.entry` 可变借用的是另一个字段 —— 逐字段取引用即可过 borrowck。
@@ -638,11 +676,11 @@ impl GlassPipeline {
             Some((_, v, _)) => v,
             None => &self.fallback.1,
         };
-        let (buf, _) = self.slots.entry(key).or_insert_with(|| {
+        let (buf, _, last) = self.slots.entry(key).or_insert_with(|| {
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("hipercalc-liquid-uniform"),
-                // vec2×2 + f32×2 + vec4×3 + vec2×2 + vec4(map) = 80 字节（std140 对齐）
-                size: 80,
+                // vec2×2 + f32×2 + vec4×3 + vec2×2 + vec4(map) + vec2(edge) = 96 字节（std140 对齐）
+                size: 96,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
@@ -664,13 +702,14 @@ impl GlassPipeline {
                     },
                 ],
             });
-            (buffer, group)
+            (buffer, group, [0xAA; 96])
         });
         queue.write_buffer(buf, 0, &data);
+        *last = data;
     }
 
     fn paint(&self, pass: &mut wgpu::RenderPass<'_>, key: Key) -> bool {
-        let Some((_, group)) = self.slots.get(&key) else {
+        let Some((_, group, _)) = self.slots.get(&key) else {
             return false;
         };
         pass.set_pipeline(&self.pipeline);

@@ -327,6 +327,65 @@ fn liquid_glass_settings_snapshot() {
     let _ = state.update(Message::SetTexture(hipercalc_gui::theme::Texture::Acrylic));
 }
 
+/// **玻璃质感 + 背景**：四周折射与按键折射的**唯一视觉证据**。
+///
+/// ⚠️ 另外那几张玻璃快照里 `bg_pixels` 是 `None`（离屏测试没有窗口可抓屏），
+/// 于是着色器走 `has_bg = 0` 那条路 —— **折射根本没参与渲染**，那几张图
+/// 证明不了"边缘折射"。这里注入一张高对比的合成背景（16px 棋盘），
+/// 让面板四周与按键边缘的弯曲、色散真的显形。
+///
+/// ## 为什么必须是棋盘
+///
+/// 弯曲体现为"条纹被推歪"。纯色或渐变背景里，把 uv 挪几个像素看不出来；
+/// 棋盘一旦被挪，格子边立刻错开 —— 肉眼一眼就能判断折射有没有生效、
+/// 弯的方向对不对。
+#[test]
+fn liquid_glass_refraction_snapshot() {
+    let _guard = lock();
+    let mut state = populated_state();
+    state.set_dark_for_test(true);
+    // ⚠️ 顺序不能反：先建 State 再切玻璃（见 `liquid_glass` 里的说明）
+    let _ = state.update(Message::SetTexture(hipercalc_gui::theme::Texture::Glass));
+
+    // 合成背景：16px 棋盘 + 冷暖两色，弯曲与色散都能看出来。
+    //
+    // ⚠️ `width / height` 必须**真的等于** `rgba` 的尺寸 —— 着色器按
+    // `width * 4` 当行距上传，给错了整张图会错位（这里曾经踩过：见
+    // `Backdrop::rw` 那段"纹理像素尺寸 ≠ 抓屏区域尺寸"的说明）。
+    let (w, h) = (240u32, 180u32);
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let hi = ((x / 16) + (y / 16)) % 2 == 0;
+            let i = ((y * w + x) * 4) as usize;
+            rgba[i] = if hi { 232 } else { 28 };
+            rgba[i + 1] = if hi { 118 } else { 96 };
+            rgba[i + 2] = if hi { 46 } else { 220 };
+            rgba[i + 3] = 255;
+        }
+    }
+    let _ = state.update(Message::BgCaptured(Some(
+        hipercalc_gui::backdrop::Backdrop {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+            // 抓屏"区域"就是整块视口 ⇒ uv 映射退化成恒等（与离屏渲染一致）
+            rw: VIEWPORT.0 as u32,
+            rh: VIEWPORT.1 as u32,
+            rgba,
+        },
+    )));
+
+    let snapshot = snap(&state);
+    let path = format!("{SNAP_DIR}/liquid-refraction.png");
+    assert!(
+        snapshot.matches_image(&path).expect("快照比对/写入失败"),
+        "玻璃质感（折射）界面与基线不一致：{path}"
+    );
+    let _ = state.update(Message::SetTexture(hipercalc_gui::theme::Texture::Acrylic));
+}
+
 /// 把状态渲染成一张离屏快照。
 ///
 /// 视口尺寸**必须固定**：`Simulator::new` 用的是 `window::Settings::default().size`，

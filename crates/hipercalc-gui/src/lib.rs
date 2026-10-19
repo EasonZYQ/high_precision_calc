@@ -40,6 +40,8 @@
 
 pub mod app;
 pub mod backdrop;
+#[cfg(windows)]
+pub mod dupl;
 pub mod evaluator;
 pub mod fonts;
 pub mod keypad;

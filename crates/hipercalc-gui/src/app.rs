@@ -192,8 +192,14 @@ pub fn window_title(_state: &State) -> String {
     t("HiPerCalc — 超高精度计算器")
 }
 
-/// 抓屏数据的进程级快照：`(像素, 抓屏原点x, y, 宽, 高)`，见 [`State::bg_pixels`]。
-type BgPixels = (std::sync::Arc<Vec<u8>>, i32, i32, u32, u32);
+/// 抓屏数据的进程级快照：
+/// `(像素, 抓屏区域原点x, y, 纹理像素宽, 高, 抓屏区域物理宽, 高)`，见 [`State::bg_pixels`]。
+///
+/// ⚠️ **两组宽高是两回事**（change_log81 的教训）：纹理像素宽高是降采样后的
+/// （喂给 `write_texture`），抓屏区域宽高是窗口 + 外扩余量的**物理**尺寸
+/// （喂给 [`crate::backdrop::uv_map`]）。上一版把前者当后者用，
+/// scale/offset 按降采样倍数翻倍 ⇒ 背景整体错位且被压扁。
+type BgPixels = (std::sync::Arc<Vec<u8>>, i32, i32, u32, u32, u32, u32);
 
 /// 应用状态
 pub struct State {
@@ -899,7 +905,7 @@ impl State {
                     //
                     // 比一次 memcmp（~0.1ms）就能判定"没变"，代价可以忽略。
                     let same = match &self.bg_pixels {
-                        Some((px, _, _, w, h)) => {
+                        Some((px, _, _, w, h, _, _)) => {
                             *w == b.width && *h == b.height && px[..] == b.rgba[..]
                         }
                         None => false,
@@ -915,7 +921,8 @@ impl State {
                     // 原始像素留给折射 shader。
                     // 一次 `Arc::new` 之后，每帧 `draw()` 只 clone 引用计数。
                     let px = Arc::new(b.rgba);
-                    self.bg_pixels = Some((Arc::clone(&px), b.x, b.y, b.width, b.height));
+                    self.bg_pixels =
+                        Some((Arc::clone(&px), b.x, b.y, b.width, b.height, b.rw, b.rh));
                     // 记下"这张图对应窗口在哪" —— 拖动检测靠它（见 [`State::bg_win`]）。
                     //
                     // ⚠️ 抓屏本身要 40–95ms，期间窗口可能又挪了一点：那这一轮记的
@@ -1114,9 +1121,15 @@ impl State {
                 theme::set_bg_ready(false);
             }
             self.bg_running = false;
+            // 让可能正在轮询的循环退出（否则那条 future 永远不返回，
+            // 每条线程池线程就这么被占住了 —— 见 [`crate::dupl::stop`]）
+            #[cfg(windows)]
+            crate::dupl::stop();
             return Task::none();
         }
         self.bg_running = true;
+        #[cfg(windows)]
+        crate::dupl::resume();
 
         // ── ⚠️ 拖动中：跳过抓屏 ──────────────────────────────────────────
         //
@@ -1155,6 +1168,42 @@ impl State {
                     Message::BgCaptured,
                 );
             }
+        }
+
+        // ── 桌面复制可用：60Hz 轮询，只在"真的有新画面"时才回来 ──────────
+        //
+        // ⚠️ **轮询必须发生在这个 future 的内部**。若改成"每 16ms 唤醒一次
+        // 并给 update 发消息"，iced 每 16ms 就会重建一次 view ——
+        // 那才是真正的 CPU 杀手（5ms × 60 = 30% 单核）。
+        // 循环内部只做两件事：问一句"有新帧吗"（0.1ms）、没有就睡 16ms。
+        //
+        // 抓不到（桌面静止）就继续循环 ⇒ 一条消息都不发 ⇒ 界面不重绘。
+        #[cfg(windows)]
+        if crate::dupl::available() {
+            return Task::perform(
+                async move {
+                    loop {
+                        if crate::dupl::stopped() {
+                            return None;
+                        }
+                        // 实测每次 0.4ms（桌面静止时 0 次），所以这里**不需要限速**：
+                        // 桌面 37Hz 变化 ⇒ 37 × 0.4ms ≈ 1.5% 单核 ≈ 0.09% 总 CPU。
+                        let got = crate::backdrop::capture_window_blurred(blur_factor());
+                        // ⚠️ **内容没变就继续轮询，一条消息都不发**。
+                        // 实测 DWM 每秒给 ~20 个"新帧"，但内容 100% 与上一帧相同；
+                        // 每发一条消息 iced 就要重建一次 view ⇒ 界面 20Hz 空转。
+                        // 去重放在这里（runtime 线程）而不是 update 里，
+                        // 连消息都不产生 —— 见 [`crate::dupl::dedup`]。
+                        if let Some(got) = got
+                            && crate::dupl::dedup(&got.rgba)
+                        {
+                            return Some(got);
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(16));
+                    }
+                },
+                Message::BgCaptured,
+            );
         }
 
         // ⚠️ **间隔是自适应的**（用户要求 CPU < 5%）。
@@ -1338,14 +1387,18 @@ impl State {
         //
         // 同时算出**窗口→背景图**的 uv 映射：窗口挪动时原点差跟着变，
         // 着色器按它平移采样 —— 拖动全程零抓屏、零 CPU（用户要求 60fps）。
+        //
+        // ⚠️ `uv_map` 收的是**抓屏区域的物理尺寸**（元组后两位），
+        // 纹理像素尺寸（中间两位）只喂 `write_texture` —— 混用会整体错位
+        //（change_log81 的根因，见 [`BgPixels`] 的文档）。
         let (bw, bh) = self
             .bg_pixels
             .as_ref()
-            .map_or((0, 0), |(_, _, _, w, h)| (*w, *h));
+            .map_or((0, 0), |(_, _, _, w, h, _, _)| (*w, *h));
         let bg_map = self
             .bg_pixels
             .as_ref()
-            .and_then(|(_, x, y, w, h)| crate::backdrop::uv_map((*x, *y, *w, *h)))
+            .and_then(|(_, x, y, _, _, rw, rh)| crate::backdrop::uv_map((*x, *y, *rw, *rh)))
             .unwrap_or(([1.0, 1.0], [0.0, 0.0]));
         liquid::sync_backdrop(
             self.bg_pixels.as_ref().map(|(p, ..)| p),
@@ -1465,7 +1518,7 @@ impl State {
         // 玻璃模式走 shader，根本用不到 `image::Handle`（见 `BgCaptured`），
         // 那里刻意把它留成 `None` 来省掉一次图集上传。
         let layered: Element<'_, Message> = match &self.bg_pixels {
-            Some((px, _cx, _cy, w, h)) if theme::texture() != theme::Texture::Off => {
+            Some((px, _cx, _cy, w, h, _, _)) if theme::texture() != theme::Texture::Off => {
                 // 两种质感看到的是**同一张**模糊背景，但画法不同：
                 // - 亚克力：普通贴图（磨砂玻璃，不做形变）
                 // - 玻璃：走**折射 shader** —— 边缘被"压弯"，像一块凸透镜
@@ -1502,6 +1555,27 @@ impl State {
     }
 
     // ── ① 工具条 ────────────────────────────────────────────────────────────
+
+    /// 给一块**面板内容**垫上液态玻璃（只在玻璃质感下；其余模式原样返回）。
+    ///
+    /// ⚠️ **玻璃必须垫在 container 外面**（而不是塞进 container 里面）：
+    /// 面板的 padding 是 container 的，垫在里面就只能盖住 padding 以内的区域，
+    /// 面板最外圈会露出一条没盖到的直角 —— 而 **折射的精华全在最外 30px 那一圈**，
+    /// 盖不到就等于没做（用户要求："做好四周的折射"）。
+    ///
+    /// 垫在外面时要 `push_under`：让 container（base）决定整块的尺寸，
+    /// 玻璃是 `Fill`，绘制顺序在 container **下面** ——
+    /// 于是观感是"折射过的背景 → 面板底色 → 面板内容"。
+    fn glass_under<'a>(content: Element<'a, Message>, g: liquid::Glass) -> Element<'a, Message> {
+        if theme::liquid_on() {
+            Stack::new()
+                .push(content)
+                .push_under(liquid::layer(g))
+                .into()
+        } else {
+            content
+        }
+    }
 
     fn toolbar(&self) -> Element<'_, Message> {
         // ⚠️ 从 UI 侧副本读，而不是问 `Session` —— 求值器在别的线程上（见 `State::modes`）
@@ -1613,11 +1687,14 @@ impl State {
         // 注意键用的是"清空历史"而不是"清空" —— 后者在 CLI 里可能被当成别的片段。
         r = r.push(seg_t(t("清空历史"), false, Message::ClearHistory));
 
-        container(r)
-            .padding([8, 12])
-            .width(Length::Fill)
-            .style(theme::panel)
-            .into()
+        Self::glass_under(
+            container(r)
+                .padding([8, 12])
+                .width(Length::Fill)
+                .style(theme::panel)
+                .into(),
+            theme::panel_glass(),
+        )
     }
 
     // ── ② 结果区 ────────────────────────────────────────────────────────────
@@ -1683,12 +1760,15 @@ impl State {
             // 记住"用户是不是在底部"（见 `State::at_bottom`）
             .on_scroll(Message::HistoryScrolled);
 
-        container(inner)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(6)
-            .style(theme::panel_card)
-            .into()
+        Self::glass_under(
+            container(inner)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(6)
+                .style(theme::panel_card)
+                .into(),
+            theme::panel_glass(),
+        )
     }
 
     /// 一条历史：上面是表达式回显，下面是（可排版的）结果
@@ -2223,11 +2303,14 @@ impl State {
 
         // 输入区只剩一行：排版层本身就是"输入栏"（用户要求），
         // 不再另起一条"预览"—— 那是旧方案（编辑器可见 + 预览在下）的产物。
-        container(row1)
-            .width(Length::Fill)
-            .padding(8)
-            .style(theme::panel)
-            .into()
+        Self::glass_under(
+            container(row1)
+                .width(Length::Fill)
+                .padding(8)
+                .style(theme::panel)
+                .into(),
+            theme::panel_glass(),
+        )
     }
 
     // ── ④ 虚拟键盘区 ─────────────────────────────────────────────────────────
@@ -2368,18 +2451,21 @@ impl State {
             rows = rows.push(r);
         }
 
-        container(
-            column![
-                self.keypad_header(),
-                rule::horizontal(1.0).style(theme::divider),
-                rows
-            ]
-            .spacing(8),
+        Self::glass_under(
+            container(
+                column![
+                    self.keypad_header(),
+                    rule::horizontal(1.0).style(theme::divider),
+                    rows
+                ]
+                .spacing(8),
+            )
+            .width(Length::Fill)
+            .padding(10)
+            .style(theme::panel_low)
+            .into(),
+            theme::panel_glass(),
         )
-        .width(Length::Fill)
-        .padding(10)
-        .style(theme::panel_low)
-        .into()
     }
 
     // ── 函数弹窗 ────────────────────────────────────────────────────────────
@@ -3052,6 +3138,8 @@ mod tests {
             y: 0,
             width: 2,
             height: 1,
+            rw: 4,
+            rh: 2,
             rgba: vec![v, v, v, 255, v, v, v, 255],
         };
 

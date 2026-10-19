@@ -915,6 +915,10 @@ pub fn key_glass(kind: KeyKind, radius: f32) -> crate::liquid::Glass {
         base: [rgb.r, rgb.g, rgb.b, a],
         dark: dark(),
         spec: glass_spec(),
+        // 边缘折射：厚度跟着圆角走（胶囊键几乎整条边都在弯），强度中等。
+        // 按键是"薄玻璃"，弯得轻 —— 弯狠了小键会变成哈哈镜。
+        thick: radius + 2.0,
+        bend: 0.06,
     }
 }
 
@@ -931,6 +935,34 @@ pub fn chip_glass(on: bool, radius: f32) -> crate::liquid::Glass {
         base: [rgb.r, rgb.g, rgb.b, a],
         dark: dark(),
         spec: glass_spec(),
+        thick: radius + 2.0,
+        bend: 0.06,
+    }
+}
+
+/// **大面板**（顶栏 / 历史 / 输入 / 键盘底座）的液态玻璃外观。
+///
+/// 用户要求："现在的玻璃质感还是不像玻璃，要做好四周的折射" ——
+/// 这四个大板子之前只是半透明渐变（[`panel`] 那套），完全没有自己的透镜，
+/// 于是整个界面"只有按键是玻璃，板子是塑料"。现在给它们也垫一层玻璃：
+///
+/// - **厚**（30px）：大板子才配得上"厚玻璃板"的分量，边缘一圈 30px 内
+///   背景被明显地弯出去，中心保持平直（否则整块会变成哈哈镜）；
+/// - **底色更淡**（0.11）：板子面积大，底色稍重就会把背景糊死，
+///   那样浓度滑条也失去意义 —— 颜色和"实度"交给 [`panel`] 那层的 container 管。
+pub fn panel_glass() -> crate::liquid::Glass {
+    let c = colors();
+    crate::liquid::Glass {
+        // ⚠️ 圆角必须跟 `glass_with` 里玻璃模式的面板圆角（[`RADIUS_GLASS`]）
+        // 一致，否则玻璃的透镜边缘会和 container 的描边错开一圈。
+        radius: RADIUS_GLASS,
+        base: [c.surface.r, c.surface.g, c.surface.b, 0.11],
+        dark: dark(),
+        // 大板子的扫光要比按键收一点：45° 的高光带在 900px 宽的板子上
+        // 会拉得很长，看着像一条塑料反光条
+        spec: glass_spec() * 0.62,
+        thick: 30.0,
+        bend: 0.10,
     }
 }
 

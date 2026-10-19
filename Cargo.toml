@@ -20,6 +20,15 @@ rustyline = "14"
 # 0.14 是当前稳定版（需要 rustc ≥ 1.88）。
 iced = "0.14"
 
+# 桌面复制（Desktop Duplication）—— 仅 hipercalc-gui 用，且只在 Windows 上
+# 真正链接。用来取代 GDI 的"从屏幕 DC 回读桌面"（实测 65–90ms/次，
+# 背景最快只能 2fps）。这个 API 拿的是 GPU 侧的桌面帧，桌面没变化时轮询
+# 一次约 0.1ms，有变化时再把画面在 GPU 上缩到 1/2 或 1/8 才回读（3–5ms）。
+#
+# ⚠️ 版本必须跟 iced/wgpu 依赖树里的那份对齐（见 Cargo.lock），
+# 避免重复编译两份 `windows`。
+windows = "0.62"
+
 # 异步原语（仅 hipercalc-gui 使用）：后台求值用 `oneshot` 把结果**非阻塞**地
 # 回传给 iced 的 task future（见 `src/evaluator.rs`）。
 #

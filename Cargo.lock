@@ -1510,6 +1510,7 @@ dependencies = [
  "hipercalc-core",
  "iced",
  "iced_test",
+ "windows 0.62.2",
 ]
 
 [[package]]
