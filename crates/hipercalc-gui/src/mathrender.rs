@@ -1004,8 +1004,21 @@ pub fn build<'a, M: Clone + 'a>(
         }
         Node::Seq(items) => {
             let mut r = Row::new().align_y(Alignment::Center).spacing(0.0);
-            for it in items {
-                r = r.push(build(it, style, on_placeholder));
+            for (i, it) in items.iter().enumerate() {
+                // 运算符两侧留白（规则见 `op_pads`：行首的 `+ - ±` 才算一元）
+                match op_of(it).and_then(|t| op_pads(i, t)) {
+                    Some((l, rr)) => {
+                        r = r.push(
+                            container(build(it, style, on_placeholder)).padding(Padding {
+                                top: 0.0,
+                                right: style.size * rr,
+                                bottom: 0.0,
+                                left: style.size * l,
+                            }),
+                        );
+                    }
+                    None => r = r.push(build(it, style, on_placeholder)),
+                }
             }
             r.into()
         }
@@ -1275,6 +1288,45 @@ fn bigop_glyph_width(size: f32) -> f32 {
     bigop_glyph_size(size) * 0.58
 }
 
+/// **二元运算符 / 关系符两侧的留白**（单位：em，乘字号）。
+///
+/// 正规数学排版里，运算符不是"贴着数字"的：
+/// `1+1` 要排成 `1 + 1`，而 `=` 两侧还要更宽一点（LaTeX 的 `\thinmuskip` 4mu、
+/// `\thickmuskip` 5mu，这里按 0.14em / 0.20em 折算）。
+///
+/// ⚠️ **只给"出现在两个操作数之间"的运算符加**（见 [`op_pad`] 的调用处）：
+/// 行首的 `-`（负号，如 `-1/4`）不该加，否则会变成 `- 1`。
+fn op_pad(s: &str) -> Option<f32> {
+    match s {
+        // 二元运算符（窄一点）
+        "+" | "-" | "−" | "·" | "×" | "÷" | "±" | "%" => Some(0.14),
+        // 关系符（宽一点）
+        "=" | "<" | ">" | "≤" | "≥" | "≠" | "≈" | "→" => Some(0.20),
+        _ => None,
+    }
+}
+
+/// 某个位置上的运算符**左右**各留多少白（em）。
+///
+/// `index` 是它在所在行里的下标。只有行首的 `+` / `-` / `±` 才可能是**一元**符号
+/// （`-1/4` 的负号），那时左侧不留白；其余情况（含行首的 `=`，关系符不可能是一元）
+/// 两侧都留。
+fn op_pads(index: usize, s: &str) -> Option<(f32, f32)> {
+    let k = op_pad(s)?;
+    let unary_at_head = index == 0 && matches!(s, "+" | "-" | "−" | "±");
+    Some((if unary_at_head { 0.0 } else { k }, k))
+}
+
+/// 从节点里取出"它就是一个运算符"时的那个运算符文本
+/// （`At` / `Hit` 是位置包装，语义上还是里面那个记号）
+fn op_of(node: &Node) -> Option<&str> {
+    match node {
+        Node::Text(s) => Some(s),
+        Node::At { inner, .. } | Node::Hit { inner, .. } => op_of(inner),
+        _ => None,
+    }
+}
+
 /// 空参数框的尺寸 `(宽, 高)`。
 ///
 /// ⚠️ **高 = 光标高**（`size * 1.25`，见 `build` 里 `Node::Caret` 那一段）：
@@ -1345,7 +1397,17 @@ fn node_width(node: &Node, size: f32) -> f32 {
             let low = node_width(var, l) + node_width(from, l);
             up.max(low) + bigop_glyph_width(size)
         }
-        Node::Seq(items) => items.iter().map(|i| node_width(i, size)).sum(),
+        // ⚠️ 必须与 `build` 的留白规则同源（见 `op_pad` 的调用处）
+        Node::Seq(items) => items
+            .iter()
+            .enumerate()
+            .map(|(i, it)| {
+                let extra = op_of(it)
+                    .and_then(|t| op_pads(i, t))
+                    .map_or(0.0, |(l, r)| size * (l + r));
+                node_width(it, size) + extra
+            })
+            .sum(),
         // 分数：取分子/分母较宽者（横线宽度），外加一点内边距
         Node::Frac(num, den) => {
             let inner = size * 0.72;
