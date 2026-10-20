@@ -46,6 +46,7 @@ use hipercalc_core::calc_mode::CalcMode;
 use hipercalc_core::trig::AngleMode;
 
 use crate::evaluator::{Command, Evaluated, Evaluator};
+use crate::expr;
 use crate::keypad::{self, FN_GROUPS, KeyAction, KeyKind, Panel, layout_for};
 use crate::liquid;
 use crate::mathrender;
@@ -227,16 +228,16 @@ pub struct State {
     /// 输入框内容（多行编辑器 —— 能读光标、能局部插入）
     /// 输入栏的**文本**。
     ///
-    /// 自己维护，**不再依赖 `text_editor`**（用户明确要求"自己手写一个输入栏"）。
-    /// 为什么换掉：`text_editor` 的光标只有"行列"坐标，且只能靠 `Motion` 序列
-    /// **逼近**目标位置；而我们真正需要的是**字符偏移**（排版层画光标、点击定位
-    /// 都按字符算）。两套坐标反复换算，正是"点击不准、一输入就跑偏到 `sum` 前面"
-    /// 的根源。
-    input: String,
-    /// 光标位置：**字符**偏移（`0..=input.chars().count()`）。
+    /// 输入框的内容 —— **结构化表达式树 + 槽位光标**（见 [`crate::expr`]）。
     ///
-    /// 它就是唯一的真相 —— 排版层拿它画竖线，点击拿它直接赋值，插入按它切分。
-    caret: usize,
+    /// 为什么不是 `String`：数学结构（分数、根号、Σ）在文本里是**折叠**的 ——
+    /// `∑(,,,)` 的四个参数在源文本里都是"括号内同一处"，于是点哪个格子都一样、
+    /// 光标还能落到括号那个"不属于任何节点"的位置上直接消失。
+    /// 换成树之后每个插槽都是**天然合法的光标位置**，这两个 bug 从模型上就不存在了。
+    ///
+    /// 求值时用 [`expr::Doc::source`] 序列化回 MathIO 文本 —— 显示与计算解耦，
+    /// 求值侧完全不知道输入框长什么样。
+    input: expr::Doc,
     /// 深色模式
     pub dark: bool,
     /// 玻璃（liquid glass）强度：`0.0` = 关闭（不透明纯色），`1.0` = 最强。
@@ -587,8 +588,7 @@ impl State {
         Self {
             precision_text: modes.precision.to_string(),
             acrylic_checked: false,
-            input: String::new(),
-            caret: 0,
+            input: expr::Doc::default(),
             history: Vec::new(),
             dark: prefs.dark,
             acrylic_blur: prefs.glass,
@@ -1031,73 +1031,50 @@ impl State {
         }
     }
 
-    /// 光标在源文本里的**字符偏移**（排版层靠它画那根竖线）。
+    /// 点排版层里的某个可点目标（空槽位框、或某个记号）⇒ 光标送到那一位。
     ///
-    /// 自己维护之后这就是 `self.caret` —— 不需要再从行列坐标换算，也不会
-    /// 因为选区/换行符而与排版层对不上。
-    fn caret_offset(&self) -> Option<usize> {
-        Some(self.caret.min(self.char_len()))
-    }
-
-    /// 把光标挪到第 `at` 个**字符**处（点排版层里的占位框时用）。
-    ///
-    /// 自己维护光标之后这就是一次赋值。之前用 `Motion` 序列（回文首 → 逐行
-    /// `Down` → `Home` → 逐列 `Right`）**逼近**目标位置，那套在换行/字宽不一致时
-    /// 会偏 —— 用户实测"点了方框，一打字却跑到 `sum` 前面"。
-    fn place_caret(&mut self, at: usize) {
-        self.caret = at.min(self.char_len());
-    }
-
-    /// 输入文本的**字符**长度（`String::len` 是字节，不能直接用）
-    fn char_len(&self) -> usize {
-        self.input.chars().count()
+    /// `id` 是 [`expr::Doc::targets`] 的下标 —— **不是字符偏移**了。
+    /// 两者必须与渲染时登记的 id 同源（`to_node` 与 `targets` 是同一个遍历），
+    /// 否则"点哪去哪"会错位。
+    fn place_caret(&mut self, id: usize) {
+        self.input.place(id);
     }
 
     /// 清空输入
     fn clear_input(&mut self) {
         self.input.clear();
-        self.caret = 0;
     }
 
-    /// 把文本插到**光标处**（`keypad::splice` 是纯函数，含多字节与越界光标的单测）
+    /// 把一段"键面文本"插到光标处（键盘、函数面板、粘贴都走这里）
+    ///
+    /// 结构键（`sqrt()` / `∑()` / `(` / `^` …）由 [`expr::Doc::insert_key`]
+    /// 变成真正的树节点，普通记号则按字符切开。
     fn insert(&mut self, text: &str) {
-        if text.is_empty() {
-            return;
-        }
-        // `splice` 内部已经处理了"函数键补括号后光标落在括号内"（`cursor_back_for`），
-        // 所以这里直接采用它返回的光标位置。
-        let (next, cursor) = keypad::splice(&self.input, self.caret, text);
-        self.input = next;
-        self.caret = cursor;
+        self.input.insert_key(text);
     }
 
-    /// 退格：删光标**前**一个字符
+    /// 退格。⚠️ 只动**当前这一行**：光标在该行最前面时什么都不做 ——
+    /// 绝不会顺手把外层结构（Σ/根号）删掉（用户拍板的防误删规则）。
     fn backspace(&mut self) {
-        if self.caret == 0 {
-            return;
-        }
-        let idx = self.caret - 1;
-        let mut chars: Vec<char> = self.input.chars().collect();
-        chars.remove(idx);
-        self.input = chars.into_iter().collect();
-        self.caret = idx;
+        self.input.backspace();
     }
 
-    /// 向前删：删光标**所在**的字符（`Delete` 键）
+    /// 向前删（`Delete` 键），同样不会碰外层结构
     fn delete_forward(&mut self) {
-        if self.caret >= self.char_len() {
-            return;
-        }
-        let mut chars: Vec<char> = self.input.chars().collect();
-        chars.remove(self.caret);
-        self.input = chars.into_iter().collect();
+        self.input.delete();
     }
 
-    /// 光标左右移动（按**字符**，不会把多字节字符切开）
+    /// 光标左右移动。
+    ///
+    /// ⚠️ 走的是**线性阅读序**（[`expr::Doc::linear`]），不是"字符偏移 ±1"：
+    /// 摊平后每一项都是合法位置，所以**光标永远不会落在括号上消失**
+    /// —— 这正是用户报的 `∑()` 里按 ← 光标不见了的根因。
     fn move_caret(&mut self, delta: isize) {
-        let len = self.char_len();
-        let next = self.caret as isize + delta;
-        self.caret = next.clamp(0, len as isize) as usize;
+        if delta < 0 {
+            self.input.left();
+        } else {
+            self.input.right();
+        }
     }
 
     /// 跑**一轮**抓屏循环：抓一帧 → 睡一会儿 → 发 [`Message::BgTick`] 续下一轮。
@@ -1275,8 +1252,8 @@ impl State {
             K::Named(Named::Delete) => self.delete_forward(),
             K::Named(Named::ArrowLeft) => self.move_caret(-1),
             K::Named(Named::ArrowRight) => self.move_caret(1),
-            K::Named(Named::Home) => self.caret = 0,
-            K::Named(Named::End) => self.caret = self.char_len(),
+            K::Named(Named::Home) => self.input.home(),
+            K::Named(Named::End) => self.input.end(),
             // 可打印字符直接插入 —— `+ - * / ( ) ^` 与字母数字一视同仁
             K::Character(text) => {
                 let clean: String = text.chars().filter(|c| !c.is_control()).collect();
@@ -1289,11 +1266,13 @@ impl State {
         Task::none()
     }
 
-    /// 单行版本的输入文本（历史回显、测试用）。
-    /// 多行输入时用 `\n` 连接，保证"显示的就是用户敲的"。
+    /// 输入框内容的**源文本**（求值、历史回显、测试都用它）。
+    ///
+    /// 结构化之后这里是**序列化**：树 → MathIO 文本（`∑` → `sum(...)`、
+    /// 分数 → `a/b`、根号 → `sqrt(...)`）。求值侧完全不知道输入框是棵树，
+    /// 所以"显示与计算解耦"这条边界仍然只有一处。
     fn input_text(&self) -> String {
-        // 自己维护的就是原文：不再需要"逐行拼接 + trim"（那套是给 `Content` 用的）
-        self.input.clone()
+        self.input.source()
     }
 
     /// 把**显示符号**还原成求值器认识的函数名。
@@ -1335,8 +1314,8 @@ impl State {
         if self.busy {
             return Task::none();
         }
-        let lines: Vec<String> = self
-            .input
+        let text = self.input_text();
+        let lines: Vec<String> = text
             .lines()
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
@@ -2213,42 +2192,33 @@ impl State {
         // —— 槽位拿到 `Row` 分配的空间后，`text_editor` 在里面填满，不再向外膨胀。
         let src = self.input_text();
 
-        // ── ① 背后那层：**隐形**的 text_editor ────────────────────────────────
+        // ── ② 用户真正**看得见**的数学排版 ─────────────────────────────────
         //
-        // 用户要求"不要输入栏，预览就是输入栏"。但键盘输入、中文输入法、
-        // Ctrl+V、鼠标框选这些东西**只能**由 `text_editor` 提供（自己实现要跟
-        // 系统输入法对接），而它又只能显示纯文本、画不出根号。
-        //
-        // 所以让它**在下面继续收输入、但一个字都不显示**（`invisible_editor`），
-        // 用户看到的是上面那层排版（见 `theme::invisible_editor` 的长注释）。
-        //
-        // ⚠️ `.placeholder()` 不再需要：看不见的东西不用提示，
-        // 提示改由上面那层在输入为空时显示。
-        // ⚠️ **这里不再有隐藏的 `text_editor`**（用户要求"自己手写一个输入栏"）。
-        // 输入层只剩排版这一层：键盘从 `subscription` 的 `Message::KeyPressed`
-        // 进来，光标位置由 `self.caret` 决定，插入/删除都在 `handle_key` 里做完。
-        // 好处是**只有一套坐标**（字符偏移）；代价是中文输入法失效（表达式不需要）。
-
-        // ── ② 上面那层：用户真正**看得见**的数学排版 ─────────────────────────
+        // ⚠️ 这一层**就是输入栏本身**，不再是"预览"：结构化之后树既能排版、
+        // 又能精确说出"每个可点目标 ⇒ 光标落在哪一位"，所以不需要
+        // "文本编辑器 + 预览"那套两层结构了。
         let shown: Element<'_, Message> = if src.is_empty() {
             theme::label(t("输入表达式，例如 sqrt(2)/3、x^2-4=0、int(x^2,x,0,1)"))
                 .size(17)
                 .style(theme::hint)
                 .into()
         } else {
-            // 带光标解析：光标会作为一根**真实参与布局的竖线**插进去，
+            // 树 → 渲染 IR。光标作为一根**真实参与布局的竖线**插进去，
             // 位置由 iced 算 —— 不需要猜任何字体的字形宽度。
-            let parsed = mathrender::parse_with_caret(&src, self.caret_offset());
+            //
+            // 第二个返回值是"可点目标表"，`Node::Hit` / `Node::Empty` 里的
+            // `at` 就是它的下标 ⇒ 点它就把光标送到那个位置。
+            let (node, _targets) = self.input.to_node();
             mathrender::build(
-                &parsed,
+                &node,
                 mathrender::Style2 {
                     size: 19.0,
                     color: Some(theme::colors().text),
                     monospace: false,
                     wrap: true,
                 },
-                // 空参数框可点：点了把光标送进去（用户要求）
-                Some(&|at| Message::PlaceCaret(at)),
+                // 点空槽位框 / 点某个记号 ⇒ 光标落在那里（用户要求）
+                Some(&|id| Message::PlaceCaret(id)),
             )
         };
 
@@ -2641,9 +2611,8 @@ pub fn subscription(_state: &State) -> iced::Subscription<Message> {
 impl State {
     /// 直接设置输入框文本（测试用：跳过键盘模拟）
     pub fn set_input_for_test(&mut self, text: &str) {
-        self.input = text.to_string();
-        // 光标放到末尾（与"用户刚打完这串"的直觉一致）
-        self.caret = self.input.chars().count();
+        // 文本 → 树（走与"粘贴"同一条解析路径），光标放到末尾
+        self.input = expr::Doc::from_text(text);
     }
 
     /// **同步求值**（测试用）。
@@ -2659,8 +2628,8 @@ impl State {
     /// ⚠️ 唯一的差别是耗时会显示成真实值（测试里通常是 `<1秒`），
     /// 这让快照的右边栏也顺带获得了视觉覆盖。
     pub fn evaluate_blocking_for_test(&mut self) {
-        let lines: Vec<String> = self
-            .input
+        let text = self.input_text();
+        let lines: Vec<String> = text
             .lines()
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
@@ -2886,7 +2855,7 @@ mod tests {
             Node::Pow(a, b) => format!("{}^{}", flatten_node(a), flatten_node(b)),
             // 这三种节点不携带源文本（占位框 / 光标 / 参数逗号），拍平后是空的
             // 位置包装：拍平后就是里面那棵子树
-            Node::At { inner, .. } => flatten_node(inner),
+            Node::At { inner, .. } | Node::Hit { inner, .. } => flatten_node(inner),
             Node::Empty { .. } | Node::Caret | Node::Comma { .. } => String::new(),
             Node::BigOp {
                 body,
@@ -3015,11 +2984,7 @@ mod tests {
         }
         s.ctrl_held = false;
         assert_eq!(
-            s.input
-                .lines()
-                .map(|l| l.to_string())
-                .collect::<Vec<_>>()
-                .len(),
+            s.input_text().lines().count(),
             ROWS,
             "多行输入应被拆成 {ROWS} 行"
         );
@@ -3325,11 +3290,7 @@ mod tests {
 
         assert!(s.history.is_empty(), "Ctrl+Enter 不该求值：{:?}", s.history);
         assert_eq!(
-            s.input
-                .lines()
-                .map(|l| l.to_string())
-                .collect::<Vec<_>>()
-                .len(),
+            s.input_text().lines().count(),
             2,
             "Ctrl+Enter 应插入换行，编辑器变成两行"
         );
@@ -3750,12 +3711,30 @@ mod tests {
     /// 只要 `view` 在这上面炸了，用户打字打到一半界面就没了。
     #[test]
     fn preview_survives_incomplete_input() {
-        for src in [
-            "sqrt(", "x^", "1/", "int(", "(", ")", "sin(", "-", "^", "3+", "pi(", "√", "a_b",
+        // ⚠️ 结构化之后**括号会自动补平**：打 `int(` 就立刻得到一个完整的
+        // Σ/∫ 结构（光标在第一个空槽里），而不是留一个悬空左括号。
+        // 这是刻意的行为变化 —— 旧模型放任用户造出括号不配对的输入，
+        // 结果按 = 才报语法错。现在从根上不可能。
+        for (src, want) in [
+            ("sqrt(", "sqrt()"),
+            ("x^", "x^"),
+            ("1/", "1/"),
+            ("int(", "int(,,,)"),
+            ("(", "()"),
+            // 孤立的 `)` 会被忽略：结构化之后它只表示"跳出当前分组"，
+            // 没有分组时无处可跳 —— 这样永远不会造出括号不配对的输入
+            (")", ""),
+            ("sin(", "sin()"),
+            ("-", "-"),
+            ("^", "^"),
+            ("3+", "3+"),
+            ("pi(", "pi()"),
+            ("√", "√"),
+            ("a_b", "a_b"),
         ] {
             let mut s = State::default();
             s.insert(src);
-            assert_eq!(s.input_text(), src, "{src:?} 应原样进输入框");
+            assert_eq!(s.input_text(), want, "{src:?} 应进输入框并补平成 {want:?}");
             // 真正走一遍预览的构造路径（`parse` → `build`），不能 panic
             let node = mathrender::parse(&s.input_text());
             let _ = mathrender::build::<Message>(

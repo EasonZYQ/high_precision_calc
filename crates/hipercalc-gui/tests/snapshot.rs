@@ -327,6 +327,32 @@ fn liquid_glass_settings_snapshot() {
     let _ = state.update(Message::SetTexture(hipercalc_gui::theme::Texture::Acrylic));
 }
 
+/// **结构化输入框**：Σ 的四个槽位是四个**不同**的位置（本轮改动的视觉证据）。
+///
+/// 旧模型（文本 + 字符偏移光标）在这里有两个硬伤，都拍成了回归测试：
+/// 1. 四个空参数框算出来是**同一个**文本偏移 ⇒ 点哪个都"没反应"；
+/// 2. 光标能停在 `(` 那个位置上 ⇒ 光标无处可画、直接消失，接着打字变成 `∑x()`。
+///
+/// 这张图要看三件事：
+/// - 主体 `k²`、变量 `k`、下限 `1` 各就各位，**上限**是一个可点的空方框；
+/// - 光标（细竖线）画在**上限那个槽里**，而不是浮在括号上；
+/// - 整块排版**变高**了，输入区跟着长高而不是把 Σ 裁掉。
+#[test]
+fn structured_input_bigop_snapshot() {
+    let _guard = lock();
+    let mut state = populated_state();
+    state.set_dark_for_test(true);
+    // 上限留空 ⇒ 光标优先落在第一个空槽（= 上限），正是要展示的那个位置
+    state.set_input_for_test("∑(k^2,k,1,)");
+
+    let path = format!("{SNAP_DIR}/input-bigop.png");
+    let snapshot = snap(&state);
+    assert!(
+        snapshot.matches_image(&path).expect("快照比对/写入失败"),
+        "结构化输入框（Σ）与基线不一致：{path}"
+    );
+}
+
 /// **玻璃质感 + 背景**：四周折射与按键折射的**唯一视觉证据**。
 ///
 /// ⚠️ 另外那几张玻璃快照里 `bg_pixels` 是 `None`（离屏测试没有窗口可抓屏），

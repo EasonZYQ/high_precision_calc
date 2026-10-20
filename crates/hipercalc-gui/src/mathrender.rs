@@ -93,6 +93,16 @@ pub enum Node {
     /// 所以位置必须来自**解析时的源偏移**：解析时给每个顶层节点包一层 `At`，
     /// 渲染成一个可点区域。这样"点哪 → 光标去哪"是我们自己说了算的，精确。
     At { at: usize, inner: Box<Node> },
+    /// **字符级点击目标**（结构化输入框用）—— 与 [`Node::At`] 的唯一区别是
+    /// **不加内边距**。
+    ///
+    /// ## 为什么要单独一个变体
+    ///
+    /// 结构化输入框把每个记号都做成一个点击目标（点它 ⇒ 光标落在它**之前**），
+    /// 于是"点哪个字就在哪儿插"就成立了。而 [`Node::At`] 会给每块补
+    /// `padding([2, 1])` —— 逐个记号都加的话，字符之间会被撑出缝，
+    /// 整个算式看起来是散的。这里只包一层 `mouse_area`，不动布局。
+    Hit { at: usize, inner: Box<Node> },
     /// **参数分隔符**（内部节点，渲染成空）。
     ///
     /// 本模块的解析器是为"排版"写的，它并不懂函数签名 —— 逗号在它眼里只是一个
@@ -644,7 +654,11 @@ fn collapse(nodes: Vec<Node>, at: usize) -> Node {
 }
 
 /// 标识符 → 显示符号
-fn render_ident(name: &str) -> String {
+///
+/// `pub(crate)`：结构化输入框（[`crate::expr`]）也要用同一套映射 ——
+/// 它把 `Text("pi")` 送进渲染 IR 时必须变成 `π`，否则输入框里会显示成 `pi`、
+/// 而历史区显示 `π`，同一个东西两种样子。
+pub(crate) fn render_ident(name: &str) -> String {
     match name {
         "pi" => "π".into(),
         "inf" => "∞".into(),
@@ -800,6 +814,14 @@ pub fn build<'a, M: Clone + 'a>(
         }
         // 分隔符（`sum` 的参数逗号）只在切分阶段有用，排版时不显示
         Node::Comma { .. } => Space::new().width(Pixels(0.0)).height(Pixels(0.0)).into(),
+        // 字符级点击目标：**只包一层热区，不加内边距**（见 `Node::Hit` 的说明）
+        Node::Hit { at, inner } => {
+            let el = build(inner, style, on_placeholder);
+            match on_placeholder {
+                Some(f) => iced::widget::mouse_area(el).on_press(f(*at)).into(),
+                None => el,
+            }
+        }
         // 光标：一根竖线。它的位置由布局引擎算 —— 见 `Node::Caret`
         Node::Caret => container(Space::new().width(Pixels(0.0)).height(Pixels(style.size)))
             .width(Length::Fixed((style.size * 0.09).max(1.5)))
@@ -1195,7 +1217,7 @@ fn node_width(node: &Node, size: f32) -> f32 {
     match node {
         Node::Text(s) => s.chars().count() as f32 * size * CHAR_WIDTH_RATIO,
         // 位置包装：宽度就是里面那棵子树
-        Node::At { inner, .. } => node_width(inner, size),
+        Node::At { inner, .. } | Node::Hit { inner, .. } => node_width(inner, size),
         // 空占位框 / 光标：固定的小宽度
         Node::Empty { .. } => size * 0.6,
         Node::Caret => size * 0.12,
@@ -1327,7 +1349,7 @@ mod tests {
             },
             Node::Pow(a, b) => format!("{}^{}", flatten(a), flatten(b)),
             // 位置包装：拍平后就是里面那棵子树（位置不属于"文本"）
-            Node::At { inner, .. } => flatten(inner),
+            Node::At { inner, .. } | Node::Hit { inner, .. } => flatten(inner),
             // 不携带源文本的三种（占位框 / 光标 / 参数逗号）
             Node::Empty { .. } | Node::Caret | Node::Comma { .. } => String::new(),
             Node::BigOp {
@@ -1368,7 +1390,7 @@ mod tests {
                     || contains_caret(from)
                     || contains_caret(to)
             }
-            Node::At { inner, .. } => contains_caret(inner),
+            Node::At { inner, .. } | Node::Hit { inner, .. } => contains_caret(inner),
             _ => false,
         }
     }

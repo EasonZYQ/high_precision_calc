@@ -43,6 +43,8 @@ pub mod backdrop;
 #[cfg(windows)]
 pub mod dupl;
 pub mod evaluator;
+/// 输入框的**结构化表达式**模型（树 + 槽位光标）—— 见模块头。
+pub mod expr;
 pub mod fonts;
 pub mod keypad;
 pub mod liquid;

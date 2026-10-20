@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**已可用**：计算 / **后台求值（界面永不卡死）** / **耗时显示（对标 CLI）** / 历史 / Desmos 式双面板虚拟键盘 / 函数弹窗 / 数学排版与实时预览 / 内置字体 / 深浅双主题 / 全界面多语言）。**含 334 项单元测试**（hipercalc 200 + core 22 + GUI 101 单测 + 10 快照 + 1 doctest，其中 1 项 `perf_scan` 默认 ignore），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
+`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**已可用**：计算 / **后台求值（界面永不卡死）** / **耗时显示（对标 CLI）** / 历史 / Desmos 式双面板虚拟键盘 / 函数弹窗 / 数学排版与实时预览 / 内置字体 / 深浅双主题 / 全界面多语言）。**含 371 项测试**（hipercalc 200 + core 22 + GUI 132 单测 + 16 快照 + 1 doctest，其中 2 项默认 ignore（`perf_scan` 与构建期基准）），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
 
 ## 硬性要求（用户指定）
 
@@ -62,6 +62,7 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
   | --- | --- |
   | `app.rs` | 状态 / 消息 / update / view；**所有业务逻辑都在 `update` 里**，`view` 只读状态。求值与 UI 通过 `evaluator` 通信，`update` 本体永不阻塞 |
   | `evaluator.rs` | **后台求值线程**：常驻 worker 独占 `Session`，`mpsc` 收发 `Request::{Eval, Config}`；`Evaluator::eval` 返回一条**真异步** future（`futures::oneshot` 唤醒），由 `app.rs` 交给 `Task::perform`。⚠️ 刻意不含 `SetLang`（语言必须在 UI 线程同步设） |
+  | `expr.rs` | **输入框的结构化模型**：`Expr` 树（分数/根号/幂/大运算符/括号，每个复合节点有命名**插槽**）+ `Cursor{path, at}`（指向插槽内的位置，不是字符偏移）+ 编辑操作（插入/退格/删除/左右移动/点击定位）+ 序列化（`Expr → MathIO` 文本，求值只走这一条）+ 树 → `mathrender::Node`（顺带登记可点目标）。纯函数、可脱 GUI 单测；⚠️ 见下方"为什么输入框必须是树" |
   | `keypad.rs` | 虚拟键盘布局 `LAYOUT`（主面板）+ `LAYOUT_ABC`（字母面板）+ 函数目录 `FN_GROUPS` + 插入行为 `splice`/`cursor_back_for`（纯数据 + 纯函数，可脱 GUI 单测） |
   | `mathrender.rs` | MathIO 文本 → 真正的数学排版（分数竖排、根号顶线、幂上标）。**解析与渲染分离**，解析层是纯函数 |
   | `fonts.rs` | **内置字体**（`assets/fonts/`，见下节）+ 数学字体选择（进程级）+ `font_for` / `label` 的自适应分派 |
@@ -71,6 +72,40 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
 - **`Session` 是 GUI 与 CLI 的公共求值入口**（`crates/hipercalc/src/session.rs`）：
   GUI **不直接调** `run_line` / `handle_command`，一律走 `Session::eval(&str) -> LineResult`。
   这样两条前端走同一条求值路径，行为不会漂移。改求值行为时**两处都要回归**。
+
+### ⚠️ 为什么输入框必须是树（`expr.rs`）
+
+**旧模型的死结**：输入只是 `String`，光标是**字符偏移**。而数学结构在文本里是**折叠**的 ——
+`∑(,,,)` 的四个参数在源文本里都是"括号内同一处"。由此产生两个**不是写错、而是模型表达不了**
+的 bug（都发生过）：
+
+1. **点 Σ 的四个格子都一样** —— 四个空框算出来是同一个偏移，看起来"点了没反应"；
+2. **光标落在 `(` 上就消失** —— 那个位置不属于任何节点，光标无处可画；
+   接着打字会插在 `∑` 与 `(` 之间，变成 `∑x()`。
+
+**现在的模型**：`Expr` 树的每个复合节点有**命名插槽**（分数 2 个、Σ 4 个…），
+光标是 `Cursor { path, at }` —— 指向"某个插槽里的第几项之间"。
+插槽位置上天然合法，所以上面两个 bug **从模型上就不存在**。
+
+**三条用户拍板的规则（改之前先看）**：
+
+| # | 规则 | 为什么 |
+| --- | --- | --- |
+| 1 | `←` `→` 走**线性阅读序**（`Doc::linear` 摊平所有合法位置） | 摊平后每一步都是合法位置，永久杜绝"落在括号上" |
+| 2 | 括号是**结构**（`(` 插入 `Paren`，`)` 表示"跳出当前分组"） | 用户造不出左右括号不配对的输入 |
+| 3 | 退格**只删当前行里光标前那一项**；行首（空插槽）时**什么都不做** | 用户明确要求"防止误删"：想删整个 Σ 得先把光标移到它**之后** |
+
+**改这个模块时的硬约束**：
+
+- `Doc::targets()` 与 `Doc::to_node()` **必须同源**（同一个遍历、同样的登记顺序）——
+  点击靠 `targets` 的下标，渲染靠 `to_node` 里 `Hit{at}` / `Empty{at}` 的 id，
+  两者错开一位就是"点哪跑去别处"。
+- **求值只走 `Doc::source()` 这一条路**（树 → MathIO 文本）。排版是 `to_node`，
+  显示与计算彻底解耦；不要让求值侧看到树。
+- `mathrender` 只多了 `Node::Hit`（**不加内边距**的点击目标，与 `Node::At` 的区别仅此）。
+  排版算法（分数竖排、根号折线、Σ 上下限）**没有重写**，仍是最初那一份。
+- 空行带光标时渲染成 `[Caret, □]`：光标本身只有 1~2px，单独放会让 `node_width`
+  把根号/分数压扁；后面那个 □ 顺带把宽度撑回来。
 
 ### ⚠️ 状态文件由 CLI 与 GUI **共用**（用户明确要求）
 
