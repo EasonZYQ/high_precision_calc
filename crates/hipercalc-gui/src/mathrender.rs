@@ -898,7 +898,12 @@ pub fn build<'a, M: Clone + 'a>(
             // 这一家族都是"一个大符号 + 上下限 + 主体"的排版：上下限用小一号字
             // （标准数学排版惯例），主体保持正文大小。
             let limit_style = Style2 {
-                size: style.size * 0.52,
+                size: bigop_limit_size(style.size),
+                ..style
+            };
+            // 大符号自己一号（见 `bigop_glyph_size`）
+            let glyph_style = Style2 {
+                size: bigop_glyph_size(style.size),
                 ..style
             };
             match kind {
@@ -928,7 +933,7 @@ pub fn build<'a, M: Clone + 'a>(
                         .width(Length::Shrink)
                         .align_x(Alignment::Center)
                         .push(build(to, limit_style, on_placeholder))
-                        .push(plain(glyph, style))
+                        .push(plain(glyph, glyph_style))
                         .push(lower);
                     Row::new()
                         .align_y(Alignment::Center)
@@ -944,7 +949,7 @@ pub fn build<'a, M: Clone + 'a>(
                         .width(Length::Shrink)
                         .align_x(Alignment::Center)
                         .push(build(to, limit_style, on_placeholder))
-                        .push(plain("∫", style))
+                        .push(plain("∫", glyph_style))
                         .push(build(from, limit_style, on_placeholder));
                     let dx = Row::new()
                         .align_y(Alignment::Center)
@@ -1248,6 +1253,28 @@ pub fn caret<'a, M: 'a>(size: f32) -> Element<'a, M> {
         .into()
 }
 
+/// **大运算符符号**（Σ / Π / ∫）的字号。
+///
+/// ⚠️ 用户反馈："sigma 的大小感觉非常小"。以前符号和正文**同字号**，
+/// 而 Σ 的字形本身就矮（墨迹只到 cap-height 附近）⇒ 看起来比右边的 `k²`
+/// 还小，完全不像"一个把整个式子括起来的大符号"。
+///
+/// 正规数学排版里，显示式的大运算符高度约是正文的 **1.6–2 倍**
+/// （LaTeX `\displaystyle` 的 Σ 就是 1.75em 上下）。这里取 1.75。
+fn bigop_glyph_size(size: f32) -> f32 {
+    size * 1.75
+}
+
+/// 大运算符的**上下限**字号（标准排版里比正文小一号）
+fn bigop_limit_size(size: f32) -> f32 {
+    size * 0.55
+}
+
+/// 大运算符符号占的横向宽度（与 [`bigop_glyph_size`] 同源，否则主体会贴太近/太远）
+fn bigop_glyph_width(size: f32) -> f32 {
+    bigop_glyph_size(size) * 0.58
+}
+
 /// 空参数框的尺寸 `(宽, 高)`。
 ///
 /// ⚠️ **高 = 光标高**（`size * 1.25`，见 `build` 里 `Node::Caret` 那一段）：
@@ -1311,9 +1338,12 @@ fn node_width(node: &Node, size: f32) -> f32 {
         Node::Comma { .. } => 0.0,
         // Σ/Π：宽度取"大符号"与"上下限里较宽的那组"之较大者
         Node::BigOp { var, from, to, .. } => {
-            let up = node_width(to, size * 0.52);
-            let low = node_width(var, size * 0.52) + node_width(from, size * 0.52);
-            up.max(low) + size * 0.6
+            // ⚠️ 必须与 `build` 里的 `bigop_limit_size` / `bigop_glyph_width` 同源，
+            // 否则大符号的居中位置会偏（上下限比符号宽时尤其明显）。
+            let l = bigop_limit_size(size);
+            let up = node_width(to, l);
+            let low = node_width(var, l) + node_width(from, l);
+            up.max(low) + bigop_glyph_width(size)
         }
         Node::Seq(items) => items.iter().map(|i| node_width(i, size)).sum(),
         // 分数：取分子/分母较宽者（横线宽度），外加一点内边距
