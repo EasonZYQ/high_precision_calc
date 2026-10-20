@@ -29,7 +29,7 @@
 
 use iced::widget::canvas::{Frame, Geometry, LineCap, LineJoin, Path, Stroke};
 use iced::widget::{Canvas, Column, Row, Space, container, rule, text};
-use iced::{Alignment, Element, Font, Length, Padding, Pixels, Point, Rectangle, Renderer};
+use iced::{Alignment, Element, Length, Padding, Pixels, Point, Rectangle, Renderer};
 
 use crate::theme;
 
@@ -61,6 +61,13 @@ pub enum Node {
     /// `at` 是它在**源文本里的字符偏移**：点这个方块时要知道"光标该落在哪"。
     /// 这是本模块唯一带位置信息的节点，因为只有它需要被点。
     Empty { at: usize },
+    /// **括号分组**（左右一对**可缩放**定界符 + 内容）。
+    ///
+    /// 为什么单独一个变体：`(` `)` 当普通字符时**高度固定**，旁边是分数/Σ 时
+    /// 括号只有一行高，看起来像"括号没包住"。正规排版里定界符要按内容高度拉伸
+    /// （LaTeX 的 `\left( ... \right)`），所以这里用 canvas 手绘两条弧线，
+    /// 高度取 `node_height(inner)`。
+    Paren { inner: Box<Node> },
     /// **聚焦中的空参数框**：框 + 画在框**里面**的光标。
     ///
     /// 为什么不直接用 `Seq[Caret, Empty]`：那样光标落在框**左边外面**，
@@ -686,7 +693,6 @@ pub(crate) fn render_ident(name: &str) -> String {
 pub struct Style2 {
     pub size: f32,
     pub color: Option<iced::Color>,
-    pub monospace: bool,
     /// 超长内容要不要**折行**（`false` = 不折，靠横向滚动看全）。
     ///
     /// ⚠️ 折行必须用 `Wrapping::Glyph`，**不能**用 iced 默认的 `Wrapping::Word`：
@@ -702,7 +708,6 @@ impl Default for Style2 {
         Self {
             size: 26.0,
             color: None,
-            monospace: false,
             // 默认折行：能一眼看全是第一位的，横向滚动那档留给有偏好的用户
             wrap: true,
         }
@@ -734,12 +739,21 @@ pub fn render<'a, M: Clone + 'a>(
 
 /// 纯文本渲染
 fn plain<'a, M: 'a>(src: &str, style: Style2) -> Element<'a, M> {
+    // ⚠️ **必须显式给字体**（用户反馈："虚拟键盘和计算栏的字母和符号并没有使用
+    // 数学字体，而是等线"）。
+    //
+    // 以前这里只在 `monospace` 时才设字体，其余情况**不设** ⇒ 落到 iced 的
+    // 默认字体（系统无衬线）上，于是同一屏里键面是等线、历史区又不一样。
+    // 现在统一走 [`crate::fonts::font_for`]：含中文用等线，其余一律数学字体。
+    plain_font(src, style, crate::fonts::font_for(src))
+}
+
+/// 纯文本渲染，**字体由调用方给**（变量斜体走这里）。
+fn plain_font<'a, M: 'a>(src: &str, style: Style2, font: iced::Font) -> Element<'a, M> {
     let mut t = text(src.to_string())
         .size(Pixels(style.size))
+        .font(font)
         // 见 `Style2::wrap` 的说明：折行要按**字符**断，不能按词断。
-        // `Wrapping` 从 `iced::widget::text` 取 —— 它在 iced_core 里定义，
-        // 但最终通过 `iced_widget::text` 的 `pub use` 出现在 widget 命名空间下
-        //（`iced::advanced::text::Wrapping` 那条路要开 `advanced` feature，没开）。
         .wrapping(if style.wrap {
             iced::widget::text::Wrapping::Glyph
         } else {
@@ -748,35 +762,16 @@ fn plain<'a, M: 'a>(src: &str, style: Style2) -> Element<'a, M> {
     if let Some(c) = style.color {
         t = t.color(c);
     }
-    // 数学符号（π、√、∞…）在等宽字体里会掉进"数学斜体"字形，与周围的直立数字
-    // 格格不入（第一版快照里 `π` 明显比其他字符斜）。含这些符号时改用默认字体。
-    if style.monospace && !contains_math_glyph(src) {
-        t = t.font(Font::MONOSPACE);
-    }
     t.into()
 }
 
-/// 文本里是否含"等宽字体渲染会变形"的数学符号
-fn contains_math_glyph(s: &str) -> bool {
-    s.chars().any(|c| {
-        matches!(
-            c,
-            'π' | '√'
-                | '∛'
-                | '∞'
-                | '≈'
-                | '≤'
-                | '≥'
-                | '≠'
-                | '∑'
-                | '∫'
-                | '·'
-                | '×'
-                | '÷'
-                | 'θ'
-                | 'φ'
-        )
-    })
+/// 这个记号是不是**变量**（数学排版里变量用斜体、数字和函数名直立）
+///
+/// 判据：**单个 ASCII 字母**。`sin`（三个字母）是函数名，直立；
+/// `π` / `θ` / `∞` 是符号或常数，也直立。
+fn is_variable(s: &str) -> bool {
+    let mut it = s.chars();
+    matches!((it.next(), it.next()), (Some(c), None) if c.is_ascii_alphabetic())
 }
 
 /// 递归把节点变成 widget。
@@ -796,6 +791,8 @@ pub fn build<'a, M: Clone + 'a>(
     on_placeholder: Option<&'a dyn Fn(usize) -> M>,
 ) -> Element<'a, M> {
     match node {
+        // 变量（单个字母）用斜体 —— 数学排版规范
+        Node::Text(s) if is_variable(s) => plain_font(s, style, crate::fonts::font_math_italic()),
         Node::Text(s) => plain(s, style),
         // 带源位置的包装 ⇒ 一个**可点区域**：点它就把光标送到 `at`。
         //
@@ -854,6 +851,31 @@ pub fn build<'a, M: Clone + 'a>(
                 Some(f) => iced::widget::mouse_area(stacked).on_press(f(*at)).into(),
                 None => stacked,
             }
+        }
+        // 括号：左右两条**可缩放**弧线，高度跟着内容走
+        Node::Paren { inner } => {
+            let h = node_height(inner, style.size).max(style.size * 1.35);
+            let w = (h * 0.26).clamp(3.0, 15.0);
+            let c = style.color.unwrap_or_else(|| theme::colors().text);
+            let thick = (style.size * 0.055).clamp(1.0, 1.8);
+            let make = |open: bool| -> Element<'a, M> {
+                Canvas::new(Delim {
+                    h,
+                    open,
+                    color: c,
+                    thick,
+                })
+                .width(Length::Fixed(w))
+                .height(Length::Fixed(h))
+                .into()
+            };
+            Row::new()
+                .align_y(Alignment::Center)
+                .spacing(style.size * 0.06)
+                .push(make(true))
+                .push(build(inner, style, on_placeholder))
+                .push(make(false))
+                .into()
         }
         // 光标：一根竖线。它的位置由布局引擎算 —— 见 `Node::Caret`
         Node::Caret => caret(style.size),
@@ -1251,6 +1273,79 @@ fn root_hook_width(size: f32) -> f32 {
     size * 0.62
 }
 
+/// **可缩放的圆括号**（左/右各一条弧线，高度随内容变）。
+///
+/// 用 canvas 手绘而不是 `(` 字符：字符高度是固定的，内容一变高括号就"没包住"。
+/// 弧线用二次贝塞尔 —— 控制点落在同侧边中点，出来的就是标准括号外形。
+struct Delim {
+    h: f32,
+    /// 左括号 `(` / 右括号 `)`
+    open: bool,
+    color: iced::Color,
+    thick: f32,
+}
+
+impl<Message> iced::widget::canvas::Program<Message> for Delim {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &iced::Theme,
+        bounds: Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let w = bounds.width.max(1.0);
+        let h = self.h.min(bounds.height.max(1.0));
+        // 弧线两端各留半个线宽，免得被画布边缘裁掉
+        let pad = self.thick * 0.5;
+        let (x0, x1) = if self.open {
+            (w - pad, pad)
+        } else {
+            (pad, w - pad)
+        };
+        let path = Path::new(|b| {
+            b.move_to(Point::new(x0, pad));
+            // 控制点在**另一侧**的垂直中点：形成中段最细、两端回收的括号外形
+            b.quadratic_curve_to(Point::new(x1, h * 0.5), Point::new(x0, h - pad));
+        });
+        frame.stroke(
+            &path,
+            Stroke::default()
+                .with_color(self.color)
+                .with_width(self.thick),
+        );
+        vec![frame.into_geometry()]
+    }
+}
+
+/// 估算一个节点的**高度**（像素）—— 定界符与括号内边距要用它。
+///
+/// 只是估算：它只需要"够高、别太夸张"，精确排版交给布局引擎。
+fn node_height(node: &Node, size: f32) -> f32 {
+    match node {
+        Node::Text(_) | Node::Caret => size * 1.25,
+        Node::Empty { .. } | Node::EmptyFocused { .. } => empty_box_size(size).1,
+        Node::Comma { .. } => 0.0,
+        Node::At { inner, .. } | Node::Hit { inner, .. } => node_height(inner, size),
+        Node::Paren { inner } => node_height(inner, size).max(size * 1.35),
+        Node::Seq(v) => v.iter().map(|n| node_height(n, size)).fold(0.0, f32::max),
+        // 分子 + 分母 + 横线与上下间隙（与 `build` 里的间距同源）
+        Node::Frac(a, b) => {
+            let inner = size * 0.72;
+            node_height(a, inner) + node_height(b, inner) + size * 0.16 + 1.6
+        }
+        // `build` 里根号高度写死 `size * 1.32`
+        Node::Root { .. } => size * 1.32,
+        Node::Pow(a, b) => node_height(a, size).max(node_height(b, size * 0.62) + size * 0.3),
+        Node::BigOp { .. } => {
+            bigop_glyph_size(size) * 1.2 + 2.0 * (bigop_limit_size(size) * 1.9).max(18.0)
+        }
+    }
+}
+
 /// 画一根**输入光标**（竖线）。
 ///
 /// 高度 = `size * 1.25`，与空参数框的高度**同一个公式** —— 框和光标一样高，
@@ -1425,6 +1520,12 @@ fn node_width(node: &Node, size: f32) -> f32 {
             // 后面的元素会盖上来或留出过大空隙。
             d + root_hook_width(size) + node_width(inner, size) + 3.0
         }
+        // 括号：两条弧线的宽度 + 内容（宽度由 `node_height` 推出来）
+        Node::Paren { inner } => {
+            let h = node_height(inner, size).max(size * 1.35);
+            let w = (h * 0.26).clamp(3.0, 15.0);
+            2.0 * w + node_width(inner, size) + size * 0.12
+        }
         // 幂：底数 + 上标（字号更小）
         Node::Pow(base, exp) => node_width(base, size) + node_width(exp, size * 0.62),
     }
@@ -1509,7 +1610,6 @@ mod tests {
                 Style2 {
                     size: 15.0,
                     color: None,
-                    monospace: false,
                     wrap: true,
                 },
             );
@@ -1533,6 +1633,8 @@ mod tests {
             Node::Empty { .. } | Node::EmptyFocused { .. } | Node::Caret | Node::Comma { .. } => {
                 String::new()
             }
+            // 括号分组：拍平成 `(内容)`（与历史区的显示一致）
+            Node::Paren { inner } => format!("({})", flatten(inner)),
             Node::BigOp {
                 body,
                 var,
@@ -1554,6 +1656,7 @@ mod tests {
         match n {
             // 聚焦中的空框里画了光标
             Node::Caret | Node::EmptyFocused { .. } => true,
+            Node::Paren { inner } => contains_caret(inner),
             Node::Seq(v) => v.iter().any(contains_caret),
             Node::Frac(a, b) => contains_caret(a) || contains_caret(b),
             Node::Root { degree, inner } => {
@@ -1855,16 +1958,18 @@ mod tests {
         assert_eq!(n, Node::Text("1e-5".into()), "科学计数法不该被拆开：{n:?}");
     }
 
-    /// 含数学符号的文本不能走等宽字体（否则 π/√ 会变成斜体衬线字形）
+    /// **变量判据**：单个字母才斜体；数字、函数名、符号都直立。
+    ///
+    /// 数学排版规范：变量斜体（`x`）、数字直立（`2`）、函数名直立（`sin`）、
+    /// 常数与符号直立（`π`）。判错了就会出现"2 也斜着"或"x 不斜"。
     #[test]
-    fn math_glyphs_skip_monospace() {
-        assert!(contains_math_glyph("π"));
-        assert!(contains_math_glyph("2π"));
-        assert!(contains_math_glyph("√2"));
-        assert!(contains_math_glyph("1 · 2"));
-        assert!(!contains_math_glyph("0.8333333"));
-        assert!(!contains_math_glyph("1 / 2"));
-        assert!(!contains_math_glyph("sin(x)"));
+    fn only_single_letters_are_variables() {
+        for v in ["x", "k", "a", "A", "t"] {
+            assert!(is_variable(v), "{v} 应是变量");
+        }
+        for not in ["sin", "pi", "7", "π", "θ", "x1", "", " ", "+"] {
+            assert!(!is_variable(not), "{not:?} 不该被当成变量");
+        }
     }
 
     /// 根号的**几何不变量**：钩宽是渲染与测宽的共同来源，且总宽必须容得下

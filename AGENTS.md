@@ -151,6 +151,13 @@ CLI 不解释它们，但保存时会原样保留。
   且生命周期与输入绑定。泛型消息参数 `M` / `Text<'static, ..>` 两种写法都编译不过
   （`Text` 里没有消息参数；`'static` 太严会被 `borrowed data escapes` 拒）。
 - 换字体**不重算历史**：历史存的是文本，渲染时才取字体，下一帧整屏一起换。
+- **变量斜体**要靠单独的 italic 字面：5 套数学字体文件里都只有常规体，iced 也**不合成**斜体。
+  仓库里额外打包了 4 个（`cambriai`/`timesi`/`georgiai`/`bookosi`）；
+  `Cambria Math` 自己没有斜体字面，变量落到族 `Cambria` 的 Italic（Word 也这么做）。
+  判据是 `is_variable`：**单个 ASCII 字母**才斜体（`sin`/`7`/`π` 都直立）。
+- ⚠️ **排版层必须显式给字体**：`mathrender::plain` 早先"不设字体"，于是落进 iced 默认
+  字体（系统无衬线），表现为"键面和历史区不是一套字"。现在统一走 `fonts::font_for`。
+  `⌫`(U+232B) 在数学字体里没有字形，走 `UI_ICON_KEYS` 白名单保留默认字体。
 
 ### Iced 0.14 API 陷阱（全部实测踩过，写代码前先看这里）
 

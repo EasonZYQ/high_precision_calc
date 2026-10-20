@@ -713,12 +713,10 @@ impl Builder<'_> {
                 from: Box::new(self.slot_node(from, base, idx, 2)),
                 to: Box::new(self.slot_node(to, base, idx, 3)),
             },
-            // 括号在排版里就是三个孩子（mathrender 也是这么排的）
-            Expr::Paren(inner) => Node::Seq(vec![
-                Node::Text("(".into()),
-                self.slot_node(inner, base, idx, 0),
-                Node::Text(")".into()),
-            ]),
+            // 括号用**可缩放定界符**（高度跟着内容走）—— 见 `Node::Paren`
+            Expr::Paren(inner) => Node::Paren {
+                inner: Box::new(self.slot_node(inner, base, idx, 0)),
+            },
         }
     }
 
@@ -1306,6 +1304,7 @@ mod tests {
             // 聚焦中的空框里画了光标
             Node::EmptyFocused { .. } => true,
             Node::Text(_) | Node::Empty { .. } | Node::Comma { .. } => false,
+            Node::Paren { inner } => contains_caret(inner),
             Node::Seq(v) => v.iter().any(contains_caret),
             Node::At { inner, .. } | Node::Hit { inner, .. } => contains_caret(inner),
             Node::Frac(a, b) | Node::Pow(a, b) => contains_caret(a) || contains_caret(b),

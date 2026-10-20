@@ -146,39 +146,6 @@ pub fn stopped() -> bool {
     STOP.load(Ordering::Relaxed)
 }
 
-/// 本窗口是否已经成功"从一切捕获里排除"（`WDA_EXCLUDEFROMCAPTURE`）。
-///
-/// ## ⚠️ 这里有一个**没法两全**的取舍（Windows 的限制，不是实现问题）
-///
-/// 我们要的背景是"窗口背后的桌面"。而 `IDXGIOutputDuplication` 只能抓到
-/// **整块合成后的桌面，包含我们自己** —— 它没有"只排除某个进程"的开关。
-/// 于是只有两条路：
-///
-/// - **排除自己**（现在这条）：背景是**真实的桌面**，玻璃质感成立；
-///   代价是用户一按截图（Snipping Tool / 微信 / 录屏），我们的窗口就"消失"。
-/// - **不排除**：能截图，但背景里会有**自己的倒影**；把窗口那块用周围颜色
-///   填平又会变成一块纯色 —— 等于看不到桌面，质感也就没了。
-///
-/// 实测过"不排除 + 用窗口外颜色填平"：面板后面变成一片死板的底色，
-/// 比倒影更难看。所以选择保住质感，并在设置里说明。
-///
-/// ## 为什么必须反复重试
-///
-/// `bg_cycle` 在**启动时**就起链，那一刻 iced 的窗口往往还没被创建，
-/// `EnumWindows` 找不到主窗口 ⇒ 排除静默失败（实测 `GetWindowDisplayAffinity`
-/// 一直是 `0x0`）⇒ 抓到自己 ⇒ 自激循环（界面 50Hz 空转重建）。
-static EXCLUDED: AtomicBool = AtomicBool::new(false);
-
-/// 把本窗口排除在捕获之外，直到成功为止（见 [`EXCLUDED`] 的说明）
-fn ensure_excluded() {
-    if EXCLUDED.load(Ordering::Relaxed) {
-        return;
-    }
-    if crate::backdrop::exclude_from_capture(true) {
-        EXCLUDED.store(true, Ordering::Relaxed);
-    }
-}
-
 fn lock() -> MutexGuard<'static, Option<Dupl>> {
     // 会话丢失时可能有人 panic 过；把毒化的锁就地复用即可（我们只存句柄）
     slot().lock().unwrap_or_else(|e| e.into_inner())
@@ -215,8 +182,6 @@ pub fn poll(x: i32, y: i32, w: u32, h: u32, sample: u32) -> Poll {
     if BROKEN.load(Ordering::Relaxed) {
         return Poll::Unsupported;
     }
-    // ⚠️ 每次轮询都确保自己被排除（直到成功）—— 否则抓到自己 ⇒ 自激循环
-    ensure_excluded();
     let mut g = lock();
     if g.is_none() {
         match Dupl::new() {
@@ -254,8 +219,6 @@ impl Dupl {
     /// ⚠️ 用「主显示器」而不是"窗口所在显示器"：窗口跨屏时选哪边都不对，
     /// 而主屏是绝大多数场景的答案；跨屏时本模块会裁到主屏那部分（见 [`Dupl::grab`]）。
     fn new() -> Option<Self> {
-        // 建链时先试一次（失败不打紧，`poll` 会一直重试）
-        ensure_excluded();
         unsafe {
             let factory: IDXGIFactory1 = CreateDXGIFactory1().ok()?;
             // 优先选"原点在 (0,0)"且已连接的输出（= 主显示器），

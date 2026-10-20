@@ -54,6 +54,13 @@ pub static BUNDLED: &[(&str, &[u8])] = bundled![
     "Georgia" => "../assets/fonts/Georgia.ttf",
     "Constantia" => "../assets/fonts/Constantia.ttf",
     "Bookman Old Style" => "../assets/fonts/BookmanOldStyle.ttf",
+    // ── 变量用的**斜体**字面（数学排版里变量是斜体、数字与函数名直立）──
+    // ⚠️ 现有 5 套字体文件里**只有常规体**，没有 italic face，而 iced 不会合成斜体，
+    // 所以必须单独打包。Constantia 没有斜体（系统里也没有），它会退回直立。
+    "Cambria Italic" => "../assets/fonts/cambriai.ttf",
+    "Times New Roman Italic" => "../assets/fonts/timesi.ttf",
+    "Georgia Italic" => "../assets/fonts/georgiai.ttf",
+    "Bookman Old Style Italic" => "../assets/fonts/bookosi.ttf",
 ];
 
 /// 交给 `iced::Settings::fonts` 的全部字体字节。
@@ -121,6 +128,19 @@ impl MathFont {
         Font::with_name(self.family())
     }
 
+    /// **变量斜体**用的族名。
+    ///
+    /// ⚠️ `Cambria Math` 这个族本身**没有斜体字面**（它是 OpenType 数学字体，
+    /// 斜体由 MATH 表提供，字体文件里没有独立的 italic face）。所以变量斜体
+    /// 必须落到它的**正文字体** `Cambria` 的 Italic 上 —— 这也是 Word 的做法。
+    /// Constantia 在系统里就没有斜体，会退回直立（可接受的降级）。
+    pub fn italic_family(self) -> &'static str {
+        match self {
+            MathFont::CambriaMath => "Cambria",
+            other => other.family(),
+        }
+    }
+
     /// 从下标还原（设置面板的按钮索引 → 字体）
     pub fn from_index(i: usize) -> Option<Self> {
         Self::ALL.get(i).copied()
@@ -148,6 +168,18 @@ pub fn math_font() -> MathFont {
 /// 当前数学字体的 iced `Font`（最常用的入口）
 pub fn font_math() -> Font {
     math_font().font()
+}
+
+/// **变量用的斜体**字体（数学排版规范：变量斜体、数字与函数名直立）。
+///
+/// iced 不会给没有 italic face 的字体合成倾斜，所以这里换的是**族**：
+/// 见 [`MathFont::italic_family`]。找不到斜体时 fontdb 会退回同族常规体
+/// （观感退化成直立，不会报错、也不会缺字）。
+pub fn font_math_italic() -> Font {
+    Font {
+        style: iced::font::Style::Italic,
+        ..Font::with_name(math_font().italic_family())
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

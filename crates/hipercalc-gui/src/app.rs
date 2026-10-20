@@ -47,10 +47,14 @@ use hipercalc_core::trig::AngleMode;
 
 use crate::evaluator::{Command, Evaluated, Evaluator};
 use crate::expr;
-use crate::keypad::{self, FN_GROUPS, KeyAction, KeyKind, Panel, layout_for};
+use crate::keypad::{FN_GROUPS, KeyAction, KeyKind, Panel, layout_for};
 use crate::liquid;
 use crate::mathrender;
 use crate::theme::{self, MathFont};
+
+/// **键面上那些"不是数学记号"的 UI 图标**：数学字体里没有它们的字形，
+/// 硬套会渲染成豆腐块（`⌫` 实测如此）。这些键保持默认字体。
+const UI_ICON_KEYS: &[&str] = &["⌫"];
 
 /// 函数面板每行的列数。抽成常量是因为 `func_panel` 的分行逻辑与测试都依赖它。
 const FN_COLS: usize = 7;
@@ -1806,7 +1810,6 @@ impl State {
             mathrender::Style2 {
                 size: 15.0,
                 color: Some(theme::colors().text_dim),
-                monospace: false,
                 wrap: self.wrap,
             },
             // 历史是只读的：占位框不可点
@@ -1851,7 +1854,6 @@ impl State {
                 // ⚠️ **统一用数学字体**（用户要求：LineIO 与 MathIO 字体要一致）。
                 // 之前 LineIO 走等宽字体（`!math`），观感上与 MathIO 判若两套；
                 // 等宽的好处只是"小数位对齐"，代价是整块结果区看起来像另一款软件。
-                monospace: false,
                 wrap: self.wrap,
             },
             // 历史是只读的：结果里的占位框不可点
@@ -2262,7 +2264,6 @@ impl State {
                 mathrender::Style2 {
                     size: 19.0,
                     color: Some(theme::colors().text),
-                    monospace: false,
                     wrap: true,
                 },
                 // 点空槽位框 / 点某个记号 ⇒ 光标落在那里（用户要求）
@@ -2413,20 +2414,22 @@ impl State {
             .into();
         }
 
-        let t = text(label.to_string()).size(KEY_FACE_SIZE);
-        // 记号（π √ ≤ …）用数学字体；`⌫` 是符号但也用数学字体更好看
-        let t = if keypad::label_is_math(label) {
-            t.font(theme::font_math())
+        // ⚠️ **所有键面统一用数学字体**（用户反馈："虚拟键盘和计算栏的字母和符号
+        // 并没有使用数学字体，而是等线"）。
+        //
+        // 以前只给 `label_is_math` 认得的符号（π √ ≤ …）设数学字体，字母数字
+        // （`x` `7` `ABC`）**不设** ⇒ 落到 iced 默认字体上，与旁边的 `π` 不是一套。
+        //
+        // ⚠️ **例外**：`⌫`（U+232B）在数学字体里**没有字形**，硬套会变成豆腐块
+        //（实测）。这类"UI 图标符号"不是数学记号，保持默认字体即可。
+        let _ = kind;
+        let face = text(label.to_string()).size(KEY_FACE_SIZE);
+        let face = if UI_ICON_KEYS.contains(&label) {
+            face
         } else {
-            t
+            face.font(theme::font_math())
         };
-        // `↵` 是求值键，给它加粗一点，与 Desmos 的蓝色回车键呼应
-        let t = if kind == KeyKind::Equals {
-            t.font(theme::font_math())
-        } else {
-            t
-        };
-        t.into()
+        face.into()
     }
 
     fn keypad_area(&self) -> Element<'_, Message> {
@@ -2938,6 +2941,8 @@ mod tests {
             Node::Empty { .. } | Node::EmptyFocused { .. } | Node::Caret | Node::Comma { .. } => {
                 String::new()
             }
+            // 括号分组拍平成 `(内容)`
+            Node::Paren { inner } => format!("({})", flatten_node(inner)),
             Node::BigOp {
                 body,
                 var,
@@ -3858,7 +3863,6 @@ mod tests {
                 mathrender::Style2 {
                     size: 21.0,
                     color: None,
-                    monospace: false,
                     wrap: true,
                 },
                 None,
@@ -3882,7 +3886,6 @@ mod tests {
                 mathrender::Style2 {
                     size: 21.0,
                     color: None,
-                    monospace: false,
                     wrap: true,
                 },
                 None,
@@ -3991,22 +3994,25 @@ mod tests {
     // 关心的是主面板。要测字母面板的直接用 `layout_for(Panel::Abc)`。
 
     fn find_key(insert: &str) -> Option<(usize, usize)> {
-        keypad::LAYOUT.iter().enumerate().find_map(|(r, row)| {
-            row.iter()
-                .position(|k| k.action == KeyAction::Insert && k.insert == insert)
-                .map(|c| (r, c))
-        })
+        crate::keypad::LAYOUT
+            .iter()
+            .enumerate()
+            .find_map(|(r, row)| {
+                row.iter()
+                    .position(|k| k.action == KeyAction::Insert && k.insert == insert)
+                    .map(|c| (r, c))
+            })
     }
 
     fn find_key_label(label: &str) -> Option<(usize, usize)> {
-        keypad::LAYOUT
+        crate::keypad::LAYOUT
             .iter()
             .enumerate()
             .find_map(|(r, row)| row.iter().position(|k| k.label == label).map(|c| (r, c)))
     }
 
     fn find_key_action(a: KeyAction) -> Option<(usize, usize)> {
-        keypad::LAYOUT
+        crate::keypad::LAYOUT
             .iter()
             .enumerate()
             .find_map(|(r, row)| row.iter().position(|k| k.action == a).map(|c| (r, c)))

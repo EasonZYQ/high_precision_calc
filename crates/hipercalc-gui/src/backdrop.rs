@@ -514,6 +514,14 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
                 // ⚠️ 必须是**实际**抓到的矩形（可能比请求的小 —— 裁进显示器后）
                 bd.rw = frw;
                 bd.rh = frh;
+                // ⚠️ **不再用 `WDA_EXCLUDEFROMCAPTURE` 排除自己**（用户反馈：
+                // "微信和 Windows PrtSc 都无法截图，必须修复"）—— 那个开关对
+                // **所有**捕获者生效，一开我们窗口在截图里就消失。
+                //
+                // 于是抓到的帧里包含我们自己；这里用**窗口外那一圈的平均色**
+                // 把窗口那块填平，既没有"自己的倒影"，也不会因为界面重绘
+                // 而让"桌面看起来变了"（内容恒定 ⇒ 不会自激空转）。
+                fill_self_rect(&mut bd);
                 return Some(bd);
             }
             crate::dupl::Poll::Unchanged => return None,
@@ -522,6 +530,90 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
     }
 
     capture_blurred(x0, y0, w, h, factor)
+}
+
+/// 把"我们自己的窗口"在抓屏结果里那一块**用周围颜色填平**。
+///
+/// ## 为什么需要它
+///
+/// 我们要的背景是"窗口背后的桌面"，而 `IDXGIOutputDuplication` 只能抓到
+/// **整块合成后的桌面（包含我们自己）**，没有"只排除某个进程"的开关。
+/// 以前用 `WDA_EXCLUDEFROMCAPTURE` 解决 —— 但它对**所有**捕获者生效，
+/// 用户一按截图（微信 / Win+PrtSc / 录屏）窗口就消失。现在改成"照抓、再补"。
+///
+/// ## 为什么是**一个平均色**而不是渐变
+///
+/// 逐行/逐列插值都试过：窗口外那一圈里全是别的窗口边缘、图标、文字，
+/// 平均下来会形成一道道**竖条纹 / 亮带**（实测很难看）。
+/// 整块一个低频色，经玻璃着色器模糊+染色之后就是一片干净的底色。
+///
+/// ## 为什么向外多扩 40 屏幕像素
+///
+/// `window_rect()` 给的是**客户区**，而画面里还包含我们自己的标题栏（DWM 画的）
+/// 和一圈阴影 —— 只按客户区填会留下标题栏那条"倒影"。
+/// 多盖的是窗口外的桌面，只在折射时看得到，抓屏区域本身还有半个窗口的余量。
+fn fill_self_rect(bd: &mut Backdrop) {
+    let Some((wx, wy, ww, wh)) = window_rect() else {
+        return;
+    };
+    let (tw, th) = (bd.width as usize, bd.height as usize);
+    if bd.rw == 0 || bd.rh == 0 || tw < 4 || th < 4 {
+        return;
+    }
+    let sx = bd.width as f32 / bd.rw as f32;
+    let sy = bd.height as f32 / bd.rh as f32;
+    let clamp = |v: f32, max: usize| v.clamp(0.0, max.saturating_sub(1) as f32) as usize;
+    let pad_x = (40.0 * sx) as i32;
+    let pad_y = (40.0 * sy) as i32;
+    let x0 = clamp(((wx - pad_x - bd.x) as f32) * sx, tw);
+    let y0 = clamp(((wy - pad_y - bd.y) as f32) * sy, th);
+    let x1 = clamp(((wx + ww as i32 + pad_x - bd.x) as f32) * sx, tw);
+    let y1 = clamp(((wy + wh as i32 + pad_y - bd.y) as f32) * sy, th);
+    if x1 <= x0 + 1 || y1 <= y0 + 1 {
+        return;
+    }
+    let idx = |x: usize, y: usize| (y * tw + x) * 4;
+    let mut sum = [0f64; 3];
+    let mut n = 0f64;
+    for y in y0..y1 {
+        for x in 0..tw {
+            if x >= x0 && x < x1 {
+                continue;
+            }
+            let d = idx(x, y);
+            for (c, acc) in sum.iter_mut().enumerate() {
+                *acc += bd.rgba[d + c] as f64;
+            }
+            n += 1.0;
+        }
+    }
+    for x in x0..x1 {
+        for y in 0..th {
+            if y >= y0 && y < y1 {
+                continue;
+            }
+            let d = idx(x, y);
+            for (c, acc) in sum.iter_mut().enumerate() {
+                *acc += bd.rgba[d + c] as f64;
+            }
+            n += 1.0;
+        }
+    }
+    if n <= 0.0 {
+        return;
+    }
+    let fill = [
+        (sum[0] / n).round().clamp(0.0, 255.0) as u8,
+        (sum[1] / n).round().clamp(0.0, 255.0) as u8,
+        (sum[2] / n).round().clamp(0.0, 255.0) as u8,
+        255,
+    ];
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let d = idx(x, y);
+            bd.rgba[d..d + 4].copy_from_slice(&fill);
+        }
+    }
 }
 
 /// 降采样 + 两趟 box blur（近似高斯）。
