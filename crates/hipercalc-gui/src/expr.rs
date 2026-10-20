@@ -331,6 +331,14 @@ impl Doc {
         row_in_mut(&mut self.root, &self.cursor.path)
     }
 
+    /// 还有没有**空插槽**（= 式子没写完）。
+    ///
+    /// 按 = 之前用它拦一下：`∑(,,,)` 这种半成品丢给解析器只会得到
+    /// "位置 4 处意外的字符: ','" 这种 CLI 味的报错，跟界面语言完全不搭。
+    pub fn has_empty_slot(&self) -> bool {
+        first_empty_in(&self.root, 0, self.root.len(), &[]).is_some()
+    }
+
     // ── 遍历 ────────────────────────────────────────────────────────────────
 
     /// 把整棵树摊平成"线性阅读序"的光标位置表。
@@ -642,7 +650,9 @@ impl Builder<'_> {
                 at: 0,
             });
             if cursor_here {
-                return Node::Seq(vec![Node::Caret, Node::Empty { at: id }]);
+                // 聚焦中的空框：**框 + 框内光标**（`Node::EmptyFocused`）。
+                // 不用 `Seq[Caret, Empty]`：那样光标在框外面，用户要的是"框囊括光标"。
+                return Node::EmptyFocused { at: id };
             }
             return Node::Empty { at: id };
         }
@@ -1293,6 +1303,8 @@ mod tests {
     fn contains_caret(node: &Node) -> bool {
         match node {
             Node::Caret => true,
+            // 聚焦中的空框里画了光标
+            Node::EmptyFocused { .. } => true,
             Node::Text(_) | Node::Empty { .. } | Node::Comma { .. } => false,
             Node::Seq(v) => v.iter().any(contains_caret),
             Node::At { inner, .. } | Node::Hit { inner, .. } => contains_caret(inner),

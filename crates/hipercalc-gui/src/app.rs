@@ -238,6 +238,11 @@ pub struct State {
     /// 求值时用 [`expr::Doc::source`] 序列化回 MathIO 文本 —— 显示与计算解耦，
     /// 求值侧完全不知道输入框长什么样。
     input: expr::Doc,
+    /// "式子没写完"之类的**行内提示**（显示在输入栏下面），`None` = 不显示。
+    ///
+    /// ⚠️ 不塞进历史：没写完不是一次"计算"，没必要占一条记录、也不该染红。
+    /// 任何一次输入/删除都会把它清掉（见 [`State::insert`] / [`State::backspace`]）。
+    input_hint: Option<String>,
     /// 深色模式
     pub dark: bool,
     /// 玻璃（liquid glass）强度：`0.0` = 关闭（不透明纯色），`1.0` = 最强。
@@ -439,6 +444,12 @@ pub enum Message {
     Evaluated(Evaluated),
     /// 点了排版层里的**空参数框**：把光标挪到源文本的第 n 个字符处
     PlaceCaret(usize),
+    /// 点输入栏的**空白处** ⇒ 光标送到整份输入的最后面。
+    ///
+    /// 为什么需要它：字符级点击目标只能表达"落在某个记号之前"，
+    /// 最后一个记号**之后**那个位置没有目标可点（用户实测："光标在 4|5，
+    /// 无论点哪里都无法移到 5 后面"）。这一条是兜底。
+    PlaceCaretEnd,
     /// 点了排版层的空白处：只把焦点还给编辑器，不动光标
     FocusInput,
     /// 切换函数弹窗
@@ -589,6 +600,7 @@ impl State {
             precision_text: modes.precision.to_string(),
             acrylic_checked: false,
             input: expr::Doc::default(),
+            input_hint: None,
             history: Vec::new(),
             dark: prefs.dark,
             acrylic_blur: prefs.glass,
@@ -637,6 +649,7 @@ impl State {
             Message::FocusInput => {}
             // 点空参数框：直接把光标挪过去（**精确到字符偏移**，不再靠 Motion 逼近）
             Message::PlaceCaret(at) => self.place_caret(at),
+            Message::PlaceCaretEnd => self.input.end(),
             Message::KeyPressed(key, modifiers) => return self.handle_key(key, modifiers),
             Message::Noop => {}
             Message::Key(r, c) => {
@@ -702,6 +715,10 @@ impl State {
                 self.bg_win = None;
                 self.bg_idle = 0;
                 theme::set_bg_ready(false);
+                // ⚠️ **切质感必须落盘**：这里以前直接 `return`，于是"关掉质感"
+                // 只存在于本进程 —— 用户实测"关闭前设了关闭质感，再次打开又变成
+                // 玻璃质感"。`persist_prefs` 里已经有 `texture` 这个键，只是没被调用。
+                self.persist_prefs();
                 // 模式变了：请链尽快再抓一帧（`Off` 会被 `bg_cycle` 拒掉并停链）。
                 // ⚠️ 走 `bg_request` 而不是自己发一条抓屏 Task —— 后者会多出一条链。
                 return self.bg_request();
@@ -904,6 +921,10 @@ impl State {
                     // 几十万像素重新拷一遍、重新传进图集。桌面静止时这纯属白干。
                     //
                     // 比一次 memcmp（~0.1ms）就能判定"没变"，代价可以忽略。
+                    //
+                    // ⚠️ 这里可以**整张**比较：抓到的帧里"我们自己的窗口"那块
+                    // 已经被 `backdrop::fill_self_rect` 用周围颜色填平了，
+                    // 所以界面重绘**不会**让内容变化（否则会自激 50Hz 空转重建）。
                     let same = match &self.bg_pixels {
                         Some((px, _, _, w, h, _, _)) => {
                             *w == b.width && *h == b.height && px[..] == b.rgba[..]
@@ -1043,6 +1064,7 @@ impl State {
     /// 清空输入
     fn clear_input(&mut self) {
         self.input.clear();
+        self.input_hint = None;
     }
 
     /// 把一段"键面文本"插到光标处（键盘、函数面板、粘贴都走这里）
@@ -1051,12 +1073,15 @@ impl State {
     /// 变成真正的树节点，普通记号则按字符切开。
     fn insert(&mut self, text: &str) {
         self.input.insert_key(text);
+        // 一有输入就把"没写完"的提示撤掉（用户已经在改了）
+        self.input_hint = None;
     }
 
     /// 退格。⚠️ 只动**当前这一行**：光标在该行最前面时什么都不做 ——
     /// 绝不会顺手把外层结构（Σ/根号）删掉（用户拍板的防误删规则）。
     fn backspace(&mut self) {
         self.input.backspace();
+        self.input_hint = None;
     }
 
     /// 向前删（`Delete` 键），同样不会碰外层结构
@@ -1312,6 +1337,16 @@ impl State {
         // 上一次还在算就先不受理：否则 worker 队列会积压，用户连按几次 =
         // 排着算好几次同一个式子（而且每次都要等前面的跑完）
         if self.busy {
+            return Task::none();
+        }
+        // ⚠️ **没写完就别丢给解析器**（用户反馈："错误提示还是输出的 sum 函数，
+        // 没有渲染结构，而且错误提示请你适配 GUI 界面，不要用 CLI 的那一套"）。
+        //
+        // `∑(,,,)` 交给 CLI 的解析器只会得到"位置 4 处意外的字符: ','" ——
+        // 带字符偏移、带 ASCII 引号、还把 `sum` 这种内部名字漏出来。
+        // 界面上正确的说法是"还有空位没填"，就一句人话，也不占历史。
+        if self.input.has_empty_slot() {
+            self.input_hint = Some(t("还有空位没填").to_string());
             return Task::none();
         }
         let text = self.input_text();
@@ -1760,9 +1795,14 @@ impl State {
         // `sqrt(2)/3` 原样显示成 ASCII —— 但**回显是用户自己敲的表达式**，
         // 它天然就是数学式，跟"结果用十进制还是分数显示"是两码事。
         // 显示模式只该影响**结果**的呈现（MathIO 排版 / LineIO 小数）。
+        //
+        // ⚠️ **错误行也要排版**：回显的是**用户敲的表达式**，它天然是数学式。
+        // 以前错误行退回纯文本，于是 `∑` 结构的输入在历史里显示成
+        // `sum(k^2,k,1,)`（用户实测："错误提示还是输出的 sum 函数，没有渲染结构"）。
+        // 报错文案本身仍然是散文（见下面 `result` 那一段的说明），两者互不影响。
         let echo_text: Element<'a, Message> = mathrender::render(
             &e.input,
-            echo_renders_math(e.error),
+            true,
             mathrender::Style2 {
                 size: 15.0,
                 color: Some(theme::colors().text_dim),
@@ -2198,10 +2238,18 @@ impl State {
         // 又能精确说出"每个可点目标 ⇒ 光标落在哪一位"，所以不需要
         // "文本编辑器 + 预览"那套两层结构了。
         let shown: Element<'_, Message> = if src.is_empty() {
-            theme::label(t("输入表达式，例如 sqrt(2)/3、x^2-4=0、int(x^2,x,0,1)"))
-                .size(17)
-                .style(theme::hint)
-                .into()
+            // ⚠️ **空输入也要画光标**（用户反馈："没有输入时点击输入栏不会出现
+            // 光标"）。以前空着只画提示语，光标是 `Node` 树的一部分、树是空的，
+            // 于是"看不见光标"—— 用户根本不知道可以开始打字。
+            row![
+                mathrender::caret(19.0),
+                theme::label(t("输入表达式，例如 sqrt(2)/3、x^2-4=0、int(x^2,x,0,1)"))
+                    .size(17)
+                    .style(theme::hint),
+            ]
+            .spacing(3)
+            .align_y(Alignment::Center)
+            .into()
         } else {
             // 树 → 渲染 IR。光标作为一根**真实参与布局的竖线**插进去，
             // 位置由 iced 算 —— 不需要猜任何字体的字形宽度。
@@ -2271,16 +2319,33 @@ impl State {
             .spacing(8)
             .align_y(Alignment::Center);
 
-        // 输入区只剩一行：排版层本身就是"输入栏"（用户要求），
-        // 不再另起一条"预览"—— 那是旧方案（编辑器可见 + 预览在下）的产物。
-        Self::glass_under(
-            container(row1)
+        // "式子没写完"之类的**行内提示**（不占历史、不染红整块）
+        let hint: Element<'_, Message> = match &self.input_hint {
+            Some(h) => container(theme::label(h.as_str()).size(13).style(theme::danger_text))
+                .padding([2, 14])
+                .into(),
+            None => Space::new().height(Length::Shrink).into(),
+        };
+
+        // ⚠️ **点在空白处 = 光标到末尾**。
+        //
+        // 字符级点击目标只能表达"落在某个记号**之前**"，最后一个记号**之后**
+        // 那个位置没有任何目标可点 —— 用户实测："光标在 4|5，无论鼠标点哪里
+        // 都无法移到 5 后面"。所以整块输入栏再包一层 `mouse_area` 兜底：
+        // 内层目标会先捕获事件（`mouse_area` 只在 `!is_event_captured` 时才动作），
+        // 只有落在空白处才轮到这里。
+        let body: Element<'_, Message> = iced::widget::mouse_area(
+            container(column![row1, hint])
                 .width(Length::Fill)
                 .padding(8)
-                .style(theme::panel)
-                .into(),
-            theme::panel_glass(),
+                .style(theme::panel),
         )
+        .on_press(Message::PlaceCaretEnd)
+        .into();
+
+        // 输入区只剩一行：排版层本身就是"输入栏"（用户要求），
+        // 不再另起一条"预览"—— 那是旧方案（编辑器可见 + 预览在下）的产物。
+        Self::glass_under(body, theme::panel_glass())
     }
 
     // ── ④ 虚拟键盘区 ─────────────────────────────────────────────────────────
@@ -2529,10 +2594,6 @@ fn is_precise(text: &str) -> bool {
 /// **恒为真**（除非这行是错误）—— 原因见 `history_entry` 的注释：回显是用户
 /// 自己敲的表达式，天生就是数学式，**不随显示模式（MathIO / LineIO）变化**。
 /// 抽成函数是为了能单测这条约定（用户要求："根号应当始终渲染"）。
-fn echo_renders_math(error: bool) -> bool {
-    !error
-}
-
 /// 把实测耗时格式化成展示文本，**口径与 CLI 完全一致**。
 ///
 /// CLI 的 `Timing::elapsed_text`（`crates/hipercalc/src/lib.rs`）是：
@@ -2591,8 +2652,28 @@ pub fn subscription(_state: &State) -> iced::Subscription<Message> {
     let ctrl = iced::keyboard::listen().map(|ev| match ev {
         iced::keyboard::Event::ModifiersChanged(m) => Message::CtrlChanged(m.control()),
         // 按键：自己处理（不再交给 `text_editor`）
-        iced::keyboard::Event::KeyPressed { key, modifiers, .. } => {
-            Message::KeyPressed(key, modifiers)
+        //
+        // ⚠️ **不能用 `key`**：iced 传的是 `key_without_modifiers()`
+        // （见 `iced_winit/src/conversion.rs` 里 `event.key_without_modifiers()`），
+        // 所以 `Shift` + `=` 到这里是 `=`、`Shift` + `9` 是 `9` —— 用户实测
+        // "无法打出需要 shift 的字符"，根因就在这里。
+        //
+        // 优先用 `text`（= `text_with_all_modifiers()`，已经把 Shift、键盘布局、
+        // 输入法、死键都算进去了）；没有文本（Enter / Backspace / 方向键…）才退回
+        // `modified_key`（= `logical_key`，同样带修饰键）。
+        iced::keyboard::Event::KeyPressed {
+            modified_key,
+            text,
+            modifiers,
+            ..
+        } => {
+            let typed = text
+                .as_deref()
+                .filter(|t| !t.is_empty() && !t.chars().any(char::is_control));
+            match typed {
+                Some(t) => Message::KeyPressed(iced::keyboard::Key::Character(t.into()), modifiers),
+                None => Message::KeyPressed(modified_key, modifiers),
+            }
         }
         _ => Message::Noop,
     });
@@ -2818,16 +2899,14 @@ mod tests {
     ///
     /// 回归背景：曾经把显示模式也传给了回显，于是切到 LineIO 后回显跟着退化成
     /// 纯文本，`sqrt(2)` 原样显示成 ASCII。这条测试把"回显不受模式影响"的约定
-    /// 钉在 `echo_renders_math` 上。
+    /// 回显**永远按数学排版**，与显示模式、与这一行是不是报错都无关。
+    ///
+    /// ⚠️ 这条以前是 `echo_renders_math`（错误行退回纯文本）。改掉的原因：
+    /// 回显的是**用户敲的表达式**，它天然是数学式；退回纯文本会让 Σ 结构
+    /// 显示成 `sum(k^2,k,1,)`（用户实测："错误提示还是输出的 sum 函数，
+    /// 没有渲染结构"）。报错**文案**仍然走纯文本（那是散文），两者互不影响。
     #[test]
-    fn echo_renders_math_regardless_of_display_mode() {
-        // 正常行：永远走数学排版
-        assert!(echo_renders_math(false), "非错误行的回显必须按数学排版");
-        // 错误行：退回纯文本（否则散文里的空格会被吃掉，见 error_text_is_prose_not_math）
-        assert!(!echo_renders_math(true), "错误行的回显必须退回纯文本");
-
-        // 端到端再验一遍：同一条 `sqrt(2)`，MathIO 与 LineIO 下回显都能解析出根号
-        //（`parse` 只看输入文本，与模式无关 —— 这正是"始终渲染"的实现基础）
+    fn echo_always_renders_math() {
         for mode in [DisplayMode::MathIO, DisplayMode::LineIO] {
             let mut s = State::default();
             s.set_display_mode_for_test(mode);
@@ -2853,10 +2932,12 @@ mod tests {
                 None => format!("√({})", flatten_node(inner)),
             },
             Node::Pow(a, b) => format!("{}^{}", flatten_node(a), flatten_node(b)),
-            // 这三种节点不携带源文本（占位框 / 光标 / 参数逗号），拍平后是空的
             // 位置包装：拍平后就是里面那棵子树
             Node::At { inner, .. } | Node::Hit { inner, .. } => flatten_node(inner),
-            Node::Empty { .. } | Node::Caret | Node::Comma { .. } => String::new(),
+            // 占位框 / 光标 / 参数逗号都不携带源文本，拍平后是空的
+            Node::Empty { .. } | Node::EmptyFocused { .. } | Node::Caret | Node::Comma { .. } => {
+                String::new()
+            }
             Node::BigOp {
                 body,
                 var,
@@ -2873,13 +2954,30 @@ mod tests {
         }
     }
 
-    // ── 耗时（用户要求："添加计时功能，对标 CLI 版本"） ───────────────────────
-
-    /// 耗时文本的口径必须与 CLI 的 `Timing::elapsed_text` **逐条对齐**：
-    /// 整秒向下取整、不足 1 秒显示 `<1秒`、文案过 i18n。
+    /// **半成品输入按 = 只给行内提示，不派单、不占历史**。
     ///
-    /// 这条测试是"对标 CLI"这件事的唯一凭据 —— 口径一旦漂移（比如改成显示毫秒、
-    /// 或把 0 秒显示成 `0秒`），CLI 与 GUI 的同一个运算就会给出不同的数字。
+    /// 用户反馈："错误提示还是输出的 sum 函数……错误提示请你适配 GUI 界面，
+    /// 不要用 CLI 的那一套"。所以 `∑(,,,)` 这种没写完的式子**根本不进解析器** ——
+    /// 进去只会得到"位置 4 处意外的字符: ','"（带字符偏移、带 ASCII 引号）。
+    #[test]
+    fn incomplete_input_shows_hint_and_skips_evaluation() {
+        let mut s = State::default();
+        s.insert("∑()");
+        assert!(s.input.has_empty_slot(), "Σ 四个槽都是空的");
+        let _ = s.update(Message::Evaluate);
+        assert!(s.history.is_empty(), "没写完不该产生历史记录");
+        assert_eq!(
+            s.input_hint.as_deref(),
+            Some("还有空位没填"),
+            "应给出界面语言的提示"
+        );
+        assert_eq!(s.input_text(), "sum(,,,)", "输入框内容不该被动过");
+
+        // 一打字提示就撤掉
+        s.insert("k");
+        assert!(s.input_hint.is_none(), "开始修改后提示应消失");
+    }
+
     #[test]
     fn elapsed_text_matches_cli_convention() {
         use std::time::Duration;
@@ -3486,6 +3584,23 @@ mod tests {
         assert_eq!(s.input_text(), "2^3");
     }
 
+    /// **点输入栏空白处 ⇒ 光标到末尾**（用户实测："光标在 4|5，无论鼠标点哪里
+    /// 都无法移到 5 后面"）。
+    ///
+    /// 字符级目标只能表达"落在某个记号之前"，最后一个记号之后没有目标；
+    /// 所以整块输入栏包了一层 `mouse_area` 兜底发这条消息。
+    #[test]
+    fn clicking_blank_area_puts_caret_at_end() {
+        let mut s = State::default();
+        s.insert("12345");
+        s.move_caret(-1);
+        assert_eq!(s.input.cursor.at, 4, "先造出 4|5 这个状态");
+        let _ = s.update(Message::PlaceCaretEnd);
+        assert_eq!(s.input.cursor.at, 5, "点空白处应把光标送到末尾");
+        s.insert("6");
+        assert_eq!(s.input_text(), "123456");
+    }
+
     /// 左右光标键能改中间的数字（这是加这两个键的**全部理由**）
     #[test]
     fn cursor_keys_move_within_input() {
@@ -3583,6 +3698,7 @@ mod tests {
             "数学字体",
             "输入表达式，按 = 或键盘右下角的 ↵ 求值",
             "输入表达式，例如 sqrt(2)/3、x^2-4=0、int(x^2,x,0,1)",
+            "还有空位没填",
             "预览",
             "主键盘",
             "字母键盘",

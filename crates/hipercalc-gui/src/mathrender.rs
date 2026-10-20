@@ -28,7 +28,7 @@
 //! 原样当普通文本渲染。两种模式走同一入口 [`render`]，由参数区分。
 
 use iced::widget::canvas::{Frame, Geometry, LineCap, LineJoin, Path, Stroke};
-use iced::widget::{Canvas, Column, Row, Space, button, container, rule, text};
+use iced::widget::{Canvas, Column, Row, Space, container, rule, text};
 use iced::{Alignment, Element, Font, Length, Padding, Pixels, Point, Rectangle, Renderer};
 
 use crate::theme;
@@ -61,6 +61,12 @@ pub enum Node {
     /// `at` 是它在**源文本里的字符偏移**：点这个方块时要知道"光标该落在哪"。
     /// 这是本模块唯一带位置信息的节点，因为只有它需要被点。
     Empty { at: usize },
+    /// **聚焦中的空参数框**：框 + 画在框**里面**的光标。
+    ///
+    /// 为什么不直接用 `Seq[Caret, Empty]`：那样光标落在框**左边外面**，
+    /// 视觉上仍是"光标在框外"。用户的要求是"框至少要能囊括光标的高度"，
+    /// 所以聚焦时空框变成"框 + 框内光标"，看起来就是"这个空位正在被编辑"。
+    EmptyFocused { at: usize },
     /// **输入光标**（一根竖线）。
     ///
     /// 输入区改成"预览即输入栏"之后，背后的 `text_editor` 被透明化，
@@ -822,48 +828,63 @@ pub fn build<'a, M: Clone + 'a>(
                 None => el,
             }
         }
-        // 光标：一根竖线。它的位置由布局引擎算 —— 见 `Node::Caret`
-        Node::Caret => container(Space::new().width(Pixels(0.0)).height(Pixels(style.size)))
-            .width(Length::Fixed((style.size * 0.09).max(1.5)))
-            .height(Length::Fixed(style.size * 1.25))
-            .style(theme::caret)
-            .into(),
-        // 空参数：**一个空心方框字符**（用户建议："虚线框可不可以用文本框实现，
-        // 这样防止像素偏差"）。
-        //
-        // 这个建议解决了两件事：
-        // 1. **对齐**：字符的宽度由字体度量给出，与周围文字天然同一套度量；
-        //    而画出来的矩形只能靠估算（`node_width` 里的 `CHAR_WIDTH_RATIO` 就是估的），
-        //    必然对不齐 —— 这就是之前"框偏左、和 Σ 挨得太开"的来源。
-        // 2. **渲染**：`Row` 里套 `button` 时那个按钮**画不出来**（实测：Σ 下面
-        //    那行 `▯ = ▯` 整个消失，但布局上仍占宽）。换成文本就没有这个问题 ——
-        //    文本 widget 在任何嵌套层级都能正常布局与绘制。
-        //
-        // 用 `□`（U+25A1 WHITE SQUARE）而不是 `▯`：前者在几乎任何字体里都有，
-        // 缺字退化成豆腐块的风险最小。
-        Node::Empty { at } => {
-            // ⚠️ **不要继承上下限的小字号**：上下限是 `size * 0.52`，
-            // 用它画出来的方框只有 10px 左右，用户实测"小到看不清"。
-            // 占位框是"这里要填东西"的提示，得看得见才有用 ——
-            // 放大到正文的 0.85 倍，同时仍然比正文矮一点（不喧宾夺主）。
-            // ⚠️ **必须给一个绝对下限**：上下限的字号只有正文的 0.52 倍，
-            // 再乘 0.85 只剩 8.4px —— 那么小的方框，鼠标根本点不中
-            //（用户实测："对于上下的框，鼠标无法选中"）。
-            // 13px 是"视觉上不喧宾夺主、又能稳稳点中"的折中值。
-            let glyph_style = Style2 {
-                size: (style.size * 0.85).max(13.0),
-                ..style
-            };
-            let glyph = plain("□", glyph_style);
+        // 聚焦中的空框：框作底、光标叠在框内（贴左、垂直居中）
+        Node::EmptyFocused { at } => {
+            let (w, h) = empty_box_size(style.size);
+            let c = style.color.unwrap_or_else(|| theme::colors().text);
+            let box_el: Element<'a, M> = Canvas::new(EmptyBox {
+                w,
+                h,
+                fill: c.scale_alpha(0.10),
+                stroke: c.scale_alpha(0.55),
+            })
+            .width(Length::Fixed(w))
+            .height(Length::Fixed(h))
+            .into();
+            // 光标层：同尺寸，内容左对齐 + 垂直居中，左侧留 2px 呼吸
+            let caret_el: Element<'a, M> = container(caret(style.size))
+                .width(Length::Fixed(w))
+                .height(Length::Fixed(h))
+                .align_x(Alignment::Start)
+                .align_y(Alignment::Center)
+                .padding([0, 2])
+                .into();
+            let stacked: Element<'a, M> = iced::widget::stack![box_el, caret_el].into();
             match on_placeholder {
-                Some(f) => button(glyph)
-                    // 热区比字形大一圈：单个字符本来就难点中，
-                    // 而上下限附近的方框周围几乎没有别的可点区域
-                    .padding([3, 3])
-                    .style(theme::bare_button)
-                    .on_press(f(*at))
-                    .into(),
-                None => glyph,
+                Some(f) => iced::widget::mouse_area(stacked).on_press(f(*at)).into(),
+                None => stacked,
+            }
+        }
+        // 光标：一根竖线。它的位置由布局引擎算 —— 见 `Node::Caret`
+        Node::Caret => caret(style.size),
+        // 空参数：**手绘的圆角空框**（用户要求："框不要用字符表示，请你手动渲染，
+        // 并且框至少要能囊括光标的高度"）。
+        //
+        // ## 为什么不再用 `□` 字符
+        //
+        // 1. **高度不受控**：`□` 的高度由字体度量决定，而光标高度是
+        //    `size * 1.25` —— 上下限那种小字号下框明显比光标矮，光标会"戳到框外面"
+        //    （用户实测）。手绘之后宽高都按公式算，**框高恒等于光标高**，不可能露出去。
+        // 2. **宽度对不齐**：字形宽度只能靠 `CHAR_WIDTH_RATIO` 估，而画出来的是精确值。
+        // 3. 字体缺 `□` 时会退化成豆腐块；手绘没有这个问题。
+        //
+        // 尺寸由 [`empty_box_size`] 统一给（`node_width` 也用同一份，否则
+        // 分数横线/根号顶线会按错的宽度画）。
+        Node::Empty { at } => {
+            let (w, h) = empty_box_size(style.size);
+            let c = style.color.unwrap_or_else(|| theme::colors().text);
+            let box_el: Element<'a, M> = Canvas::new(EmptyBox {
+                w,
+                h,
+                fill: c.scale_alpha(0.10),
+                stroke: c.scale_alpha(0.55),
+            })
+            .width(Length::Fixed(w))
+            .height(Length::Fixed(h))
+            .into();
+            match on_placeholder {
+                Some(f) => iced::widget::mouse_area(box_el).on_press(f(*at)).into(),
+                None => box_el,
             }
         }
 
@@ -1212,6 +1233,71 @@ fn root_hook_width(size: f32) -> f32 {
     size * 0.62
 }
 
+/// 画一根**输入光标**（竖线）。
+///
+/// 高度 = `size * 1.25`，与空参数框的高度**同一个公式** —— 框和光标一样高，
+/// 光标才不会戳出框外。
+///
+/// 单独提出来是因为**输入框为空时也要能看见光标**（用户反馈："没有输入时点击
+/// 输入栏不会出现光标"）：那时画的是提示语、没有 `Node` 树可依赖。
+pub fn caret<'a, M: 'a>(size: f32) -> Element<'a, M> {
+    container(Space::new().width(Pixels(0.0)).height(Pixels(size)))
+        .width(Length::Fixed((size * 0.09).max(1.5)))
+        .height(Length::Fixed(size * 1.25))
+        .style(theme::caret)
+        .into()
+}
+
+/// 空参数框的尺寸 `(宽, 高)`。
+///
+/// ⚠️ **高 = 光标高**（`size * 1.25`，见 `build` 里 `Node::Caret` 那一段）：
+/// 框比光标矮的话，光标会从框里戳出去 —— 用户实测报的就是这个。
+/// 宽按字号给一个比例，并留一个下限保证点得中。
+fn empty_box_size(size: f32) -> (f32, f32) {
+    ((size * 0.62).max(10.0), (size * 1.25).max(14.0))
+}
+
+/// 空参数占位框 —— **手绘的圆角矩形**（见 `build` 里 `Node::Empty` 的说明）。
+///
+/// 为什么用 `canvas` 而不是 `□` 字符：字符的高度由字体度量决定，与光标高度
+/// （`size * 1.25`）对不上，光标会戳到框外面；宽度也只能靠比例估算。
+/// 手绘之后宽高都是公式算出来的精确值。
+struct EmptyBox {
+    w: f32,
+    h: f32,
+    fill: iced::Color,
+    stroke: iced::Color,
+}
+
+impl<Message> iced::widget::canvas::Program<Message> for EmptyBox {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &iced::Theme,
+        bounds: Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        // 别超出画布（`Canvas` 的 bounds 就是我们在 `build` 里给的 Fixed 宽高）
+        let w = self.w.min(bounds.width).max(1.0);
+        let h = self.h.min(bounds.height).max(1.0);
+        // 圆角跟着高度走，小字号下不会变成"胶囊"
+        let radius = iced::border::Radius::from((h * 0.18).min(3.5));
+        // ⚠️ iced 0.14 只有 `Path::rounded_rectangle(top_left, size, radius)`
+        // 与 `Frame::fill(path, Fill)`（没有 `fill_rounded_rectangle`）。
+        let path = Path::rounded_rectangle(Point::ORIGIN, iced::Size::new(w, h), radius);
+        frame.fill(&path, self.fill);
+        frame.stroke(
+            &path,
+            Stroke::default().with_color(self.stroke).with_width(1.0),
+        );
+        vec![frame.into_geometry()]
+    }
+}
+
 /// 估算一个节点占的宽度（像素）
 fn node_width(node: &Node, size: f32) -> f32 {
     match node {
@@ -1219,7 +1305,8 @@ fn node_width(node: &Node, size: f32) -> f32 {
         // 位置包装：宽度就是里面那棵子树
         Node::At { inner, .. } | Node::Hit { inner, .. } => node_width(inner, size),
         // 空占位框 / 光标：固定的小宽度
-        Node::Empty { .. } => size * 0.6,
+        // ⚠️ 必须与 `empty_box_size` 同源，否则分数横线/根号顶线按错的宽度画
+        Node::Empty { .. } | Node::EmptyFocused { .. } => empty_box_size(size).0,
         Node::Caret => size * 0.12,
         Node::Comma { .. } => 0.0,
         // Σ/Π：宽度取"大符号"与"上下限里较宽的那组"之较大者
@@ -1351,7 +1438,9 @@ mod tests {
             // 位置包装：拍平后就是里面那棵子树（位置不属于"文本"）
             Node::At { inner, .. } | Node::Hit { inner, .. } => flatten(inner),
             // 不携带源文本的三种（占位框 / 光标 / 参数逗号）
-            Node::Empty { .. } | Node::Caret | Node::Comma { .. } => String::new(),
+            Node::Empty { .. } | Node::EmptyFocused { .. } | Node::Caret | Node::Comma { .. } => {
+                String::new()
+            }
             Node::BigOp {
                 body,
                 var,
@@ -1371,7 +1460,8 @@ mod tests {
     /// 节点树里有没有光标（测试辅助）
     fn contains_caret(n: &Node) -> bool {
         match n {
-            Node::Caret => true,
+            // 聚焦中的空框里画了光标
+            Node::Caret | Node::EmptyFocused { .. } => true,
             Node::Seq(v) => v.iter().any(contains_caret),
             Node::Frac(a, b) => contains_caret(a) || contains_caret(b),
             Node::Root { degree, inner } => {

@@ -340,6 +340,7 @@
   "数学字体": "Math font",
   "输入表达式，按 = 或键盘右下角的 ↵ 求值": "Type an expression, then press = or the ↵ key on the keypad",
   "输入表达式，例如 sqrt(2)/3、x^2-4=0、int(x^2,x,0,1)": "Type an expression, e.g. sqrt(2)/3, x^2-4=0, int(x^2,x,0,1)",
+  "还有空位没填": "Fill in the empty slot(s) first",
   "预览": "Preview",
   "计算中…": "Computing…",
   "主键盘": "Main",

@@ -1144,6 +1144,16 @@ pub fn hint(_theme: &Theme) -> text::Style {
     }
 }
 
+/// **警示文本**（输入栏下面那句"还有空位没填"之类的行内提示）
+///
+/// 与历史区的错误色同一个 token，但**不染背景** —— 它只是提醒，
+/// 不是一次失败的运算（没写完不该看起来像报错）。
+pub fn danger_text(_theme: &Theme) -> text::Style {
+    text::Style {
+        color: Some(colors().danger),
+    }
+}
+
 /// 强调文本（小节标题）
 pub fn accent_text(_theme: &Theme) -> text::Style {
     text::Style {
