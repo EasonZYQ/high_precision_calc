@@ -2154,22 +2154,22 @@ impl State {
         let scale_row = row![
             self.setting_label(t("渲染缩放"), SETTING_LABEL_W),
             self.chip(
-                "100%",
+                "100%".to_string(),
                 (self.ui_scale - 1.0).abs() < 0.01,
                 Message::SetUiScale(1.0)
             ),
             self.chip(
-                "90%",
+                "90%".to_string(),
                 (self.ui_scale - 0.9).abs() < 0.01,
                 Message::SetUiScale(0.9)
             ),
             self.chip(
-                "80%",
+                "80%".to_string(),
                 (self.ui_scale - 0.8).abs() < 0.01,
                 Message::SetUiScale(0.8)
             ),
             self.chip(
-                "70%",
+                "70%".to_string(),
                 (self.ui_scale - 0.7).abs() < 0.01,
                 Message::SetUiScale(0.7)
             ),
