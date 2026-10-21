@@ -2404,7 +2404,7 @@ impl State {
             return row![
                 text(base.to_string())
                     .size(KEY_FACE_SIZE)
-                    .font(theme::font_math()),
+                    .font(theme::font_math_italic()),
                 text(sup.to_string())
                     .size(KEY_FACE_SIZE * 0.68)
                     .font(theme::font_math()),
@@ -2422,10 +2422,18 @@ impl State {
         //
         // ⚠️ **例外**：`⌫`（U+232B）在数学字体里**没有字形**，硬套会变成豆腐块
         //（实测）。这类"UI 图标符号"不是数学记号，保持默认字体即可。
+        //
+        // ⚠️ **键面与输入栏必须同一条规则**（用户反馈："输入栏的字母是斜体，
+        // 但是虚拟键盘不是，请将虚拟键盘和输入栏字体同步"）：
+        // 输入栏里单个字母是**变量**（斜体，见 `mathrender::is_variable`），
+        // 所以键面上的 `x` / `e` / `a` 也必须斜体，否则同一个字母在两处是两种样子。
+        // 多字母（`ABC`）与数字仍然直立。
         let _ = kind;
         let face = text(label.to_string()).size(KEY_FACE_SIZE);
         let face = if UI_ICON_KEYS.contains(&label) {
             face
+        } else if mathrender::looks_like_variable(label) {
+            face.font(theme::font_math_italic())
         } else {
             face.font(theme::font_math())
         };

@@ -769,6 +769,11 @@ fn plain_font<'a, M: 'a>(src: &str, style: Style2, font: iced::Font) -> Element<
 ///
 /// 判据：**单个 ASCII 字母**。`sin`（三个字母）是函数名，直立；
 /// `π` / `θ` / `∞` 是符号或常数，也直立。
+/// 公开版本：**虚拟键盘**也要用同一判据（用户要求"键面与输入栏字体同步"）
+pub fn looks_like_variable(s: &str) -> bool {
+    is_variable(s)
+}
+
 fn is_variable(s: &str) -> bool {
     let mut it = s.chars();
     matches!((it.next(), it.next()), (Some(c), None) if c.is_ascii_alphabetic())

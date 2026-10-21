@@ -23,8 +23,8 @@ use iced::{Background, Border, Color, Shadow, Theme, Vector};
 // 字体相关的入口在 `fonts` 模块；这里转发常用的几个，让调用处只 `use theme::`
 // 就够了（界面上几乎每个函数都要写字体，少一层路径少一点噪音）。
 pub use crate::fonts::{
-    FAMILY_CJK, MathFont, contains_cjk, font_cjk, font_for, font_math, label, math_font,
-    set_math_font,
+    FAMILY_CJK, MathFont, contains_cjk, font_cjk, font_for, font_math, font_math_italic, label,
+    math_font, set_math_font,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
