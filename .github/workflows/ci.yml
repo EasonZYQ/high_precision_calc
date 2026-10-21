@@ -74,6 +74,9 @@ jobs:
   cross:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    # ⚠️ **必须显式给**：macOS 交叉构建在冷缓存 + runner 容量紧张时会跑到 15 分钟
+    # 以上（实测 15m1s / 15m38s 被掐断，表现为"job 失败但其实代码没问题"）。
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

@@ -534,8 +534,14 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
                 // 颜色交界在 texel 网格上仍是**硬边**，放大到屏幕就是一级级台阶
                 //（540×360 的纹理铺满 2160×1440，一个 texel = 4 逻辑像素）。
                 // 半径随降采样倍数走：倍数越大（越糊）才越需要抹平台阶。
+                //
+                // ⚠️ **`factor == 1` 时必须跳过**（用户反馈："即使模糊强度为 0 也不够清晰"）：
+                // 此时纹理就是原始像素、把 1 个屏幕像素映到 1 个 texel，根本不存在"台阶"；
+                // 再糊一道 3-tap 等于**白送一层模糊**，观感比 iOS 的"清晰玻璃"差一档。
                 let br = (factor as usize / 4).clamp(1, 3);
-                box_blur(&mut bd.rgba, bd.width as usize, bd.height as usize, br);
+                if factor > 1 {
+                    box_blur(&mut bd.rgba, bd.width as usize, bd.height as usize, br);
+                }
                 dump_if_requested(&bd, rect);
                 return Some(bd);
             }
@@ -567,6 +573,9 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
 /// `window_rect()` 给的是**客户区**，而画面里还包含我们自己的标题栏（DWM 画的）
 /// 和一圈阴影 —— 只按客户区填会留下标题栏那条"倒影"。
 /// 多盖的是窗口外的桌面，只在折射时看得到，抓屏区域本身还有半个窗口的余量。
+// 这里的 `for c in 0..3` 同时索引 `corner` 与 RGBA 缓冲（两个平行数组），
+// 换成迭代器反而更难读 —— 明确豁免这一条 lint。
+#[allow(clippy::needless_range_loop)]
 fn fill_self_rect(bd: &mut Backdrop) -> Option<(u32, u32, u32, u32)> {
     let (wx, wy, ww, wh) = window_rect()?;
     let (tw, th) = (bd.width as usize, bd.height as usize);
@@ -589,45 +598,35 @@ fn fill_self_rect(bd: &mut Backdrop) -> Option<(u32, u32, u32, u32)> {
         return None;
     }
     let idx = |x: usize, y: usize| (y * tw + x) * 4;
-    let mut sum = [0f64; 3];
-    let mut n = 0f64;
-    for y in y0..y1 {
-        for x in 0..tw {
-            if x >= x0 && x < x1 {
-                continue;
-            }
-            let d = idx(x, y);
-            for (c, acc) in sum.iter_mut().enumerate() {
-                *acc += bd.rgba[d + c] as f64;
-            }
-            n += 1.0;
+    // ⚠️ **四角双线性，不是整块平色**（用户反馈："允许截图时背景出现一个巨大的色框
+    // 遮住桌面"）。平色在"窗口占满屏幕大部分"时就是一大块死板的方块，
+    // 一眼就能看出被盖住了；用**四个角（窗口外一圈）的颜色**做二维插值，
+    // 得到的是一片顺着桌面明暗走的渐变，看起来像"桌面在玻璃后面继续延伸"。
+    let cx = [x0.saturating_sub(2), (x1 + 1).min(tw - 1)];
+    let cy = [y0.saturating_sub(2), (y1 + 1).min(th - 1)];
+    let mut corner = [[0f32; 3]; 4]; // TL, TR, BL, BR
+    for (k, (xi, yi)) in [(0usize, 0usize), (1, 0), (0, 1), (1, 1)]
+        .iter()
+        .map(|(a, b)| (cx[*a], cy[*b]))
+        .enumerate()
+    {
+        let d = idx(xi, yi);
+        for c in 0..3 {
+            corner[k][c] = bd.rgba[d + c] as f32;
         }
     }
-    for x in x0..x1 {
-        for y in 0..th {
-            if y >= y0 && y < y1 {
-                continue;
-            }
-            let d = idx(x, y);
-            for (c, acc) in sum.iter_mut().enumerate() {
-                *acc += bd.rgba[d + c] as f64;
-            }
-            n += 1.0;
-        }
-    }
-    if n <= 0.0 {
-        return None;
-    }
-    let fill = [
-        (sum[0] / n).round().clamp(0.0, 255.0) as u8,
-        (sum[1] / n).round().clamp(0.0, 255.0) as u8,
-        (sum[2] / n).round().clamp(0.0, 255.0) as u8,
-        255,
-    ];
     for y in y0..y1 {
+        let ty = (y - y0) as f32 / (y1 - y0).max(1) as f32;
         for x in x0..x1 {
+            let tx = (x - x0) as f32 / (x1 - x0).max(1) as f32;
             let d = idx(x, y);
-            bd.rgba[d..d + 4].copy_from_slice(&fill);
+            for c in 0..3 {
+                let top = corner[0][c] + (corner[1][c] - corner[0][c]) * tx;
+                let bot = corner[2][c] + (corner[3][c] - corner[2][c]) * tx;
+                let v = top + (bot - top) * ty;
+                bd.rgba[d + c] = v.round().clamp(0.0, 255.0) as u8;
+            }
+            bd.rgba[d + 3] = 255;
         }
     }
     Some((x0 as u32, y0 as u32, x1 as u32, y1 as u32))
