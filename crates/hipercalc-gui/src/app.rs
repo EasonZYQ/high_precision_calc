@@ -357,6 +357,8 @@ pub struct State {
     persist: bool,
     /// 函数弹窗是否展开
     show_funcs: bool,
+    /// **允许被截图/录屏**：`false` 时窗口排除在捕获之外（背景=真实桌面，但截图拍不到）
+    allow_capture: bool,
     /// 亚克力是否已启用（探测一次后固定）
     acrylic_checked: bool,
     /// 设置面板是否展开
@@ -529,6 +531,8 @@ pub enum Message {
     BgCaptured(Option<crate::backdrop::Backdrop>),
     /// 历史区滚动（用来记住"用户是不是停在底部"）
     HistoryScrolled(iced::widget::scrollable::Viewport),
+    /// **允许被截图/录屏**开关（见 `GuiPrefs::capture` 的说明：两个目标不能同时满足）
+    SetCaptureOk(bool),
     /// 桌面模糊探测完成（`backdrop::probe` 的回传）
     AcrylicProbed(bool),
     /// 键盘修饰键状态变化（关键：用来区分 Enter 与 Ctrl+Enter）
@@ -600,6 +604,8 @@ impl State {
         theme::set_glass2_blur(prefs.glass_blur);
         theme::set_glass2_tint(prefs.glass_tint2);
         theme::set_shadow(prefs.shadow);
+        // 截图开关是"进程级 + Win32 亲和性"，启动时也要同步一次
+        crate::backdrop::set_capture_ok(prefs.capture);
         Self {
             precision_text: modes.precision.to_string(),
             acrylic_checked: false,
@@ -607,6 +613,7 @@ impl State {
             input_hint: None,
             history: Vec::new(),
             dark: prefs.dark,
+            allow_capture: prefs.capture,
             acrylic_blur: prefs.glass,
             texture: theme::Texture::from_key(&prefs.texture),
             glass_blur: prefs.glass_blur,
@@ -702,6 +709,17 @@ impl State {
                 self.dark = !self.dark;
                 theme::set_dark(self.dark);
                 self.persist_prefs();
+            }
+            Message::SetCaptureOk(ok) => {
+                self.allow_capture = ok;
+                crate::backdrop::set_capture_ok(ok);
+                // 亲和性一变，之前抓到的帧就"作废"了（里面有没有自己不一样）
+                self.bg_pixels = None;
+                self.bg_win = None;
+                self.bg_idle = 0;
+                theme::set_bg_ready(false);
+                self.persist_prefs();
+                return self.bg_request();
             }
             Message::SetTexture(t) => {
                 self.texture = t;
@@ -1039,6 +1057,10 @@ impl State {
             ("dark", if self.dark { "on" } else { "off" }.to_string()),
             ("glass", format!("{:.2}", self.acrylic_blur)),
             ("texture", self.texture.key().to_string()),
+            (
+                "capture",
+                if self.allow_capture { "on" } else { "off" }.to_string(),
+            ),
             ("glass2_blur", format!("{:.2}", self.glass_blur)),
             ("glass2_tint", format!("{:.2}", self.glass_tint2)),
             ("glass_tint", format!("{:.2}", self.acrylic_tint)),
@@ -2106,6 +2128,27 @@ impl State {
         .spacing(8)
         .align_y(Alignment::Center);
 
+        // ⑦' **允许被截图**（用户 2026-10-21 要求"必须能截图"，但这两件事在
+        // Windows 上不能同时成立 —— 见 `GuiPrefs::capture` 的说明）。
+        let capture_row = row![
+            self.setting_label(t("允许被截图"), SETTING_LABEL_W),
+            self.chip(
+                t("允许截图"),
+                self.allow_capture,
+                Message::SetCaptureOk(true)
+            ),
+            self.chip(
+                t("不允许截图"),
+                !self.allow_capture,
+                Message::SetCaptureOk(false),
+            ),
+            theme::label(t("关掉后背景是真实桌面，但截图/录屏拍不到窗口"))
+                .size(12)
+                .style(theme::hint),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+
         // ⑧ 长结果的处理方式（用户要求："增加左右拖动或者换行，放在设置里供用户选择"）。
         let wrap_row = row![
             self.setting_label(t("长结果"), SETTING_LABEL_W),
@@ -2147,6 +2190,8 @@ impl State {
                 shadow_row,
                 rule::horizontal(1.0).style(theme::divider),
                 acrylic_row,
+                rule::horizontal(1.0).style(theme::divider),
+                capture_row,
                 rule::horizontal(1.0).style(theme::divider),
                 wrap_row,
             ]
@@ -3712,6 +3757,10 @@ mod tests {
             "输入表达式，按 = 或键盘右下角的 ↵ 求值",
             "输入表达式，例如 sqrt(2)/3、x^2-4=0、int(x^2,x,0,1)",
             "还有空位没填",
+            "允许被截图",
+            "允许截图",
+            "不允许截图",
+            "关掉后背景是真实桌面，但截图/录屏拍不到窗口",
             "预览",
             "主键盘",
             "字母键盘",

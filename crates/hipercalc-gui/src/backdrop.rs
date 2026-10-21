@@ -521,7 +521,13 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
                 // 于是抓到的帧里包含我们自己；这里用**窗口外那一圈的平均色**
                 // 把窗口那块填平，既没有"自己的倒影"，也不会因为界面重绘
                 // 而让"桌面看起来变了"（内容恒定 ⇒ 不会自激空转）。
-                fill_self_rect(&mut bd);
+                // 开关是**每帧同步**的：用户一按设置就生效，不需要重启
+                let ok = capture_ok();
+                #[cfg(windows)]
+                platform::exclude_from_capture(!ok);
+                // 允许截图 ⇒ 帧里有自己 ⇒ 把窗口那块补平；不允许 ⇒ 已经排除，无需补
+                let rect = if ok { fill_self_rect(&mut bd) } else { None };
+                dump_if_requested(&bd, rect);
                 return Some(bd);
             }
             crate::dupl::Poll::Unchanged => return None,
@@ -547,30 +553,31 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
 /// 平均下来会形成一道道**竖条纹 / 亮带**（实测很难看）。
 /// 整块一个低频色，经玻璃着色器模糊+染色之后就是一片干净的底色。
 ///
-/// ## 为什么向外多扩 40 屏幕像素
+/// ## 为什么向外多扩 96 屏幕像素
 ///
 /// `window_rect()` 给的是**客户区**，而画面里还包含我们自己的标题栏（DWM 画的）
 /// 和一圈阴影 —— 只按客户区填会留下标题栏那条"倒影"。
 /// 多盖的是窗口外的桌面，只在折射时看得到，抓屏区域本身还有半个窗口的余量。
-fn fill_self_rect(bd: &mut Backdrop) {
-    let Some((wx, wy, ww, wh)) = window_rect() else {
-        return;
-    };
+fn fill_self_rect(bd: &mut Backdrop) -> Option<(u32, u32, u32, u32)> {
+    let (wx, wy, ww, wh) = window_rect()?;
     let (tw, th) = (bd.width as usize, bd.height as usize);
     if bd.rw == 0 || bd.rh == 0 || tw < 4 || th < 4 {
-        return;
+        return None;
     }
     let sx = bd.width as f32 / bd.rw as f32;
     let sy = bd.height as f32 / bd.rh as f32;
     let clamp = |v: f32, max: usize| v.clamp(0.0, max.saturating_sub(1) as f32) as usize;
-    let pad_x = (40.0 * sx) as i32;
-    let pad_y = (40.0 * sy) as i32;
+    // ⚠️ 96 而不是 40：窗口标题栏 + DWM 阴影那一条都在**客户区之上**。
+    // 实测 40 只盖到标题栏中线、72 还差 ~20px（导出的背景纹理里能看见一条亮边），
+    // 96 留够余量。多盖的是窗口外的桌面，只在折射环带里看得到。
+    let pad_x = (96.0 * sx) as i32;
+    let pad_y = (96.0 * sy) as i32;
     let x0 = clamp(((wx - pad_x - bd.x) as f32) * sx, tw);
     let y0 = clamp(((wy - pad_y - bd.y) as f32) * sy, th);
     let x1 = clamp(((wx + ww as i32 + pad_x - bd.x) as f32) * sx, tw);
     let y1 = clamp(((wy + wh as i32 + pad_y - bd.y) as f32) * sy, th);
     if x1 <= x0 + 1 || y1 <= y0 + 1 {
-        return;
+        return None;
     }
     let idx = |x: usize, y: usize| (y * tw + x) * 4;
     let mut sum = [0f64; 3];
@@ -600,7 +607,7 @@ fn fill_self_rect(bd: &mut Backdrop) {
         }
     }
     if n <= 0.0 {
-        return;
+        return None;
     }
     let fill = [
         (sum[0] / n).round().clamp(0.0, 255.0) as u8,
@@ -614,6 +621,60 @@ fn fill_self_rect(bd: &mut Backdrop) {
             bd.rgba[d..d + 4].copy_from_slice(&fill);
         }
     }
+    Some((x0 as u32, y0 as u32, x1 as u32, y1 as u32))
+}
+
+/// **是否允许被截图/录屏**（进程级开关，见 `GuiPrefs::capture`）。
+///
+/// `true`（默认）= 不开 `WDA_EXCLUDEFROMCAPTURE`，抓到的帧里有自己 ⇒ 用
+/// [`fill_self_rect`] 把窗口那块填平（背景变"周围主色调"）。
+/// `false` = 排除自己 ⇒ 背景是真实桌面，但截图/录屏拍不到窗口。
+static CAPTURE_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// 允许被截图吗
+pub fn capture_ok() -> bool {
+    CAPTURE_OK.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 设置"允许被截图"，并立刻把窗口亲和性同步过去（不用重启）
+pub fn set_capture_ok(ok: bool) {
+    CAPTURE_OK.store(ok, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(windows)]
+    {
+        crate::backdrop::exclude_from_capture(!ok);
+    }
+}
+
+/// 调试用：把"喂给玻璃的背景纹理"导出成 PPM，并把 fill 矩形打到 stderr。
+///
+/// 只有 `HIPERCALC_DUMP_BG=1` 时才动作 —— 排查"背景里为何有自己的窗口"这类
+/// 几何问题，看这张图比看屏幕快得多（它是**纹理原图**，不是最终合成）。
+fn dump_if_requested(bd: &Backdrop, rect: Option<(u32, u32, u32, u32)>) {
+    if std::env::var("HIPERCALC_DUMP_BG").ok().as_deref() != Some("1") {
+        return;
+    }
+    let (w, h) = (bd.width as usize, bd.height as usize);
+    let path = std::env::temp_dir().join("hc_bg_dump.ppm");
+    let mut out = Vec::with_capacity(w * h * 3 + 32);
+    out.extend_from_slice(format!("P6\n{w} {h}\n255\n").as_bytes());
+    for i in 0..(w * h) {
+        out.push(bd.rgba[i * 4]);
+        out.push(bd.rgba[i * 4 + 1]);
+        out.push(bd.rgba[i * 4 + 2]);
+    }
+    let _ = std::fs::write(&path, out);
+    eprintln!(
+        "[bg-dump] tex={}x{} rw={} rh={} origin=({},{}) win={:?} fill_rect={:?} -> {:?}",
+        bd.width,
+        bd.height,
+        bd.rw,
+        bd.rh,
+        bd.x,
+        bd.y,
+        window_rect(),
+        rect,
+        path
+    );
 }
 
 /// 降采样 + 两趟 box blur（近似高斯）。

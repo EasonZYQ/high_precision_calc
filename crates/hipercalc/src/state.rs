@@ -84,6 +84,16 @@ pub struct GuiPrefs {
     pub dark: bool,
     /// 玻璃（liquid glass）强度：`0.0` = 关闭（不透明纯色），`1.0` = 最强
     pub glass: f32,
+    /// **允许被截图 / 录屏**（`true` = 允许）。
+    ///
+    /// ⚠️ 这两个目标在 Windows 上**不能同时满足**：
+    /// 玻璃背景要"窗口背后的桌面"，而 `IDXGIOutputDuplication` 只能拿到
+    /// 包含自己的合成画面 —— 想把自己排除掉就得开 `WDA_EXCLUDEFROMCAPTURE`，
+    /// 那个开关对**所有**捕获者生效（微信/PrtSc/录屏都会拍不到窗口）。
+    /// 所以做成开关，用户按场景选：
+    /// - `true`（默认）：能截图；窗口背后的背景用"周围一圈的平均色"近似。
+    /// - `false`：背景是**真实桌面**；截图/录屏里窗口会消失。
+    pub capture: bool,
     /// **质感模式**：`acrylic`（亚克力）/ `glass`（玻璃）/ `off`（关闭）。
     ///
     /// 用户规格：三选一、互斥生效。每个模式有自己的一组旋钮（见下）。
@@ -113,6 +123,8 @@ impl Default for GuiPrefs {
             dark: true,
             // 默认亚克力（用户规格里的第一项）
             texture: "acrylic".to_string(),
+            // 默认允许截图（宁可背景近似，也不要"截图拍不到窗口"这种静默失败）
+            capture: true,
             glass_blur: 0.6,
             glass_tint2: 0.55,
             // 0.6 是"看得出玻璃、又不至于糊成一片"的中间值（滑条默认落在这里）
@@ -152,6 +164,8 @@ impl GuiPrefs {
                 && let Ok(f) = v.trim().parse::<f32>()
             {
                 p.glass = f.clamp(0.0, 1.0);
+            } else if let Some(v) = line.strip_prefix("capture=") {
+                p.capture = v.trim() != "off";
             } else if let Some(v) = line.strip_prefix("texture=") {
                 p.texture = v.trim().to_string();
             } else if let Some(v) = line.strip_prefix("glass2_blur=")
