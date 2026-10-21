@@ -396,23 +396,51 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
         let cwin = s * 2.0 - vec2<f32>(1.0);
         let nwin = normalize(cwin + vec2<f32>(1e-5));
         var suv = s * u.map.xy + u.map.zw + nwin * (wgt * 0.10);
-        // 局部透镜：方向 = 从按钮中心指向该像素（在边沿附近 ≈ 表面法线），
-        // 强度 = 到边缘距离的平方衰减。`+ 1e-4` 防 `normalize(0)`。
-        // ⚠️ `p` 是 y 向上的局部坐标，采样空间是 y 向下 ⇒ 方向的 y 要取反。
-        let nloc = normalize(p + vec2<f32>(1e-4));
-        // 厚度与强度由 uniform 给（按键薄、大面板厚 —— 用户要求"做好四周的折射"）
-        let thick = max(u.edge.x, 1.0);
-        let bend = pow(clamp(1.0 - inward / thick, 0.0, 1.0), 2.0) * u.edge.y;
-        let dloc = vec2<f32>(nloc.x, -nloc.y);
+        // ── 局部透镜（M2 重写）：真法线 + 尺寸自适应环带 ─────────────────
+        //
+        // ⚠️ **旧实现在这里用的是"从中心指向像素"当法线**。对宽扁的面板来说，
+        // 那条方向几乎全是斜的 —— 于是四条边都被"斜着推"，看起来像整块**放大**，
+        // 而不是边缘被玻璃压弯。iOS 的观感来自"**边缘弯、中心几乎不动**"，
+        // 所以法线必须是**到最近边的方向**（SDF 梯度）。
+        //
+        // 用有限差分求 SDF 梯度：4 次 `sd_rr`（每次只有 abs/max/length），
+        // 比解析式好写好懂，代价可以忽略。
+        let e = 0.75;
+        let gx = sd_rr(p + vec2<f32>(e, 0.0), half, max(u.radius, 0.0))
+               - sd_rr(p - vec2<f32>(e, 0.0), half, max(u.radius, 0.0));
+        let gy = sd_rr(p + vec2<f32>(0.0, e), half, max(u.radius, 0.0))
+               - sd_rr(p - vec2<f32>(0.0, e), half, max(u.radius, 0.0));
+        // `p` 是 y 向上的局部坐标；采样空间 y 向下 ⇒ 法线 y 取反
+        let nloc = normalize(vec2<f32>(gx, -gy) + vec2<f32>(1e-5));
+
+        // **环带宽度随尺寸走**：小按键 ~10px、大面板可到几十 px（iOS 的玻璃越厚，
+        // 边缘那圈折射越宽）。`u.edge.x`（主题给的厚度）作为下限，保证小件不糊。
+        let short = min(u.size.x, u.size.y);
+        // ⚠️ 名字不能叫 `band` —— 上面窗口环带那段已经用了这个名字（WGSL 会报重定义）
+        let lens_band = max(max(u.edge.x, 1.0), 0.085 * short);
+        // `t`：1 = 正好在边上，0 = 环带内缘。用平方（下面）让中心几乎不动
+        let t = clamp(1.0 - inward / lens_band, 0.0, 1.0);
+
+        // **位移用像素表达**再折算成图像 uv —— 这样"弯多少"与抓屏分辨率无关，
+        // 也与部件大小成正比（旧实现直接给归一化 uv，大件小件弯得一样多，观感是错的）。
+        let strength_px = u.edge.y * clamp(short, 40.0, 240.0) * 0.8;
+        let bend_px = t * t * strength_px;
+        // 窗口 uv → 图像 uv 的比例就是 `u.map.xy`；(px / 窗口尺寸) 先变窗口 uv
+        let dloc = nloc * (bend_px * u.map.xy / u.win);
         // ⚠️ **色散（chromatic aberration）**：真实玻璃对 R/G/B 的折射率不同，
         // 边缘会把颜色拆开 —— 这是"一眼看出是玻璃"最关键的一笔。
         // 三次采样成本换来的观感提升远超其它手段，且三通道只差 3 个采样点。
         let lo = vec2<f32>(0.001);
         let hi = vec2<f32>(0.999);
-        let kr = textureSample(bg, samp, clamp(suv + dloc * (bend * 1.12), lo, hi)).r;
-        let kg = textureSample(bg, samp, clamp(suv + dloc * bend, lo, hi)).g;
-        let kb = textureSample(bg, samp, clamp(suv + dloc * (bend * 0.88), lo, hi)).b;
-        let bgc = vec3<f32>(kr, kg, kb);
+        // 色散：三通道位移差约 ±12%（真实玻璃蓝光折射率最大 ⇒ 蓝偏得多）
+        let kr = textureSample(bg, samp, clamp(suv + dloc * 1.12, lo, hi)).r;
+        let kg = textureSample(bg, samp, clamp(suv + dloc, lo, hi)).g;
+        let kb = textureSample(bg, samp, clamp(suv + dloc * 0.88, lo, hi)).b;
+        var bgc = vec3<f32>(kr, kg, kb);
+        // **提饱和**：玻璃会把背后的颜色"喂"得更浓郁（iOS 特征之一）。
+        // 不做的话背景被 t 色压淡之后会显得灰。
+        let luma = dot(bgc, vec3<f32>(0.2126, 0.7152, 0.0722));
+        bgc = mix(vec3<f32>(luma), bgc, 1.18);
         // 玻璃本体 = 折射后的背景染上分组底色。底色 alpha 越大越"实"，
         // 0.18 的保底让全透明的分组也带一点玻璃白。
         let tint_k = clamp(u.base.a * 1.6 + 0.18, 0.0, 1.0);
@@ -444,8 +472,28 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     let lit = select(1.0, 1.22, u.p.x > 0.5);
     let dark_k = u.p.y;
 
+    // ── ③' 边缘镜面高光（M2）：法线 · 光源 ────────────────────────────────
+    // 旧实现的高光只看 `uv` 的固定 45° 方向，四条边的亮度是"画上去的"。
+    // 用真法线点乘光源方向后，**曲率大的地方自己就亮** —— 圆角比直边亮、
+    // 朝光的那一侧亮，这正是 iOS 玻璃的 rim light。
+    //
+    // ⚠️ 这一段在 `if (u.p.z > 0.5)` 之外，所以必须重新算一次法线与 `t`
+    //（没有背景时也要有高光），变量名带 `_r` 区分。
+    let gx_r = sd_rr(p + vec2<f32>(0.75, 0.0), half, max(u.radius, 0.0))
+             - sd_rr(p - vec2<f32>(0.75, 0.0), half, max(u.radius, 0.0));
+    let gy_r = sd_rr(p + vec2<f32>(0.0, 0.75), half, max(u.radius, 0.0))
+             - sd_rr(p - vec2<f32>(0.0, 0.75), half, max(u.radius, 0.0));
+    let n_r = normalize(vec2<f32>(gx_r, gy_r) + vec2<f32>(1e-5));
+    // 光从左上来（y 向上 ⇒ 上方是 +y）
+    let ldir = normalize(vec2<f32>(-0.45, 0.75));
+    let ndl = clamp(dot(n_r, ldir), 0.0, 1.0);
+    let rim_t2 = clamp(1.0 - inward / max(0.12 * min(u.size.x, u.size.y), 10.0), 0.0, 1.0);
+    let spec_rim = pow(ndl, 5.0) * pow(rim_t2, 2.2);
+    // 背光侧给一点点压暗，让"厚度"读得出来（玻璃厚的地方会吃光）
+    rgb = rgb * (1.0 - 0.10 * rim_t2 * (1.0 - ndl));
+
     // 高光是**反射**，用加算；内腔是遮挡，用减算
-    let hl = (rim * 0.70 + sheen * 0.85) * u.spec * lit;
+    let hl = (rim * 0.70 + sheen * 0.85 + spec_rim * 0.85) * u.spec * lit;
     rgb = rgb + vec3<f32>(1.0) * hl;
     // 深色主题下暗环更重一点（浅色下太重会脏）
     rgb = rgb - vec3<f32>(1.0) * cav * mix(0.22, 0.34, dark_k);
