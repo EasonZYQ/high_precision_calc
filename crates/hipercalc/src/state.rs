@@ -205,6 +205,10 @@ impl GuiPrefs {
     pub fn to_keys(&self) -> Vec<(&'static str, String)> {
         vec![
             ("dark", if self.dark { "on" } else { "off" }.to_string()),
+            (
+                "capture",
+                if self.capture { "on" } else { "off" }.to_string(),
+            ),
             ("glass", format!("{:.2}", self.glass)),
             ("glass_tint", format!("{:.2}", self.glass_tint)),
             ("texture", self.texture.clone()),
@@ -565,6 +569,9 @@ mod tests {
         // GUI 只改自己的三个键
         let prefs = GuiPrefs {
             dark: true,
+            // ⚠️ 加新字段时**必须**在这里补一行：`cargo build` 不编测试代码，
+            // 漏了只会在 CI 的 `--all-targets` 里炸（本项目已踩过三次）。
+            capture: false,
             glass: 0.25,
             glass_tint: 0.55,
             shadow: 0.4,
