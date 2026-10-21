@@ -403,15 +403,26 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
         // 而不是边缘被玻璃压弯。iOS 的观感来自"**边缘弯、中心几乎不动**"，
         // 所以法线必须是**到最近边的方向**（SDF 梯度）。
         //
-        // 用有限差分求 SDF 梯度：4 次 `sd_rr`（每次只有 abs/max/length），
-        // 比解析式好写好懂，代价可以忽略。
-        let e = 0.75;
-        let gx = sd_rr(p + vec2<f32>(e, 0.0), half, max(u.radius, 0.0))
-               - sd_rr(p - vec2<f32>(e, 0.0), half, max(u.radius, 0.0));
-        let gy = sd_rr(p + vec2<f32>(0.0, e), half, max(u.radius, 0.0))
-               - sd_rr(p - vec2<f32>(0.0, e), half, max(u.radius, 0.0));
+        // **解析法线**（省掉 6 次 `sd_rr`：第一版是 4 次有限差分 + 高光段再来 4 次，
+        // 实测玻璃层要 4.6ms，大头就花在这里 —— 一个片元 8 次 SDF 太奢侈）。
+        //
+        // 圆角矩形的法线 = "最近点指向像素"的方向：
+        // 先在内矩形上求最近点 `q`，`p - q` 就是法线；落在直边上时 `p - q` 为零，
+        // 退化成**轴对齐**的那条边（取 x/y 里更近的一条）。
+        let rr = max(u.radius, 0.0);
+        let inner = max(half - vec2<f32>(rr), vec2<f32>(0.0));
+        let q = clamp(p, -inner, inner);
+        let dv = p - q;
+        let ex = half.x - abs(p.x);
+        let ey = half.y - abs(p.y);
+        let flat_n = select(
+            vec2<f32>(sign(p.x), 0.0),
+            vec2<f32>(0.0, sign(p.y)),
+            ey < ex,
+        );
+        let n_raw = select(flat_n, normalize(dv), length(dv) > 1e-4);
         // `p` 是 y 向上的局部坐标；采样空间 y 向下 ⇒ 法线 y 取反
-        let nloc = normalize(vec2<f32>(gx, -gy) + vec2<f32>(1e-5));
+        let nloc = vec2<f32>(n_raw.x, -n_raw.y);
 
         // **环带宽度随尺寸走**：小按键 ~10px、大面板可到几十 px（iOS 的玻璃越厚，
         // 边缘那圈折射越宽）。`u.edge.x`（主题给的厚度）作为下限，保证小件不糊。
@@ -481,13 +492,19 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     // 用真法线点乘光源方向后，**曲率大的地方自己就亮** —— 圆角比直边亮、
     // 朝光的那一侧亮，这正是 iOS 玻璃的 rim light。
     //
-    // ⚠️ 这一段在 `if (u.p.z > 0.5)` 之外，所以必须重新算一次法线与 `t`
-    //（没有背景时也要有高光），变量名带 `_r` 区分。
-    let gx_r = sd_rr(p + vec2<f32>(0.75, 0.0), half, max(u.radius, 0.0))
-             - sd_rr(p - vec2<f32>(0.75, 0.0), half, max(u.radius, 0.0));
-    let gy_r = sd_rr(p + vec2<f32>(0.0, 0.75), half, max(u.radius, 0.0))
-             - sd_rr(p - vec2<f32>(0.0, 0.75), half, max(u.radius, 0.0));
-    let n_r = normalize(vec2<f32>(gx_r, gy_r) + vec2<f32>(1e-5));
+    // ⚠️ 这一段在 `if (u.p.z > 0.5)` 之外，所以法线要**无条件**算一次。
+    // 上面折射段里那份在 `if` 内、作用域不同 —— 这里按同一套解析式再算一遍，
+    // 仍然比"再来 4 次 sd_rr"便宜得多。
+    let rr2 = max(u.radius, 0.0);
+    let inner2 = max(half - vec2<f32>(rr2), vec2<f32>(0.0));
+    let dv2 = p - clamp(p, -inner2, inner2);
+    let ex2 = half.x - abs(p.x);
+    let ey2 = half.y - abs(p.y);
+    let n_r = select(
+        select(vec2<f32>(sign(p.x), 0.0), vec2<f32>(0.0, sign(p.y)), ey2 < ex2),
+        normalize(dv2),
+        length(dv2) > 1e-4,
+    );
     // 光从左上来（y 向上 ⇒ 上方是 +y）
     let ldir = normalize(vec2<f32>(-0.45, 0.75));
     let ndl = clamp(dot(n_r, ldir), 0.0, 1.0);

@@ -1420,6 +1420,14 @@ impl State {
 
     /// 视图
     pub fn view(&self) -> Element<'_, Message> {
+        let t = std::time::Instant::now();
+        let el = self.view_inner();
+        fps::on_view(t.elapsed().as_nanos() as u64);
+        el
+    }
+
+    /// [`State::view`] 的本体（外面那层只负责计时）
+    fn view_inner(&self) -> Element<'_, Message> {
         // 把最新背景同步给玻璃着色器（`liquid` 的管线在版本号变化时才重传
         // 纹理）。这里每帧调用是刻意的：质感切到"关闭"时 `bg_pixels` 会被
         // update 清成 None，只有从 view 这条每帧必经的路同步，着色器才能
@@ -2683,6 +2691,93 @@ fn elapsed_text(d: std::time::Duration) -> String {
 /// `text_editor` 自己会把 `Enter` 与 `Ctrl+Enter` 都当成"插入换行"，
 /// 拿不到修饰键信息（见 `Message::Edit` 分支的注释），
 /// 所以只能另开一路订阅跟踪 `ModifiersChanged`。
+/// **帧时间探针**（只有 `HIPERCALC_FPS=1` 时才装）。
+///
+/// ## 为什么不能每帧发一条消息
+///
+/// iced 0.14 的规则是"**任意一条消息 ⇒ 全量 view + layout + draw**"
+///（`iced_winit/lib.rs` 里 `if !messages.is_empty() || uis_stale`）。
+/// 所以探针如果每帧 `Message::Frame(..)`，就成了**自我驱动的重绘循环** ——
+/// 测到的是"探针造出来的帧"，不是真实帧。
+///
+/// 这里用 `listen_raw`：**只把时间戳记进静态变量、永远返回 `None`**，
+/// 于是订阅本身零消息、零重建。统计每 120 帧往 stderr 打一行。
+mod fps {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::time::Instant;
+
+    static ON: AtomicBool = AtomicBool::new(false);
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    /// 上一次 RedrawRequested 的时刻（纳秒，单调时钟）
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    /// 本轮已收集的帧间隔（纳秒）与序号
+    static N: AtomicU64 = AtomicU64::new(0);
+    static SUM: AtomicU64 = AtomicU64::new(0);
+    static MAX: AtomicU64 = AtomicU64::new(0);
+    /// `view()` 的累计耗时（纳秒）与次数
+    static VIEW_NS: AtomicU64 = AtomicU64::new(0);
+    static VIEW_N: AtomicU64 = AtomicU64::new(0);
+
+    fn now_ns() -> u64 {
+        // 单调时钟即可，不要求和 `Instant::now()` 同一个基准
+        static BASE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        BASE.get_or_init(Instant::now).elapsed().as_nanos() as u64
+    }
+
+    pub fn enabled() -> bool {
+        if !STARTED.swap(true, Ordering::Relaxed) {
+            ON.store(
+                std::env::var("HIPERCALC_FPS").ok().as_deref() == Some("1"),
+                Ordering::Relaxed,
+            );
+        }
+        ON.load(Ordering::Relaxed)
+    }
+
+    /// 记一帧（由 `listen_raw` 调用，**不产生消息**）
+    pub fn on_frame() {
+        if !enabled() {
+            return;
+        }
+        let t = now_ns();
+        let last = LAST.swap(t, Ordering::Relaxed);
+        if last == 0 {
+            return;
+        }
+        let dt = t.saturating_sub(last);
+        // 过滤"从空闲切到活动"的第一个大间隔（那不是掉帧，是没在画）
+        if dt > 200_000_000 {
+            return;
+        }
+        SUM.fetch_add(dt, Ordering::Relaxed);
+        if dt > MAX.load(Ordering::Relaxed) {
+            MAX.store(dt, Ordering::Relaxed);
+        }
+        let n = N.fetch_add(1, Ordering::Relaxed) + 1;
+        if n.is_multiple_of(120) {
+            let avg = SUM.load(Ordering::Relaxed) as f64 / n as f64;
+            let max = MAX.load(Ordering::Relaxed) as f64;
+            let vn = VIEW_N.load(Ordering::Relaxed).max(1);
+            let vavg = VIEW_NS.load(Ordering::Relaxed) as f64 / vn as f64;
+            eprintln!(
+                "[fps] frames={n} 间隔 avg={:.2}ms max={:.2}ms  view() avg={:.2}ms",
+                avg / 1e6,
+                max / 1e6,
+                vavg / 1e6
+            );
+        }
+    }
+
+    /// 记一次 `view()` 的耗时
+    pub fn on_view(ns: u64) {
+        if !enabled() {
+            return;
+        }
+        VIEW_NS.fetch_add(ns, Ordering::Relaxed);
+        VIEW_N.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 pub fn subscription(_state: &State) -> iced::Subscription<Message> {
     let window_events = iced::window::events().map(|(_id, ev)| match ev {
         iced::window::Event::Opened { .. } => Message::WindowOpened,
@@ -2734,7 +2829,19 @@ pub fn subscription(_state: &State) -> iced::Subscription<Message> {
         _ => Message::Noop,
     });
 
-    iced::Subscription::batch([window_events, ctrl])
+    // 帧时间探针：**永远返回 None**，所以不会制造任何重绘
+    let fps = if fps::enabled() {
+        iced::event::listen_raw(|event, _status, _window| {
+            if let iced::Event::Window(iced::window::Event::RedrawRequested(_)) = event {
+                fps::on_frame();
+            }
+            None
+        })
+    } else {
+        iced::Subscription::none()
+    };
+
+    iced::Subscription::batch([window_events, ctrl, fps])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
