@@ -39,7 +39,14 @@ fn main() -> iced::Result {
         .theme(theme::theme)
         .settings(settings)
         .window(window::Settings {
-            size: iced::Size::new(940.0, 860.0),
+            // ⚠️ 窗口尺寸要在**建窗口之前**定下来（之后就只剩 `resize`，会闪一下），
+            // 所以这里先读一次设置里的渲染缩放。
+            size: {
+                let k = hipercalc::session::GuiPrefs::load()
+                    .ui_scale
+                    .clamp(0.5, 1.0);
+                iced::Size::new(940.0 * k, 860.0 * k)
+            },
             // 透明窗口：让 DWM 的亚克力透上来。探测失败时
             // `theme::root` 会给出不透明背景，观感依然完整。
             transparent: true,

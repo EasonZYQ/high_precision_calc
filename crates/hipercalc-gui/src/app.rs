@@ -357,6 +357,8 @@ pub struct State {
     persist: bool,
     /// 函数弹窗是否展开
     show_funcs: bool,
+    /// **渲染缩放**（窗口尺寸比例，1.0 = 940×860）
+    ui_scale: f32,
     /// **允许被截图/录屏**：`false` 时窗口排除在捕获之外（背景=真实桌面，但截图拍不到）
     allow_capture: bool,
     /// 亚克力是否已启用（探测一次后固定）
@@ -531,6 +533,8 @@ pub enum Message {
     BgCaptured(Option<crate::backdrop::Backdrop>),
     /// 历史区滚动（用来记住"用户是不是停在底部"）
     HistoryScrolled(iced::widget::scrollable::Viewport),
+    /// **渲染缩放**（改窗口物理像素量；iced 没法降渲染分辨率，这是唯一确定见效的旋钮）
+    SetUiScale(f32),
     /// **允许被截图/录屏**开关（见 `GuiPrefs::capture` 的说明：两个目标不能同时满足）
     SetCaptureOk(bool),
     /// 桌面模糊探测完成（`backdrop::probe` 的回传）
@@ -613,6 +617,7 @@ impl State {
             input_hint: None,
             history: Vec::new(),
             dark: prefs.dark,
+            ui_scale: prefs.ui_scale.clamp(0.5, 1.0),
             allow_capture: prefs.capture,
             acrylic_blur: prefs.glass,
             texture: theme::Texture::from_key(&prefs.texture),
@@ -709,6 +714,14 @@ impl State {
                 self.dark = !self.dark;
                 theme::set_dark(self.dark);
                 self.persist_prefs();
+            }
+            Message::SetUiScale(k) => {
+                self.ui_scale = k.clamp(0.5, 1.0);
+                self.persist_prefs();
+                // 立刻改窗口物理尺寸：像素量按 k² 下降（帧时间近似线性）
+                return iced::window::latest().and_then(move |id| {
+                    iced::window::resize(id, iced::Size::new(940.0 * k, 860.0 * k))
+                });
             }
             Message::SetCaptureOk(ok) => {
                 self.allow_capture = ok;
@@ -1061,6 +1074,7 @@ impl State {
                 "capture",
                 if self.allow_capture { "on" } else { "off" }.to_string(),
             ),
+            ("ui_scale", format!("{:.2}", self.ui_scale)),
             ("glass2_blur", format!("{:.2}", self.glass_blur)),
             ("glass2_tint", format!("{:.2}", self.glass_tint2)),
             ("glass_tint", format!("{:.2}", self.acrylic_tint)),
@@ -2136,6 +2150,36 @@ impl State {
         .spacing(8)
         .align_y(Alignment::Center);
 
+        // ⑦'' **渲染缩放**：唯一确定能压低帧时间的旋钮（像素量 ∝ k²）
+        let scale_row = row![
+            self.setting_label(t("渲染缩放"), SETTING_LABEL_W),
+            self.chip(
+                "100%",
+                (self.ui_scale - 1.0).abs() < 0.01,
+                Message::SetUiScale(1.0)
+            ),
+            self.chip(
+                "90%",
+                (self.ui_scale - 0.9).abs() < 0.01,
+                Message::SetUiScale(0.9)
+            ),
+            self.chip(
+                "80%",
+                (self.ui_scale - 0.8).abs() < 0.01,
+                Message::SetUiScale(0.8)
+            ),
+            self.chip(
+                "70%",
+                (self.ui_scale - 0.7).abs() < 0.01,
+                Message::SetUiScale(0.7)
+            ),
+            theme::label(t("像素少则帧率高：帧时间与像素数近似成正比"))
+                .size(12)
+                .style(theme::hint),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+
         // ⑦' **允许被截图**（用户 2026-10-21 要求"必须能截图"，但这两件事在
         // Windows 上不能同时成立 —— 见 `GuiPrefs::capture` 的说明）。
         let capture_row = row![
@@ -2198,6 +2242,8 @@ impl State {
                 shadow_row,
                 rule::horizontal(1.0).style(theme::divider),
                 acrylic_row,
+                rule::horizontal(1.0).style(theme::divider),
+                scale_row,
                 rule::horizontal(1.0).style(theme::divider),
                 capture_row,
                 rule::horizontal(1.0).style(theme::divider),
@@ -3864,6 +3910,8 @@ mod tests {
             "输入表达式，按 = 或键盘右下角的 ↵ 求值",
             "输入表达式，例如 sqrt(2)/3、x^2-4=0、int(x^2,x,0,1)",
             "还有空位没填",
+            "渲染缩放",
+            "像素少则帧率高：帧时间与像素数近似成正比",
             "允许被截图",
             "允许截图",
             "不允许截图",
