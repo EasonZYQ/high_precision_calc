@@ -373,7 +373,11 @@ fn liquid_glass_refraction_snapshot() {
     // ⚠️ 顺序不能反：先建 State 再切玻璃（见 `liquid_glass` 里的说明）
     let _ = state.update(Message::SetTexture(hipercalc_gui::theme::Texture::Glass));
 
-    // 合成背景：16px 棋盘 + 冷暖两色，弯曲与色散都能看出来。
+    // 合成背景：**双色网格 + 一条斜线**（用户建议："把测试里的截图背景改为两种颜色
+    // 相间的网格，来测试玻璃质感的效果"）。
+    //
+    // 为什么是网格 + 斜线：网格能看出"哪一段被弯了多少"，斜线能看出
+    // "颜色交界有没有锯齿"——这两个正是玻璃质感最容易糊弄过去的地方。
     //
     // ⚠️ `width / height` 必须**真的等于** `rgba` 的尺寸 —— 着色器按
     // `width * 4` 当行距上传，给错了整张图会错位（这里曾经踩过：见
@@ -382,11 +386,14 @@ fn liquid_glass_refraction_snapshot() {
     let mut rgba = vec![0u8; (w * h * 4) as usize];
     for y in 0..h {
         for x in 0..w {
-            let hi = ((x / 16) + (y / 16)) % 2 == 0;
+            // 双色网格：24px 一格，冷暖强烈对比（弯折与色散都吃得出来）
+            let hi = ((x / 24) + (y / 24)) % 2 == 0;
+            // ⚠️ 严格**两种颜色**（用户要求）：棋盘自身的对角台阶就足以看出锯齿。
+            let c = if hi { [36u8, 64, 140] } else { [238, 158, 52] };
             let i = ((y * w + x) * 4) as usize;
-            rgba[i] = if hi { 232 } else { 28 };
-            rgba[i + 1] = if hi { 118 } else { 96 };
-            rgba[i + 2] = if hi { 46 } else { 220 };
+            rgba[i] = c[0];
+            rgba[i + 1] = c[1];
+            rgba[i + 2] = c[2];
             rgba[i + 3] = 255;
         }
     }

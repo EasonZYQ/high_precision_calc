@@ -184,15 +184,29 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     //   那种"玻璃有厚度"的观感
     let dx = min(s.x, 1.0 - s.x) * u.size.x;
     let dy = min(s.y, 1.0 - s.y) * u.size.y;
-    let band = 0.25 * min(u.size.x, u.size.y);
-    let w = pow(1.0 - smoothstep(0.0, band, min(dx, dy)), 1.6);
+    // 环带从 25% 收到 18%：同样的弯折量集中在更窄的一圈里，边缘才有"厚度"
+    let band = 0.18 * min(u.size.x, u.size.y);
+    let dmin = min(dx, dy);
+
+    // ⚠️ 剖面：**两段指数**，不是一条平滑隆起。
+    //
+    // 用户反馈："边缘完全是简单的扭曲，而不是 iOS 的折射"。之前的
+    // `pow(1-smoothstep, 1.6)` 是一条宽而均匀的隆起 —— 观感是"整块被轻轻推了一下"。
+    // 真实玻璃的边缘是**一条很陡的壁 + 内侧一条缓坡**：
+    // - `wall`（特征宽度 ≈ 6% 环带）：贴边 1~3px 内的强弯折，这一条决定"像不像玻璃"；
+    // - `bevel`（≈ 75% 环带）：把桌面内容缓慢压向边缘，给出"厚度"的错觉；
+    // - `cut`：到环带外沿**严格归零**，否则会看到一条突兀的接缝。
+    let wall = exp(-dmin / max(0.06 * band, 1.0));
+    let bevel = exp(-dmin / max(0.75 * band, 1.0));
+    let cut = 1.0 - smoothstep(0.55 * band, band, dmin);
+    let w = (0.70 * wall + 0.30 * bevel) * cut;
     // 偏移方向仍用径向：在边缘附近它近似垂直于边缘（= 玻璃厚度的法线），
     // 在角上则指向对角 —— 与按键拐角的弯法一致。
     // `+ 1e-5` 防 `normalize(0)`：中心处 w 已是 0，方向随便给个非零向量即可。
     let c = s * 2.0 - vec2<f32>(1.0);
     let n = normalize(c + vec2<f32>(1e-5));
-    // 峰值偏移 10% 采样距离（× 滑条强度）。中心 0，边缘最弯。
-    let k = w * u.strength * 0.10;
+    // 峰值偏移（× 滑条强度）。中心 0，贴边最弯。
+    let k = w * u.strength * 0.11;
     // ── 窗口→背景图映射：窗口挪动时按原点差平移采样（拖动零抓屏）────────
     // 抓屏区域带外扩余量（见 backdrop::margin），余量内的偏移都落在
     // 真实像素上 —— 不再 clamp 到抓屏边缘（那会把最外一行拉成高饱和色块）。

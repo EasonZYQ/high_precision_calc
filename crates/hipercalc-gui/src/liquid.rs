@@ -418,8 +418,12 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
         let short = min(u.size.x, u.size.y);
         // ⚠️ 名字不能叫 `band` —— 上面窗口环带那段已经用了这个名字（WGSL 会报重定义）
         let lens_band = max(max(u.edge.x, 1.0), 0.085 * short);
-        // `t`：1 = 正好在边上，0 = 环带内缘。用平方（下面）让中心几乎不动
-        let t = clamp(1.0 - inward / lens_band, 0.0, 1.0);
+        // **两段剖面**（与 `refraction.rs` 同一套思路）：贴边一条陡壁 + 内侧一条缓坡。
+        // 旧的 `1 - inward/band`（线性）看起来就是"轻轻推了一下"，不像玻璃。
+        let wall = exp(-inward / max(0.09 * lens_band, 1.2));
+        let bevel = exp(-inward / max(0.80 * lens_band, 1.2));
+        let cut = 1.0 - smoothstep(0.55 * lens_band, lens_band, inward);
+        let t = clamp((0.62 * wall + 0.38 * bevel) * cut, 0.0, 1.0);
 
         // **位移用像素表达**再折算成图像 uv —— 这样"弯多少"与抓屏分辨率无关，
         // 也与部件大小成正比（旧实现直接给归一化 uv，大件小件弯得一样多，观感是错的）。
@@ -493,7 +497,7 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     rgb = rgb * (1.0 - 0.10 * rim_t2 * (1.0 - ndl));
 
     // 高光是**反射**，用加算；内腔是遮挡，用减算
-    let hl = (rim * 0.70 + sheen * 0.85 + spec_rim * 0.85) * u.spec * lit;
+    let hl = (rim * 0.70 + sheen * 0.85 + spec_rim * 0.55) * u.spec * lit;
     rgb = rgb + vec3<f32>(1.0) * hl;
     // 深色主题下暗环更重一点（浅色下太重会脏）
     rgb = rgb - vec3<f32>(1.0) * cav * mix(0.22, 0.34, dark_k);

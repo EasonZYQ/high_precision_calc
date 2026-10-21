@@ -527,6 +527,15 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
                 platform::exclude_from_capture(!ok);
                 // 允许截图 ⇒ 帧里有自己 ⇒ 把窗口那块补平；不允许 ⇒ 已经排除，无需补
                 let rect = if ok { fill_self_rect(&mut bd) } else { None };
+                // ⚠️ **必须再糊一次**（用户反馈："背景不同颜色相交的斜线有很严重的锯齿"）。
+                //
+                // 以前这里觉得"mip 链已经做过 2×2 盒式平均，再糊是重复劳动"——
+                // 这正是锯齿的根因：mip 只把 8×8 平均成**一个** texel，
+                // 颜色交界在 texel 网格上仍是**硬边**，放大到屏幕就是一级级台阶
+                //（540×360 的纹理铺满 2160×1440，一个 texel = 4 逻辑像素）。
+                // 半径随降采样倍数走：倍数越大（越糊）才越需要抹平台阶。
+                let br = (factor as usize / 4).clamp(1, 3);
+                box_blur(&mut bd.rgba, bd.width as usize, bd.height as usize, br);
                 dump_if_requested(&bd, rect);
                 return Some(bd);
             }
