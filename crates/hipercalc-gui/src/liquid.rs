@@ -428,70 +428,78 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
         let dx = min(s.x, 1.0 - s.x) * u.win.x;
         let dy = min(s.y, 1.0 - s.y) * u.win.y;
         let band = 0.25 * min(u.win.x, u.win.y);
-        let wgt = pow(1.0 - smoothstep(0.0, band, min(dx, dy)), 1.6);
-        let cwin = s * 2.0 - vec2<f32>(1.0);
-        let nwin = normalize(cwin + vec2<f32>(1e-5));
-        var suv = s * u.map.xy + u.map.zw + nwin * (wgt * 0.10);
-        // ── 局部透镜（M2 重写）：真法线 + 尺寸自适应环带 ─────────────────
-        //
-        // ⚠️ **旧实现在这里用的是"从中心指向像素"当法线**。对宽扁的面板来说，
-        // 那条方向几乎全是斜的 —— 于是四条边都被"斜着推"，看起来像整块**放大**，
-        // 而不是边缘被玻璃压弯。iOS 的观感来自"**边缘弯、中心几乎不动**"，
-        // 所以法线必须是**到最近边的方向**（SDF 梯度）。
-        //
-        // **解析法线**（省掉 6 次 `sd_rr`：第一版是 4 次有限差分 + 高光段再来 4 次，
-        // 实测玻璃层要 4.6ms，大头就花在这里 —— 一个片元 8 次 SDF 太奢侈）。
-        //
-        // 圆角矩形的法线 = "最近点指向像素"的方向：
-        // 先在内矩形上求最近点 `q`，`p - q` 就是法线；落在直边上时 `p - q` 为零，
-        // 退化成**轴对齐**的那条边（取 x/y 里更近的一条）。
-        let rr = max(u.radius, 0.0);
-        let inner = max(half - vec2<f32>(rr), vec2<f32>(0.0));
-        let q = clamp(p, -inner, inner);
-        let dv = p - q;
-        let ex = half.x - abs(p.x);
-        let ey = half.y - abs(p.y);
-        let flat_n = select(
-            vec2<f32>(sign(p.x), 0.0),
-            vec2<f32>(0.0, sign(p.y)),
-            ey < ex,
-        );
-        let n_raw = select(flat_n, normalize(dv), length(dv) > 1e-4);
-        // `p` 是 y 向上的局部坐标；采样空间 y 向下 ⇒ 法线 y 取反
-        let nloc = vec2<f32>(n_raw.x, -n_raw.y);
-
-        // **环带宽度随尺寸走**：小按键 ~10px、大面板可到几十 px（iOS 的玻璃越厚，
-        // 边缘那圈折射越宽）。`u.edge.x`（主题给的厚度）作为下限，保证小件不糊。
         let short = min(u.size.x, u.size.y);
         // ⚠️ 名字不能叫 `band` —— 上面窗口环带那段已经用了这个名字（WGSL 会报重定义）
         let lens_band = max(max(u.edge.x, 1.0), 0.085 * short);
-        // **两段剖面**（与 `refraction.rs` 同一套思路）：贴边一条陡壁 + 内侧一条缓坡。
-        // 旧的 `1 - inward/band`（线性）看起来就是"轻轻推了一下"，不像玻璃。
-        let wall = exp(-inward / max(0.09 * lens_band, 1.2));
-        let bevel = exp(-inward / max(0.80 * lens_band, 1.2));
-        let cut = 1.0 - smoothstep(0.55 * lens_band, lens_band, inward);
-        let t = clamp((0.62 * wall + 0.38 * bevel) * cut, 0.0, 1.0);
 
-        // **位移用像素表达**再折算成图像 uv —— 这样"弯多少"与抓屏分辨率无关，
-        // 也与部件大小成正比（旧实现直接给归一化 uv，大件小件弯得一样多，观感是错的）。
-        let strength_px = u.edge.y * clamp(short, 40.0, 240.0) * 0.8;
-        let bend_px = t * t * strength_px;
-        // 窗口 uv → 图像 uv 的比例就是 `u.map.xy`；(px / 窗口尺寸) 先变窗口 uv
-        let dloc = nloc * (bend_px * u.map.xy / u.win);
-        // ⚠️ **色散（chromatic aberration）**：真实玻璃对 R/G/B 的折射率不同，
-        // 边缘会把颜色拆开 —— 这是"一眼看出是玻璃"最关键的一笔。
-        // 三次采样成本换来的观感提升远超其它手段，且三通道只差 3 个采样点。
-        let lo = vec2<f32>(0.001);
-        let hi = vec2<f32>(0.999);
-        // 色散：三通道位移差约 ±12%（真实玻璃蓝光折射率最大 ⇒ 蓝偏得多）
+        // 未经任何位移的采样点（窗口 uv → 图像 uv）
+        let base = s * u.map.xy + u.map.zw;
         // 模糊半径：逻辑像素 → 窗口 uv → 图像 uv → texel
         let rad = (u.p.w * u.map.xy / u.win) * vec2<f32>(textureDimensions(bg));
-        var bgc = sample_blur(suv, rad, u.origin + uv * u.size);
-        // 色散：只在**小半径**时加，否则会在大模糊上叠出一圈硬边彩边
-        if (u.p.w < 2.5) {
-            let kr = textureSampleLevel(bg, samp, clamp(suv + dloc * 1.12, lo, hi), 0.0).r;
-            let kb = textureSampleLevel(bg, samp, clamp(suv + dloc * 0.88, lo, hi), 0.0).b;
-            bgc = vec3<f32>(kr, bgc.g, kb);
+        let seed = u.origin + uv * u.size;
+
+        var bgc: vec3<f32>;
+        // ══ 快路径：面板"中间那块" ════════════════════════════════════════
+        //
+        // 用户要求"中间只用一次采样"，但**必须无缝** —— 所以判据不能是"猜一个阈值"，
+        // 必须是**位移恰好为 0** 的地方：
+        // - 局部透镜：`cut = 1 - smoothstep(0.55·lens_band, lens_band, inward)`，
+        //   `inward >= lens_band` 时 smoothstep 已经饱和 ⇒ cut **严格 = 0** ⇒ 位移 0；
+        // - 窗口环带：`wgt = 1 - smoothstep(0, band, min(dx,dy))`，
+        //   `min(dx,dy) >= band` 时 **严格 = 0** ⇒ 位移 0。
+        //
+        // 两处都是"严格 0"而不是"接近 0"，所以快路径采的就是 `base` 本身，
+        // 与完整路径**数学上完全等价** ⇒ 不会出现接缝/割裂（拖动窗口、背景变化都不怕）。
+        // 模糊仍然照做（否则中间清晰、边缘糊，那才是真正的割裂）。
+        if (inward >= lens_band && min(dx, dy) >= band) {
+            bgc = sample_blur(base, rad, seed);
+        } else {
+            // ── 完整路径：窗口边缘环带 + 面板自身的凸透镜 ──────────────────
+            let wgt = pow(1.0 - smoothstep(0.0, band, min(dx, dy)), 1.6);
+            let cwin = s * 2.0 - vec2<f32>(1.0);
+            let nwin = normalize(cwin + vec2<f32>(1e-5));
+            let ring_off = nwin * (wgt * 0.10);
+
+            // **解析法线**（省掉 6 次 `sd_rr`）：圆角矩形的法线 = "最近点指向像素"，
+            // 落在直边上时退化成**轴对齐**的那条边（取 x/y 里更近的一条）。
+            let rr = max(u.radius, 0.0);
+            let inner = max(half - vec2<f32>(rr), vec2<f32>(0.0));
+            let q = clamp(p, -inner, inner);
+            let dv = p - q;
+            let ex = half.x - abs(p.x);
+            let ey = half.y - abs(p.y);
+            let flat_n = select(
+                vec2<f32>(sign(p.x), 0.0),
+                vec2<f32>(0.0, sign(p.y)),
+                ey < ex,
+            );
+            let n_raw = select(flat_n, normalize(dv), length(dv) > 1e-4);
+            // `p` 是 y 向上的局部坐标；采样空间 y 向下 ⇒ 法线 y 取反
+            let nloc = vec2<f32>(n_raw.x, -n_raw.y);
+
+            // **两段剖面**：贴边一条陡壁 + 内侧一条缓坡（见 `refraction.rs` 同一套）
+            let wall = exp(-inward / max(0.09 * lens_band, 1.2));
+            let bevel = exp(-inward / max(0.80 * lens_band, 1.2));
+            let cut = 1.0 - smoothstep(0.55 * lens_band, lens_band, inward);
+            let t = clamp((0.62 * wall + 0.38 * bevel) * cut, 0.0, 1.0);
+
+            // 位移用像素表达再折算成图像 uv（与抓屏分辨率、部件尺寸都解耦）
+            let strength_px = u.edge.y * clamp(short, 40.0, 240.0) * 0.8;
+            let bend_px = t * t * strength_px;
+            let dloc = nloc * (bend_px * u.map.xy / u.win);
+
+            let disp = base + ring_off + dloc;
+            bgc = sample_blur(disp, rad, seed);
+            // ⚠️ **色散要作用在"已位移"的点上**，而且绿通道也必须位移 ——
+            // 上一版把 G 换成了 `sample_blur(base)`，等于把透镜位移丢掉了
+            // （只剩彩边、没有弯折）。这里三个通道都从 `disp` 出发。
+            if (u.p.w < 2.5) {
+                let lo = vec2<f32>(0.001);
+                let hi = vec2<f32>(0.999);
+                let kr = textureSampleLevel(bg, samp, clamp(disp + dloc * 0.12, lo, hi), 0.0).r;
+                let kb = textureSampleLevel(bg, samp, clamp(disp - dloc * 0.12, lo, hi), 0.0).b;
+                bgc = vec3<f32>(kr, bgc.g, kb);
+            }
         }
         // **提饱和**：玻璃会把背后的颜色"喂"得更浓郁（iOS 特征之一）。
         // 不做的话背景被 t 色压淡之后会显得灰。
