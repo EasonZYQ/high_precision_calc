@@ -530,24 +530,16 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
                 let ok = capture_ok();
                 #[cfg(windows)]
                 platform::exclude_from_capture(!ok);
-                // 允许截图 ⇒ 帧里有自己 ⇒ 把窗口那块补平；不允许 ⇒ 已经排除，无需补
-                let rect = if ok { fill_self_rect(&mut bd) } else { None };
-                // ⚠️ **必须再糊一次**（用户反馈："背景不同颜色相交的斜线有很严重的锯齿"）。
+                // ⚠️ **不再往窗口那块填色**（用户 2026-10-22 明确要求"把色块去掉"）。
                 //
-                // 以前这里觉得"mip 链已经做过 2×2 盒式平均，再糊是重复劳动"——
-                // 这正是锯齿的根因：mip 只把 8×8 平均成**一个** texel，
-                // 颜色交界在 texel 网格上仍是**硬边**，放大到屏幕就是一级级台阶
-                //（540×360 的纹理铺满 2160×1440，一个 texel = 4 逻辑像素）。
-                // 半径随降采样倍数走：倍数越大（越糊）才越需要抹平台阶。
+                // 填色的本意是"别在背景里看见自己"，但它跟不上拖动（拖动时我们刻意
+                // 不重抓），结果是：静止时一块死板的色块盖住桌面、拖动时又慢半拍。
+                // 用户实测后判断"既然如此不如不要"。
                 //
-                // ⚠️ **`factor == 1` 时必须跳过**（用户反馈："即使模糊强度为 0 也不够清晰"）：
-                // 此时纹理就是原始像素、把 1 个屏幕像素映到 1 个 texel，根本不存在"台阶"；
-                // 再糊一道 3-tap 等于**白送一层模糊**，观感比 iOS 的"清晰玻璃"差一档。
-                let br = (factor as usize / 4).clamp(1, 3);
-                if factor > 1 {
-                    box_blur(&mut bd.rgba, bd.width as usize, bd.height as usize, br);
-                }
-                dump_if_requested(&bd, rect);
+                // 现在的取舍：允许截图 ⇒ 背景里会有**自己窗口的倒影**（被模糊+染色后
+                // 是一片很淡的重影）；想要绝对干净就用「不允许截图」（那时自己已被
+                // `WDA_EXCLUDEFROMCAPTURE` 排除，背景就是纯桌面）。
+                dump_if_requested(&bd);
                 return Some(bd);
             }
             crate::dupl::Poll::Unchanged => return None,
@@ -556,138 +548,6 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
     }
 
     capture_blurred(x0, y0, w, h, factor)
-}
-
-/// 把"我们自己的窗口"在抓屏结果里那一块**用周围颜色填平**。
-///
-/// ## 为什么需要它
-///
-/// 我们要的背景是"窗口背后的桌面"，而 `IDXGIOutputDuplication` 只能抓到
-/// **整块合成后的桌面（包含我们自己）**，没有"只排除某个进程"的开关。
-/// 以前用 `WDA_EXCLUDEFROMCAPTURE` 解决 —— 但它对**所有**捕获者生效，
-/// 用户一按截图（微信 / Win+PrtSc / 录屏）窗口就消失。现在改成"照抓、再补"。
-///
-/// ## 为什么是**一个平均色**而不是渐变
-///
-/// 逐行/逐列插值都试过：窗口外那一圈里全是别的窗口边缘、图标、文字，
-/// 平均下来会形成一道道**竖条纹 / 亮带**（实测很难看）。
-/// 整块一个低频色，经玻璃着色器模糊+染色之后就是一片干净的底色。
-///
-/// ## 为什么向外多扩 96 屏幕像素
-///
-/// `window_rect()` 给的是**客户区**，而画面里还包含我们自己的标题栏（DWM 画的）
-/// 和一圈阴影 —— 只按客户区填会留下标题栏那条"倒影"。
-/// 多盖的是窗口外的桌面，只在折射时看得到，抓屏区域本身还有半个窗口的余量。
-// 这里的 `for c in 0..3` 同时索引 `corner` 与 RGBA 缓冲（两个平行数组），
-// 换成迭代器反而更难读 —— 明确豁免这一条 lint。
-#[allow(clippy::needless_range_loop)]
-fn fill_self_rect(bd: &mut Backdrop) -> Option<(u32, u32, u32, u32)> {
-    let (wx, wy, ww, wh) = window_rect()?;
-    let (tw, th) = (bd.width as usize, bd.height as usize);
-    if bd.rw == 0 || bd.rh == 0 || tw < 4 || th < 4 {
-        return None;
-    }
-    let sx = bd.width as f32 / bd.rw as f32;
-    let sy = bd.height as f32 / bd.rh as f32;
-    let clamp = |v: f32, max: usize| v.clamp(0.0, max.saturating_sub(1) as f32) as usize;
-    // ⚠️ 96 而不是 40：窗口标题栏 + DWM 阴影那一条都在**客户区之上**。
-    // 实测 40 只盖到标题栏中线、72 还差 ~20px（导出的背景纹理里能看见一条亮边），
-    // 96 留够余量。多盖的是窗口外的桌面，只在折射环带里看得到。
-    let pad_x = (96.0 * sx) as i32;
-    let pad_y = (96.0 * sy) as i32;
-    let x0 = clamp(((wx - pad_x - bd.x) as f32) * sx, tw);
-    let y0 = clamp(((wy - pad_y - bd.y) as f32) * sy, th);
-    let x1 = clamp(((wx + ww as i32 + pad_x - bd.x) as f32) * sx, tw);
-    let y1 = clamp(((wy + wh as i32 + pad_y - bd.y) as f32) * sy, th);
-    if x1 <= x0 + 1 || y1 <= y0 + 1 {
-        return None;
-    }
-    let idx = |x: usize, y: usize| (y * tw + x) * 4;
-    // ⚠️ **四角双线性，不是整块平色**（用户反馈："允许截图时背景出现一个巨大的色框
-    // 遮住桌面"）。平色在"窗口占满屏幕大部分"时就是一大块死板的方块，
-    // 一眼就能看出被盖住了；用**四个角（窗口外一圈）的颜色**做二维插值，
-    // 得到的是一片顺着桌面明暗走的渐变，看起来像"桌面在玻璃后面继续延伸"。
-    let cx = [x0.saturating_sub(2), (x1 + 1).min(tw - 1)];
-    let cy = [y0.saturating_sub(2), (y1 + 1).min(th - 1)];
-    let mut corner = [[0f32; 3]; 4]; // TL, TR, BL, BR
-    for (k, (xi, yi)) in [(0usize, 0usize), (1, 0), (0, 1), (1, 1)]
-        .iter()
-        .map(|(a, b)| (cx[*a], cy[*b]))
-        .enumerate()
-    {
-        let d = idx(xi, yi);
-        for c in 0..3 {
-            corner[k][c] = bd.rgba[d + c] as f32;
-        }
-    }
-    for y in y0..y1 {
-        let ty = (y - y0) as f32 / (y1 - y0).max(1) as f32;
-        for x in x0..x1 {
-            let tx = (x - x0) as f32 / (x1 - x0).max(1) as f32;
-            let d = idx(x, y);
-            for c in 0..3 {
-                let top = corner[0][c] + (corner[1][c] - corner[0][c]) * tx;
-                let bot = corner[2][c] + (corner[3][c] - corner[2][c]) * tx;
-                let v = top + (bot - top) * ty;
-                bd.rgba[d + c] = v.round().clamp(0.0, 255.0) as u8;
-            }
-            bd.rgba[d + 3] = 255;
-        }
-    }
-    Some((x0 as u32, y0 as u32, x1 as u32, y1 as u32))
-}
-
-/// **是否允许被截图/录屏**（进程级开关，见 `GuiPrefs::capture`）。
-///
-/// `true`（默认）= 不开 `WDA_EXCLUDEFROMCAPTURE`，抓到的帧里有自己 ⇒ 用
-/// [`fill_self_rect`] 把窗口那块填平（背景变"周围主色调"）。
-/// `false` = 排除自己 ⇒ 背景是真实桌面，但截图/录屏拍不到窗口。
-static CAPTURE_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-
-/// 允许被截图吗
-pub fn capture_ok() -> bool {
-    CAPTURE_OK.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// 设置"允许被截图"，并立刻把窗口亲和性同步过去（不用重启）
-pub fn set_capture_ok(ok: bool) {
-    CAPTURE_OK.store(ok, std::sync::atomic::Ordering::Relaxed);
-    #[cfg(windows)]
-    {
-        crate::backdrop::exclude_from_capture(!ok);
-    }
-}
-
-/// 调试用：把"喂给玻璃的背景纹理"导出成 PPM，并把 fill 矩形打到 stderr。
-///
-/// 只有 `HIPERCALC_DUMP_BG=1` 时才动作 —— 排查"背景里为何有自己的窗口"这类
-/// 几何问题，看这张图比看屏幕快得多（它是**纹理原图**，不是最终合成）。
-fn dump_if_requested(bd: &Backdrop, rect: Option<(u32, u32, u32, u32)>) {
-    if std::env::var("HIPERCALC_DUMP_BG").ok().as_deref() != Some("1") {
-        return;
-    }
-    let (w, h) = (bd.width as usize, bd.height as usize);
-    let path = std::env::temp_dir().join("hc_bg_dump.ppm");
-    let mut out = Vec::with_capacity(w * h * 3 + 32);
-    out.extend_from_slice(format!("P6\n{w} {h}\n255\n").as_bytes());
-    for i in 0..(w * h) {
-        out.push(bd.rgba[i * 4]);
-        out.push(bd.rgba[i * 4 + 1]);
-        out.push(bd.rgba[i * 4 + 2]);
-    }
-    let _ = std::fs::write(&path, out);
-    eprintln!(
-        "[bg-dump] tex={}x{} rw={} rh={} origin=({},{}) win={:?} fill_rect={:?} -> {:?}",
-        bd.width,
-        bd.height,
-        bd.rw,
-        bd.rh,
-        bd.x,
-        bd.y,
-        window_rect(),
-        rect,
-        path
-    );
 }
 
 /// 降采样 + 两趟 box blur（近似高斯）。
