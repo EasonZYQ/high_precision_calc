@@ -1,6 +1,10 @@
 # AGENTS.md
 
-`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**已可用**：计算 / **后台求值（界面永不卡死）** / **耗时显示（对标 CLI）** / 历史 / Desmos 式双面板虚拟键盘 / 函数弹窗 / 数学排版与实时预览 / 内置字体 / 深浅双主题 / 全界面多语言）。**含 371 项测试**（hipercalc 200 + core 22 + GUI 132 单测 + 16 快照 + 1 doctest，其中 2 项默认 ignore（`perf_scan` 与构建期基准）），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
+`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**已可用**：计算 / **后台求值（界面永不卡死）** / **耗时显示（对标 CLI）** / 历史 / Desmos 式双面板虚拟键盘 / 函数弹窗 / 数学排版与实时预览 / 内置字体 / 深浅双主题 / 全界面多语言）。**当前版本 2.0.0**，**含 373 项测试**（hipercalc 200 + core 22 + GUI 134 单测 + 16 快照 + 1 doctest，其中 2 项默认 ignore），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
+
+**CI 分三块**：三平台 build + test（**只覆盖 default-members = core+cli**）、`Check GUI`（windows + `cargo check -p hipercalc-gui --all-targets`，2026-10-22 加，因为曾出现"CI 全绿但 GUI 编译不过"）、6 目标交叉编译。发布走 `release.yml`：tag 触发，**CLI 六目标 + GUI（Windows / macOS）**。
+
+**文档分工（用户明确要求）**：README 只放"简介 + 截图 + 特色 + 安装"，**手册内容一律进 `docs/DOC.zh-CN.md` / `DOC.en.md`**（27 章，第 27 章是图形界面）；`docs/liquid-glass-report.md` 玻璃算法笔记；`docs/windows7.md` Win7 兼容性调研。别再往 README 堆细节。
 
 ## 硬性要求（用户指定）
 
@@ -75,7 +79,10 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
   | `mathrender.rs` | MathIO 文本 → 真正的数学排版（分数竖排、根号顶线、幂上标）。**解析与渲染分离**，解析层是纯函数 |
   | `fonts.rs` | **内置字体**（`assets/fonts/`，见下节）+ 数学字体选择（进程级）+ `font_for` / `label` 的自适应分派 |
   | `theme.rs` | 色板令牌 + 全部样式函数 + 圆角定额。深/浅两套 WinUI3 令牌 |
-  | `backdrop.rs` | Windows DWM 亚克力（含 `EnumWindows` + PID 反查 HWND）；非 Windows 是空实现 |
+  | `backdrop.rs` | Windows DWM 亚克力 + **抓屏调度**（DXGI 优先 / GDI 兜底）+ `capture_ok` 截图开关 |
+  | `refraction.rs` | **窗口边缘折射**：整窗一次 pass，边缘 18% 环带内按"陡壁+缓坡"两段剖面位移背景 |
+  | `liquid.rs` | **液态玻璃**：每个面板/按键一次 pass（面板中间走"零位移快路径"）；uniform 按外观分槽缓存 |
+  | `dupl.rs` | **DXGI 桌面复制**：`AcquireNextFrame` → mip 纹理 → 只回读需要的层；`Unchanged` 时零成本 |
 
 - **`Session` 是 GUI 与 CLI 的公共求值入口**（`crates/hipercalc/src/session.rs`）：
   GUI **不直接调** `run_line` / `handle_command`，一律走 `Session::eval(&str) -> LineResult`。
@@ -409,6 +416,14 @@ cargo build -p hipercalc-gui   # 图形界面（唯一会编 iced 的命令，�
 | `lib.rs`              | **应用主体**：`run`/`run_line`、`EvalResult` 分派与各 handler、REPL、`/` 指令、`/help` 正文与着色器、颜色配置（`/set` 持久化）、rustyline 实时高亮、变量存储、历史持久化、运算计时（`Timing`）；**键位绑定**（全角转半角）、**括号配对高亮与标红**、**框内参数提示** |
 | `main.rs`             | **程序入口（仅 8 行）**：`std::process::exit(hipercalc::run())` |
 | `README.md`           | 功能手册 + 代码架构文档；改动功能后须同步                                                                 |
+
+## 开发用环境变量（排查用，不影响正常使用）
+
+| 变量 | 作用 |
+| --- | --- |
+| `HIPERCALC_FPS=1` | 帧时间探针：`listen_raw` 记 `RedrawRequested` 时间戳（**不发消息**，否则自己制造重绘），每 120 帧打一行 stderr |
+| `HIPERCALC_DUMP_BG=1` | 把"喂给玻璃的背景纹理"导出成 `%TEMP%/hc_bg_dump.ppm` + 打印几何（排查"背景发虚 / 背景里有自己的窗口"最快的手段） |
+| `HIPERCALC_BLUR=<px>` | 覆盖模糊半径（离屏快照做 0 / 6 / 14 对比用） |
 
 ## 容易改错的地方
 

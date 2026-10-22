@@ -84,8 +84,57 @@ jobs:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}
 
+  # 图形界面：与 CLI 同一套产物流程。**只发 Windows 与 macOS** ——
+  # Linux 的 GUI 需要 libxkbcommon / wayland / x11 等系统开发包，
+  # 而且玻璃质感在非 Windows 上本来就退回"关闭"，先不占发布位置。
+  gui:
+    name: GUI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: hipercalc-gui.exe
+            asset: hipercalc-gui-windows-x86_64.exe
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin: hipercalc-gui
+            asset: hipercalc-gui-macos-aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: gui-${{ matrix.target }}
+
+      - name: Build GUI
+        run: cargo build --release --target ${{ matrix.target }} -p hipercalc-gui
+
+      - name: Stage (Unix)
+        if: matrix.os != 'windows-latest'
+        run: cp target/${{ matrix.target }}/release/${{ matrix.bin }} ${{ matrix.asset }}
+
+      - name: Stage (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: Copy-Item target/${{ matrix.target }}/release/${{ matrix.bin }} ${{ matrix.asset }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
   release:
-    needs: build
+    needs: [build, gui]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:

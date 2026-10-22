@@ -1,6 +1,6 @@
-# HiPerCalc — a high-precision command-line calculator
+# HiPerCalc — a high-precision calculator (CLI + GUI)
 
-A calculator for the terminal: **80-digit internal precision**, **exact symbolic answers whenever they exist**, a Chinese
+A calculator with two front ends (CLI `hipercalc` + GUI `hipercalc-gui`): **80-digit internal precision**, **exact symbolic answers whenever they exist**, a Chinese
 interface, and three UI languages. This document is the **feature manual** — what it can compute, how to type it, and
 what you get back. No implementation details.
 
@@ -41,6 +41,10 @@ what you get back. No implementation details.
 24. [Language and colours](#24-language-and-colours)
 25. [Input experience](#25-input-experience)
 26. [Known limits](#26-known-limits)
+
+**GUI**
+
+27. [GUI (hipercalc-gui)](#27-gui-hipercalc-gui)
 
 ---
 
@@ -316,6 +320,56 @@ Colours for results, errors, hints and variables are configurable with `/set` an
 - **Statistics**: data points must be evaluable at parse time (`/let` variables are fine).
 - **Special functions**: `gamma` supports positive integers and half-integers.
 - **Interruption**: supported on Windows, Linux and macOS, only during a computation.
+
+
+---
+
+## 27. GUI (hipercalc-gui)
+
+The CLI syntax works **unchanged** — the GUI is a shell around the very same evaluation path
+(`Session::eval`), so every function, command and display switch documented above applies there too.
+
+### 27.1 Layout
+
+| Area | Contents |
+| --- | --- |
+| Toolbar | mode (`MathIO` / `LineIO`), angle (`DEG` / `RAD`), base (10 / 16), history, clear history, settings |
+| Input | a **structured** editor (fractions / roots / powers / Σ are real layout nodes, not text) plus `C` and `=` |
+| Results | real math typesetting: stacked fractions, root overlines, superscripts, Σ limits, stretchable parentheses |
+| Keypad | Desmos-style panels: main / functions / units / constants, switching with the input |
+| Status bar | current keypad panel and evaluation time |
+
+### 27.2 Keys
+
+| Key | Effect |
+| --- | --- |
+| `Enter` | evaluate |
+| `C` | clear the input |
+| `←` `→` | move the caret in **linear reading order** (every slot of a fraction / root / Σ is a legal position) |
+| `Backspace` | delete the item before the caret; at the start of an empty slot it does **nothing** (protects whole structures) |
+| `(` `)` | `(` inserts a group, `)` leaves the current group — unbalanced parentheses cannot be built |
+
+### 27.3 Settings
+
+| Setting | Meaning |
+| --- | --- |
+| Theme | dark / light |
+| Texture | **acrylic** (system composited) / **glass** (our own liquid glass + refraction) / **off** (no capture, no blur) |
+| Desktop blur | blur radius of the backdrop in glass mode (0 = pixel-sharp, continuous slider) |
+| Panel shadow | shadow depth of glass panels |
+| Precision | the same setting as the CLI `/mode` (shared `~/.hipercalc_state`) |
+| Math font | one of five bundled math fonts (variables are italicised automatically) |
+| Language | Simplified Chinese / Traditional Chinese / English |
+| Render scale | 100% / 90% / 80% / 70% — **window pixel count**; lower it when frame rate matters |
+| Allow screenshots | **allow**: screenshots/recording work, but the backdrop contains a faint reflection of this window; **disallow**: the backdrop is the clean desktop, but captures miss the window (a Windows limitation — you cannot have both) |
+| Long results | wrap / horizontal scroll |
+
+### 27.4 Relation to the CLI
+
+- Both share `~/.hipercalc_state`: language, precision and display mode are common; the GUI only writes its own keys.
+- Evaluation runs on a **background thread**, so heavy work (high-degree roots, numeric integration) never freezes the UI.
+- The glass texture needs screen capture: DXGI desktop duplication on Windows; other platforms fall back to "off".
+
 
 ---
 
