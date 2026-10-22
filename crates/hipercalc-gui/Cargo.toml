@@ -19,6 +19,10 @@ name = "hipercalc-gui"
 path = "src/main.rs"
 
 [dependencies]
+# ⚠️ **必须放在通用依赖里**：它曾被误写在 `[target.'cfg(windows)'.dependencies]` 段，
+# 于是 macOS / Linux 上 `usize futures` 解析不到 —— GUI 从来没在非 Windows 编译过，
+# 一直到 v2.0.0 发布时才被 macOS 构建撞出来（evaluator.rs: E0433 cannot find crate `futures`）。
+futures = { workspace = true }
 # 数值底座：GUI 里显示/计算的一切高精度数值都从这里来。
 hipercalc-core = { path = "../hipercalc-core", version = "0.1" }
 
@@ -53,7 +57,6 @@ windows = { workspace = true, features = [
 # 而自旋那段代码被**误放进了 `update`**（`Task::perform` 的第一个参数收的是
 # 已构造好的 future，不是产生 future 的闭包 —— 见 `evaluator.rs` 模块头的说明），
 # 结果 UI 线程照样被按住，大输入依然「未响应」。
-futures = { workspace = true }
 
 [dev-dependencies]
 # 离屏（headless）渲染 + 快照：用来在**没有显示器**的环境里验证界面长什么样，

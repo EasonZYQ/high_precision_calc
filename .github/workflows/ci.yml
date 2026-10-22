@@ -15,9 +15,15 @@ jobs:
   # **根本不编译 hipercalc-gui** —— 曾出现"CI 全绿但 GUI 编译不过"整整半小时没被发现
   #（`backdrop.rs` 误删了几个函数）。这条 job 只做 `cargo check`，很快。
   gui:
-    name: Check GUI
-    runs-on: windows-latest
+    name: Check GUI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # ⚠️ **两个平台都查**：GUI 的依赖声明曾把 `futures` 写进 windows-only 段，
+    # 只有 Windows 能编 —— macOS 一直编不过却没人发现（v2.0.0 发布时才炸）。
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
