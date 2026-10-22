@@ -236,6 +236,22 @@ pub fn set_glass2_blur(v: f32) {
 }
 
 /// 玻璃模式的模糊强度（0–1）
+/// **模糊半径**（窗口逻辑像素，浮点）。
+///
+/// ⚠️ 这里刻意**不再**换算成"降采样倍数"：倍数是整数、只能取 2 的幂，
+/// 于是滑条每 25% 才跳一档（用户反馈："每百分之十几就会忽然变得更模糊，
+/// 拖动一点点是不会变化的"）。现在半径是**连续的浮点**，交给着色器做多 tap 采样，
+/// 0 就是"一次采样、完全不糊"（用户要的"中间非常清晰"）。
+pub fn blur_px() -> f32 {
+    // 开发用覆盖：`HIPERCALC_BLUR=6` 可以固定半径做对比截图（快照测试用得上）
+    if let Ok(v) = std::env::var("HIPERCALC_BLUR")
+        && let Ok(f) = v.parse::<f32>()
+    {
+        return f.clamp(0.0, 24.0);
+    }
+    glass_amount().clamp(0.0, 1.0) * 14.0
+}
+
 pub fn glass2_blur() -> f32 {
     GLASS2_BLUR.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
 }

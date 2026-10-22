@@ -207,6 +207,8 @@ impl GlassPrimitive {
         d[32..36].copy_from_slice(&(if self.hover { 1.0f32 } else { 0.0 }).to_le_bytes());
         d[36..40].copy_from_slice(&(if g.dark { 1.0f32 } else { 0.0 }).to_le_bytes());
         d[40..44].copy_from_slice(&(if has_bg { 1.0f32 } else { 0.0 }).to_le_bytes());
+        // p.w = **模糊半径**（窗口逻辑像素）—— 着色器里折算成 texel 后做多 tap 采样
+        d[44..48].copy_from_slice(&crate::theme::blur_px().to_le_bytes());
         // win / origin：折射采样的窗口坐标换算用
         d[48..52].copy_from_slice(&win.0.to_le_bytes());
         d[52..56].copy_from_slice(&win.1.to_le_bytes());
@@ -306,7 +308,7 @@ struct U {
     radius: f32,
     spec: f32,
     base: vec4<f32>,
-    // x = hover，y = 深色主题，z = 有无背景可采样，w 备用
+    // x = hover，y = 深色主题，z = 有无背景可采样，w = 模糊半径（逻辑像素）
     p: vec4<f32>,
     // win = 窗口逻辑尺寸，origin = 本部件在窗口里的位置
     win: vec2<f32>,
@@ -340,6 +342,40 @@ fn vs(@builtin(vertex_index) i: u32) -> VOut {
     // NDC [-1,1] → UV [0,1]。⚠️ wgpu 里 NDC 的 y 向上，所以 **uv.y = 1 是顶边**
     o.uv = (q + vec2<f32>(1.0)) * 0.5;
     return o;
+}
+
+/// 背景采样：浮点半径（texel）+ 每像素旋转的 6 tap（与 `refraction.rs` 同一套）。
+fn sample_blur(uv: vec2<f32>, rad: vec2<f32>, seed: vec2<f32>) -> vec3<f32> {
+    let lo = vec2<f32>(0.001);
+    let hi = vec2<f32>(0.999);
+    if (rad.x < 1e-4 && rad.y < 1e-4) {
+        return textureSampleLevel(bg, samp, clamp(uv, lo, hi), 0.0).rgb;
+    }
+    let h = fract(sin(dot(seed, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+    let a0 = h * 6.2831853;
+    let ca = cos(a0);
+    let sa = sin(a0);
+    // **两圈共 8 个环点**：内圈 4 个（0.55r）+ 外圈 4 个（1.0r）。
+    // 单圈在半径大时会看出"星芒"（只有几根辐条），加一圈后图案密一倍。
+    var ring = array<vec2<f32>, 8>(
+        vec2<f32>(0.55, 0.00),
+        vec2<f32>(-0.55, 0.00),
+        vec2<f32>(0.00, 0.55),
+        vec2<f32>(0.00, -0.55),
+        vec2<f32>(0.72, 0.69),
+        vec2<f32>(-0.72, 0.69),
+        vec2<f32>(0.72, -0.69),
+        vec2<f32>(-0.72, -0.69),
+    );
+    var acc = textureSampleLevel(bg, samp, clamp(uv, lo, hi), 0.0).rgb * 2.0;
+    var wsum = 2.0;
+    for (var i: i32 = 0; i < 8; i = i + 1) {
+        let o = ring[i];
+        let r = vec2<f32>(o.x * ca - o.y * sa, o.x * sa + o.y * ca);
+        acc = acc + textureSampleLevel(bg, samp, clamp(uv + r * rad, lo, hi), 0.0).rgb;
+        wsum = wsum + 1.0;
+    }
+    return acc / wsum;
 }
 
 // 圆角矩形的有向距离：负 = 在内部（单位 = 逻辑像素）
@@ -448,10 +484,15 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
         let lo = vec2<f32>(0.001);
         let hi = vec2<f32>(0.999);
         // 色散：三通道位移差约 ±12%（真实玻璃蓝光折射率最大 ⇒ 蓝偏得多）
-        let kr = textureSample(bg, samp, clamp(suv + dloc * 1.12, lo, hi)).r;
-        let kg = textureSample(bg, samp, clamp(suv + dloc, lo, hi)).g;
-        let kb = textureSample(bg, samp, clamp(suv + dloc * 0.88, lo, hi)).b;
-        var bgc = vec3<f32>(kr, kg, kb);
+        // 模糊半径：逻辑像素 → 窗口 uv → 图像 uv → texel
+        let rad = (u.p.w * u.map.xy / u.win) * vec2<f32>(textureDimensions(bg));
+        var bgc = sample_blur(suv, rad, u.origin + uv * u.size);
+        // 色散：只在**小半径**时加，否则会在大模糊上叠出一圈硬边彩边
+        if (u.p.w < 2.5) {
+            let kr = textureSampleLevel(bg, samp, clamp(suv + dloc * 1.12, lo, hi), 0.0).r;
+            let kb = textureSampleLevel(bg, samp, clamp(suv + dloc * 0.88, lo, hi), 0.0).b;
+            bgc = vec3<f32>(kr, bgc.g, kb);
+        }
         // **提饱和**：玻璃会把背后的颜色"喂"得更浓郁（iOS 特征之一）。
         // 不做的话背景被 t 色压淡之后会显得灰。
         let luma = dot(bgc, vec3<f32>(0.2126, 0.7152, 0.0722));

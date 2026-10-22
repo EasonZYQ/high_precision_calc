@@ -133,7 +133,8 @@ struct Uniforms {
     // 目标区域尺寸（逻辑像素）—— 边缘环带宽度按它算
     size: vec2<f32>,
     strength: f32,
-    _pad: f32,
+    // **模糊半径**（窗口逻辑像素，浮点）—— 0 表示完全清晰
+    blur: f32,
     // 背景图映射：图像uv = 窗口uv × map.xy + map.zw
     //（窗口挪动时按原点差平移采样 —— 拖动全程零抓屏、零 CPU）
     map: vec4<f32>,
@@ -163,6 +164,44 @@ fn vs(@builtin(vertex_index) i: u32) -> VOut {
     // NDC [-1,1] → UV [0,1]
     o.uv = (q + vec2<f32>(1.0)) * 0.5;
     return o;
+}
+
+/// 背景采样：**半径是浮点**，`rad` 用 uv 表达（0 附近直接单次采样）。
+///
+/// 6 tap = 中心（权重 2）+ 5 个环点，且**每个像素旋转一个随机角度** ——
+/// 这是少采样也能得到平滑模糊的关键：固定图案在大半径下会看出"花瓣"，
+/// 随机旋转把图案打散成人眼认不出的噪声。
+fn sample_blur(uv: vec2<f32>, rad: vec2<f32>, seed: vec2<f32>) -> vec3<f32> {
+    let lo = vec2<f32>(0.001);
+    let hi = vec2<f32>(0.999);
+    if (rad.x < 1e-4 && rad.y < 1e-4) {
+        return textureSampleLevel(bg, samp, clamp(uv, lo, hi), 0.0).rgb;
+    }
+    let h = fract(sin(dot(seed, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+    let a0 = h * 6.2831853;
+    let ca = cos(a0);
+    let sa = sin(a0);
+    // **两圈共 8 个环点**：内圈 4 个（0.55r）+ 外圈 4 个（1.0r）。
+    // 单圈在半径大时会看出"星芒"（只有几根辐条），加一圈后图案密一倍。
+    var ring = array<vec2<f32>, 8>(
+        vec2<f32>(0.55, 0.00),
+        vec2<f32>(-0.55, 0.00),
+        vec2<f32>(0.00, 0.55),
+        vec2<f32>(0.00, -0.55),
+        vec2<f32>(0.72, 0.69),
+        vec2<f32>(-0.72, 0.69),
+        vec2<f32>(0.72, -0.69),
+        vec2<f32>(-0.72, -0.69),
+    );
+    var acc = textureSampleLevel(bg, samp, clamp(uv, lo, hi), 0.0).rgb * 2.0;
+    var wsum = 2.0;
+    for (var i: i32 = 0; i < 8; i = i + 1) {
+        let o = ring[i];
+        let r = vec2<f32>(o.x * ca - o.y * sa, o.x * sa + o.y * ca);
+        acc = acc + textureSampleLevel(bg, samp, clamp(uv + r * rad, lo, hi), 0.0).rgb;
+        wsum = wsum + 1.0;
+    }
+    return acc / wsum;
 }
 
 @fragment
@@ -211,8 +250,9 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     // 抓屏区域带外扩余量（见 backdrop::margin），余量内的偏移都落在
     // 真实像素上 —— 不再 clamp 到抓屏边缘（那会把最外一行拉成高饱和色块）。
     var f = s * u.map.xy + u.map.zw + n * k;
-    f = clamp(f, vec2<f32>(0.001), vec2<f32>(0.999));
-    return textureSample(bg, samp, f);
+    // 半径从"逻辑像素"折算成 uv：px → 窗口 uv（÷size）→ 图像 uv（×map.xy）
+    let rad = u.blur * u.map.xy / u.size;
+    return vec4<f32>(sample_blur(f, rad, in.uv), 1.0);
 }
 "#;
 
@@ -347,6 +387,8 @@ impl RefractionPipeline {
         data[0..4].copy_from_slice(&size.width.to_le_bytes());
         data[4..8].copy_from_slice(&size.height.to_le_bytes());
         data[8..12].copy_from_slice(&prim.strength.clamp(0.0, 1.0).to_le_bytes());
+        // 模糊半径（逻辑像素，浮点）：**连续**，不再是 2 的幂档位
+        data[12..16].copy_from_slice(&crate::theme::blur_px().to_le_bytes());
         data[16..20].copy_from_slice(&prim.uv_scale[0].to_le_bytes());
         data[20..24].copy_from_slice(&prim.uv_scale[1].to_le_bytes());
         data[24..28].copy_from_slice(&prim.uv_off[0].to_le_bytes());

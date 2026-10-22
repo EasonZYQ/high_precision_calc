@@ -484,7 +484,12 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
     // **绝不能**顺手退回 GDI）；只有 `Unsupported` 才走下面 GDI 那条路。
     #[cfg(windows)]
     {
-        let sample = if factor == 1 { 2 } else { factor.max(1) };
+        // ⚠️ **1 就是 1，不许偷偷降成 2**（用户反馈："模糊为 0 背景还是不够清晰，
+        // 与桌面本身相差甚远"）。这里以前写死 `if factor == 1 { 2 }` —— 于是
+        // "不模糊"档实际是**半分辨率**：1175 物理像素宽只用 588 个 texel，
+        // 相当于放大 2 倍，文字必然发虚（实测 dump：抓屏 2160×1440、纹理 1080×720）。
+        // 现在 sample=1 ⇒ 1 texel 对 1 像素，逐像素清晰。
+        let sample = factor.max(1);
         match crate::dupl::poll(x0, y0, w, h, sample) {
             crate::dupl::Poll::Fresh {
                 rgba,
