@@ -10,6 +10,27 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ⚠️ **GUI 必须单独 check**（2026-10-22 加的）：
+  # 根 `Cargo.toml` 的 `default-members` 只有 core+cli，所以上面的 `cargo build/test`
+  # **根本不编译 hipercalc-gui** —— 曾出现"CI 全绿但 GUI 编译不过"整整半小时没被发现
+  #（`backdrop.rs` 误删了几个函数）。这条 job 只做 `cargo check`，很快。
+  gui:
+    name: Check GUI
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: gui
+
+      - name: Check hipercalc-gui (all targets)
+        run: cargo check -p hipercalc-gui --all-targets
+
   # 三平台跑构建 + 单元测试
   test:
     name: Test (${{ matrix.os }})

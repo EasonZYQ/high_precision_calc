@@ -453,6 +453,54 @@ pub fn capture_blurred(x: i32, y: i32, w: u32, h: u32, factor: u32) -> Option<Ba
 ///
 /// 窗口在屏幕上的位置由 `GetWindowRect` 现取 —— 这样上层完全不用知道坐标。
 /// 外扩的余量让"拖动窗口时按偏移采样旧图"成为可能（见 [`Backdrop::x`]）。
+/// **是否允许被截图/录屏**（进程级开关，见 `GuiPrefs::capture`）。
+///
+/// `true`（默认）= 不开 `WDA_EXCLUDEFROMCAPTURE`：抓到的帧里有自己，但截图/录屏正常。
+/// `false` = 排除自己：背景是纯桌面，但截图里没有这个窗口。
+static CAPTURE_OK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// 允许被截图吗
+pub fn capture_ok() -> bool {
+    CAPTURE_OK.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// 设置"允许被截图"，并**立刻**把窗口亲和性同步过去（不用重启）
+pub fn set_capture_ok(ok: bool) {
+    CAPTURE_OK.store(ok, std::sync::atomic::Ordering::Relaxed);
+    exclude_from_capture(!ok);
+}
+
+/// 调试用：把"喂给玻璃的背景纹理"导出成 PPM，并把几何打到 stderr。
+///
+/// 只有 `HIPERCALC_DUMP_BG=1` 时才动作 —— 排查"背景里为何有自己的窗口 / 为何发虚"
+/// 这类问题，看这张图比看屏幕快得多（它是**纹理原图**，不是最终合成）。
+fn dump_if_requested(bd: &Backdrop) {
+    if std::env::var("HIPERCALC_DUMP_BG").ok().as_deref() != Some("1") {
+        return;
+    }
+    let (w, h) = (bd.width as usize, bd.height as usize);
+    let path = std::env::temp_dir().join("hc_bg_dump.ppm");
+    let mut out = Vec::with_capacity(w * h * 3 + 32);
+    out.extend_from_slice(format!("P6\n{w} {h}\n255\n").as_bytes());
+    for i in 0..(w * h) {
+        out.push(bd.rgba[i * 4]);
+        out.push(bd.rgba[i * 4 + 1]);
+        out.push(bd.rgba[i * 4 + 2]);
+    }
+    let _ = std::fs::write(&path, out);
+    eprintln!(
+        "[bg-dump] tex={}x{} rw={} rh={} origin=({},{}) win={:?} -> {:?}",
+        bd.width,
+        bd.height,
+        bd.rw,
+        bd.rh,
+        bd.x,
+        bd.y,
+        window_rect(),
+        path
+    );
+}
+
 pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
     let (wx, wy, ww, wh) = platform::window_rect()?;
     let m = margin(ww, wh);

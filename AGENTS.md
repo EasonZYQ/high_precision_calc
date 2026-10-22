@@ -27,6 +27,12 @@
   测试代码里的错误（如模式位置误用 `BigRational::one()` 触发 E0164）**本地完全看不见**。
   **定规：改动后本地复核用 `cargo build --all-targets`（或直接 `cargo test`），不要只跑 `cargo build`。**
   另外两条配套：
+  - 🔴 **`cargo build --all-targets` 也不编译 GUI**（2026-10-22 的血教训）：
+    它只作用于 `default-members`（core+cli）。验证 GUI 必须写 `-p hipercalc-gui`。
+    更隐蔽的是**用 `grep -c` 数警告来判定成败**——编译失败时那个计数同样是 0，
+    看起来"干净"，实际根本没编过。**判成败一律看退出码**（`… && echo OK`）。
+    配套：CI 里新增了 `Check GUI` job（`cargo check -p hipercalc-gui --all-targets`），
+    因为此前"CI 全绿但 GUI 编译不过"整整半小时没人发现。
   - **验证失败时不要只 grep `test result`**：编译错误是 `error[E0xxx]`，
     单独 grep 前者会把"根本没编译过"看成"没跑测试"（2026-10-21 因此让 CI 红了一次）。
     取清单类 grep 不要设 `head`（曾有把 27 处看成 14 处的教训，漏掉的正是结构型模式）；
