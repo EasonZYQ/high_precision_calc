@@ -252,7 +252,29 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     var f = s * u.map.xy + u.map.zw + n * k;
     // 半径从"逻辑像素"折算成 uv：px → 窗口 uv（÷size）→ 图像 uv（×map.xy）
     let rad = u.blur * u.map.xy / u.size;
-    return vec4<f32>(sample_blur(f, rad, in.uv), 1.0);
+    var col = sample_blur(f, rad, in.uv);
+
+    // ── 边缘高光（与虚拟键盘按钮**同一套观感**）─────────────────────────
+    //
+    // 用户要求：背景（= 最外圈那块玻璃）的四条边也要有按钮那种边缘高光，
+    // 否则窗口边界看起来是"被切掉的"，跟里面的键不像同一种材质。
+    //
+    // 做法与 `liquid.rs` 保持同族：**朝阳侧一条亮边 + 背光侧压暗**，
+    // 只是这里的"边"是窗口四边（用轴向法线更稳，贴边时不会抖）。
+    let rim_w = max(5.0, 0.012 * min(u.size.x, u.size.y));
+    let t_rim = clamp(1.0 - dmin / rim_w, 0.0, 1.0);
+    // 最近那条边的外法线：哪一侧更近就用哪一侧（dx<dy ⇒ 左右边）
+    let sx = select(-1.0, 1.0, s.x > 0.5);
+    let sy = select(-1.0, 1.0, s.y > 0.5);
+    let nedge = select(vec2<f32>(0.0, sy), vec2<f32>(sx, 0.0), dx < dy);
+    // 光从左上来（与 `liquid.rs` 的 `ldir` 完全一致）
+    let ldir = normalize(vec2<f32>(-0.45, 0.75));
+    let ndl = clamp(dot(nedge, ldir), 0.0, 1.0);
+    // 细亮线：`pow(t_rim, 2.5)` 保证只有贴边那几像素亮，不会糊成一片
+    col = col + vec3<f32>(pow(ndl, 3.0) * pow(t_rim, 2.5) * 0.55);
+    // 背光侧压暗，读出"玻璃有厚度"（按键上同样有一条暗边）
+    col = col * (1.0 - 0.20 * t_rim * (1.0 - ndl));
+    return vec4<f32>(clamp(col, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }
 "#;
 

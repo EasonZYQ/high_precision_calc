@@ -44,3 +44,7 @@ Thumbs.db
 # ==== 本地原型（仅本地保留，不进仓库）====
 # 早期"纯 CSS 液态玻璃"的可行性原型，与 Rust 实现无关，用户要求只在本地留一份
 /纯CSS液态玻璃/
+
+# ==== README 素材的中间产物（`Snapshot::matches_image` 会自动加 -wgpu 后缀）====
+# 真正进仓库的是缩过、量化过的 docs/gui-dark.png 与 docs/gui-light.png
+/docs/gui-*-wgpu.png

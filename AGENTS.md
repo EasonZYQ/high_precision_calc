@@ -6,6 +6,11 @@
 
 **文档分工（用户明确要求）**：README 只放"简介 + 截图 + 特色 + 安装"，**手册内容一律进 `docs/DOC.zh-CN.md` / `DOC.en.md`**（27 章，第 27 章是图形界面）；`docs/liquid-glass-report.md` 玻璃算法笔记；`docs/windows7.md` Win7 兼容性调研。别再往 README 堆细节。
 
+README 的两张产品图（`docs/gui-dark.png` / `gui-light.png`）**不是真机截图**，是离屏渲染生成的：
+`cargo test -p hipercalc-gui --test snapshot -- --ignored readme_shots`。
+产物会被 `Snapshot::matches_image` 自动加 `-wgpu` 后缀，缩一半 + 量化 256 色后改名才是进仓库的那两张
+（中间产物已在 .gitignore 里）。浅色那张刻意**不开质感** —— 浅色 + 玻璃 + 亮背景会把文字冲成灰的。
+
 ## 硬性要求（用户指定）
 
 - 思考过程与代码注释一律用中文，注释不要用英文。

@@ -497,3 +497,125 @@ fn keypad_is_clickable_through_simulator() {
         "键盘输入 `1÷2` 的结果应含 `1 / 2` 或 `0.5`，实际：{out}"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// README 素材（不是回归基线）
+// ─────────────────────────────────────────────────────────────────────────
+
+/// 合成一张"模糊壁纸感"的桌面背景。
+///
+/// 为什么不用真机截图：`允许被截图 = 关` 时窗口**根本拍不到**（`WDA_EXCLUDEFROMCAPTURE`），
+/// 开着拍又会把自己的桌面内容（别人的窗口、聊天记录）带进开源仓库 —— 不合适。
+///
+/// 这里造的是：竖向渐变（深靛 → 暖紫）+ 三个大光斑（蓝绿 / 品红 / 琥珀）
+/// + 两块"虚化窗口"矩形。**没有真实内容**，但足够让折射、色散、边缘高光都有东西可看。
+fn desktop_like(w: u32, h: u32) -> Vec<u8> {
+    fn lerp(a: f32, b: f32, t: f32) -> f32 {
+        a + (b - a) * t
+    }
+    let mut out = vec![0u8; (w * h * 4) as usize];
+    // 光斑：(中心x, 中心y, 半径, 颜色)
+    let blobs = [
+        (0.20f32, 0.26f32, 0.46f32, [64.0f32, 148.0, 206.0]),
+        (0.80, 0.30, 0.38, [188.0, 78.0, 142.0]),
+        (0.56, 0.88, 0.44, [224.0, 152.0, 62.0]),
+    ];
+    // "虚化窗口"：给折射一点结构（矩形硬边会被模糊 + 折射变成柔和的直边）
+    let rects = [
+        (0.06f32, 0.10f32, 0.42f32, 0.44f32, 12.0f32),
+        (0.58, 0.56, 0.80, 0.90, -10.0),
+    ];
+    for y in 0..h {
+        let fy = y as f32 / h as f32;
+        for x in 0..w {
+            let fx = x as f32 / w as f32;
+            let mut c = [
+                lerp(17.0, 46.0, fy),
+                lerp(24.0, 30.0, fy),
+                lerp(52.0, 66.0, fy),
+            ];
+            for (cx, cy, r, col) in blobs {
+                let d = (((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt()) / r;
+                let wgt = (1.0 - d).max(0.0).powf(2.2) * 0.62;
+                for k in 0..3 {
+                    c[k] += col[k] * wgt;
+                }
+            }
+            for (x0, y0, x1, y1, delta) in rects {
+                // 边缘 0.03 的软过渡，避免合成图自己带锯齿（那会污染玻璃的观感判断）
+                let inx = smooth(fx, x0, x0 + 0.03) * (1.0 - smooth(fx, x1 - 0.03, x1));
+                let iny = smooth(fy, y0, y0 + 0.03) * (1.0 - smooth(fy, y1 - 0.03, y1));
+                let m = inx * iny;
+                for k in 0..3 {
+                    c[k] += delta * m;
+                }
+            }
+            let i = ((y * w + x) * 4) as usize;
+            out[i] = c[0].clamp(0.0, 255.0) as u8;
+            out[i + 1] = c[1].clamp(0.0, 255.0) as u8;
+            out[i + 2] = c[2].clamp(0.0, 255.0) as u8;
+            out[i + 3] = 255;
+        }
+    }
+    out
+}
+
+/// 平滑阶跃（`smoothstep`）
+fn smooth(x: f32, a: f32, b: f32) -> f32 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// 把界面渲染成 README 用的产品图，写到 `docs/`。
+///
+/// 两张图**各展示一半**：
+/// - 深色 = **玻璃质感**（能看出折射、色散、边缘高光）；
+/// - 浅色 = **界面本体**（质感关闭）—— 实测"浅色 + 玻璃 + 亮背景"会把深色文字
+///   冲成灰色（`tint_k` 只有 0.36，64% 的背景透上来），当产品图很难看，
+///   所以浅色这张刻意不带背景。
+///
+/// ⚠️ **默认 `#[ignore]`**：它不是回归基线，是"生成素材"的工具。
+/// 重生成：
+///
+/// ```bash
+/// rm docs/gui-*.png
+/// cargo test -p hipercalc-gui --test snapshot -- --ignored readme_shots
+/// # ⚠️ `Snapshot::matches_image` 会**自动加 `-wgpu` 后缀**，产物是
+/// # `docs/gui-dark-wgpu.png`；把它缩一半、量化 256 色后改名成 `gui-dark.png`
+/// ```
+///
+/// （`matches_image` 在**文件不存在时**才写盘，所以必须先删。）
+#[test]
+#[ignore = "生成 README 素材，不是回归基线"]
+fn readme_shots() {
+    let _guard = lock();
+    let (w, h) = (480u32, 360u32);
+    for (dark, path) in [
+        (true, "../../docs/gui-dark.png"),
+        (false, "../../docs/gui-light.png"),
+    ] {
+        let mut state = populated_state();
+        state.set_dark_for_test(dark);
+        if dark {
+            // ✅ 顺序不能反：先建 State 再切玻璃
+            let _ = state.update(Message::SetTexture(hipercalc_gui::theme::Texture::Glass));
+            // 产品图想要"看得出是玻璃、但内容还看得清"的模糊量
+            let _ = state.update(Message::SetGlassBlur(0.32));
+            let _ = state.update(Message::BgCaptured(Some(
+                hipercalc_gui::backdrop::Backdrop {
+                    x: 0,
+                    y: 0,
+                    width: w,
+                    height: h,
+                    rw: VIEWPORT.0 as u32,
+                    rh: VIEWPORT.1 as u32,
+                    rgba: desktop_like(w, h),
+                },
+            )));
+        }
+        let snapshot = snap(&state);
+        // 文件已存在时这里返回 false（不覆盖）—— 重生成前记得先删
+        let _ = snapshot.matches_image(path).expect("写 README 素材失败");
+    }
+    let _ = Message::SetGlassBlur(0.0);
+}
