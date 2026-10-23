@@ -40,6 +40,7 @@
 
 pub mod app;
 pub mod backdrop;
+pub mod cli;
 #[cfg(windows)]
 pub mod dupl;
 pub mod evaluator;

@@ -92,6 +92,7 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
   | `backdrop.rs` | Windows DWM 亚克力 + **抓屏调度**（DXGI 优先 / GDI 兜底）+ `capture_ok` 截图开关 |
   | `refraction.rs` | **窗口边缘折射**：整窗一次 pass，边缘 18% 环带内按"陡壁+缓坡"两段剖面位移背景 |
   | `liquid.rs` | **液态玻璃**：每个面板/按键一次 pass（面板中间走"零位移快路径"）；uniform 按外观分槽缓存 |
+  | `cli.rs` | **命令行版的两种入口**：`spawn_cli()` 起独立进程（`CREATE_NEW_CONSOLE` + `--cli` 标记，GUI 关掉不影响它）；`wants_cli()`/`run_cli_here()` 实现"GUI 带参数 ⇒ 直接当 CLI 跑"（Windows 上先接管/新开控制台，**已重定向时不动句柄**） |
   | `dupl.rs` | **DXGI 桌面复制**：`AcquireNextFrame` → mip 纹理 → 只回读需要的层；`Unchanged` 时零成本 |
 
 - **`Session` 是 GUI 与 CLI 的公共求值入口**（`crates/hipercalc/src/session.rs`）：
@@ -428,6 +429,11 @@ cargo build -p hipercalc-gui   # 图形界面（唯一会编 iced 的命令，�
 | `lib.rs`              | **应用主体**：`run`/`run_line`、`EvalResult` 分派与各 handler、REPL、`/` 指令、`/help` 正文与着色器、颜色配置（`/set` 持久化）、rustyline 实时高亮、变量存储、历史持久化、运算计时（`Timing`）；**键位绑定**（全角转半角）、**括号配对高亮与标红**、**框内参数提示** |
 | `main.rs`             | **程序入口（仅 8 行）**：`std::process::exit(hipercalc::run())` |
 | `README.md`           | 功能手册 + 代码架构文档；改动功能后须同步                                                                 |
+
+- **`--cli` 是内部参数**（`crates/hipercalc/src/lib.rs` 里静默忽略、不进 `--help`）：
+  只用来让"GUI 的 exe 被自己拉起"的那个子进程走 CLI 分支。别把它当用户开关写进文档之外的地方。
+- **耗时口径两边一致**：CLI 的 `timing_text()` 与 GUI 的 `elapsed_text()` 都是 **0.1 秒、向下取整**、
+  不足 0.1 秒显示 `<0.1秒`。改一处就要改另一处（各有单测钉着）。
 
 ## 开发用环境变量（排查用，不影响正常使用）
 

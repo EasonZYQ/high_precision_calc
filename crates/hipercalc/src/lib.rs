@@ -997,6 +997,22 @@ const TIMING_LINE_WIDTH: usize = 24;
 /// 实现要点：动态刷新跑在独立线程里，通过通道 + `recv_timeout` 实现"可立即唤醒的定时器"，
 /// 结束时不额外等待（关闭通道即让线程立刻退出）。管道/重定向场景下 stdout 不是终端，
 /// 直接跳过动态刷新（避免把 `\r` 混进输出），最终耗时行照常打印。
+/// 耗时 → 展示文本（**精确到 0.1 秒，向下取整**）。
+///
+/// 用户 2026-10-23 要求 CLI 与 GUI 用同一口径（原来 CLI 只报整秒）：
+/// `1.99s` → `1.9秒`（宁可少报也不多报），不足 0.1 秒 → `<0.1秒`（不是 `0.0秒`，
+/// 后者会让人以为没计时）。
+///
+/// 抽成纯函数是为了能直接单测 —— 真实耗时要靠 `Instant` 跑出来，测不了。
+fn timing_text(d: Duration) -> String {
+    let tenths = d.as_millis() / 100;
+    if tenths == 0 {
+        "用时：<0.1秒".to_string()
+    } else {
+        format!("用时：{}.{}秒", tenths / 10, tenths % 10)
+    }
+}
+
 struct Timing {
     start: Instant,
     stop_tx: Option<mpsc::Sender<()>>,
@@ -1022,13 +1038,14 @@ impl Timing {
         }
         let (tx, rx) = mpsc::channel::<()>();
         let handle = std::thread::spawn(move || {
-            let mut shown: u64 = u64::MAX;
+            let mut shown: u128 = u128::MAX;
             loop {
-                // 先刷新（首次立即出现，之后每秒变化一次），再等信号/超时
-                let secs = start.elapsed().as_secs();
-                if secs != shown {
-                    shown = secs;
-                    lprint_inline!("\r用时：{}秒", secs);
+                // 先刷新（首次立即出现，之后每 0.1 秒变化一次），再等信号/超时。
+                // 用户 2026-10-23 要求**与 GUI 统一到 0.1 秒**（原来只报整秒）。
+                let tenths = start.elapsed().as_millis() / 100;
+                if tenths != shown {
+                    shown = tenths;
+                    lprint_inline!("\r用时：{}.{}秒", tenths / 10, tenths % 10);
                     let _ = std::io::stdout().flush();
                 }
                 match rx.recv_timeout(Duration::from_millis(100)) {
@@ -1070,12 +1087,7 @@ impl Timing {
         if !calc_mode::timing_enabled() {
             return String::new();
         }
-        let secs = self.start.elapsed().as_secs();
-        if secs < 1 {
-            "用时：<1秒".to_string()
-        } else {
-            format!("用时：{}秒", secs)
-        }
+        timing_text(self.start.elapsed())
     }
 }
 
@@ -1849,6 +1861,12 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             "-q" | "--no-timing" => {
                 no_timing = true;
+                i += 1;
+            }
+            // 图形界面用 `>_` 按钮拉起自己时加的内部标记（见 `hipercalc-gui/src/cli.rs`）：
+            // 它唯一的作用是让那个子进程走"带参数 ⇒ 当 CLI 跑"的分支。
+            // **静默忽略**，不进 `--help`（它不是给用户用的开关）。
+            "--cli" => {
                 i += 1;
             }
             _ => return Err(format!("未知参数: {0}", a)),
@@ -5606,6 +5624,29 @@ mod cli_tests {
             if let Some(h) = inline_hint(line) {
                 assert!(!h.contains('\u{1b}'), "{line} 的提示带颜色码: {h:?}");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod timing_text_tests {
+    use super::timing_text;
+    use std::time::Duration;
+
+    /// CLI 的耗时文案：**0.1 秒、向下取整**（与 GUI 同口径）。
+    #[test]
+    fn timing_text_is_precise_to_a_tenth() {
+        assert_eq!(timing_text(Duration::from_millis(1000)), "用时：1.0秒");
+        // 向下取整：1.99 秒是 1.9，不是 2.0
+        assert_eq!(timing_text(Duration::from_millis(1999)), "用时：1.9秒");
+        assert_eq!(timing_text(Duration::from_millis(1234)), "用时：1.2秒");
+        assert_eq!(timing_text(Duration::from_secs(125)), "用时：125.0秒");
+        for d in [
+            Duration::ZERO,
+            Duration::from_micros(1),
+            Duration::from_millis(99),
+        ] {
+            assert_eq!(timing_text(d), "用时：<0.1秒", "{d:?}");
         }
     }
 }

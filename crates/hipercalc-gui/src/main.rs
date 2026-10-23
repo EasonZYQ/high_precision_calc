@@ -18,6 +18,15 @@ use hipercalc_gui::{app, fonts, theme};
 use iced::window;
 
 fn main() -> iced::Result {
+    // **带任何参数 ⇒ 直接当命令行版跑**（用户要求："当 gui 程序带参数时直接启动 cli"）。
+    //
+    // 这样 `hipercalc-gui -e "1+1"` / `--stdin` / `-f 脚本` 全部可用 ——
+    // GUI 二进制里本来就链了整套 CLI（`hipercalc::run()`），不用另带一个 exe。
+    // Windows 上这一个 exe 是"窗口子系统"，所以 `run_cli_here` 里会先接管/新开控制台。
+    if hipercalc_gui::cli::wants_cli() {
+        std::process::exit(hipercalc_gui::cli::run_cli_here());
+    }
+
     // ⚠️ **字体必须在建窗口之前装好**（`Settings::fonts`）。
     // iced 把这份字节交给 fontdb 解析，之后渲染器才认识这些族名。
     // 装晚了的话，文字会**静默**退回默认字体 —— 不报错，只是观感不对。

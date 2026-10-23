@@ -461,6 +461,8 @@ pub enum Message {
     Evaluated(Evaluated),
     /// **取消当前计算**（用户点了「取消」按钮 / 输入栏的 `=` 变成取消时）
     Cancel,
+    /// **起一个独立的命令行版进程**（设置按钮旁边那个 `>_`）
+    LaunchCli,
     /// 计算中的**秒表跳动**（订阅每 100ms 发一条，只为刷新"计算中 3.2s"）
     Tick,
     /// 点了排版层里的**空参数框**：把光标挪到源文本的第 n 个字符处
@@ -728,6 +730,13 @@ impl State {
                 self.dark = !self.dark;
                 theme::set_dark(self.dark);
                 self.persist_prefs();
+            }
+            Message::LaunchCli => {
+                // 起**独立进程**：GUI 关掉也不影响它（用户明确要求）。
+                // 失败时不打扰用户 —— 只在 stderr 留一行（开发时能看见）。
+                if let Err(e) = crate::cli::spawn_cli() {
+                    eprintln!("[hipercalc-gui] 启动命令行失败: {e}");
+                }
             }
             Message::Cancel => {
                 // 只置标志：真正的退出发生在求解器的检查点（`core::cancel::check`），
@@ -1768,6 +1777,9 @@ impl State {
         // ⚠️ 明暗切换按钮**不在这里**了 —— 用户要求"深色浅色的按钮放到设置里"。
         // 主题属于"偶尔改一次"的设置，和 MathIO/RAD/快速 这些"算之前随手切"的
         // 模式不是一类东西，混在工具条上会让一排 chip 越长越难扫。
+        // 命令行版：起一个**独立进程**（GUI 关掉也不影响它）。
+        // 放在设置旁边，`>_` 是终端提示符的通用记号，比文字更省宽度。
+        r = r.push(icon(">_", false, Message::LaunchCli));
         r = r.push(icon("⚙", self.show_settings, Message::ToggleSettings));
         // 清空历史：这条**必须**翻译（工具条上最显眼的中文之一）。
         // 注意键用的是"清空历史"而不是"清空" —— 后者在 CLI 里可能被当成别的片段。
