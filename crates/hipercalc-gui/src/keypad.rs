@@ -307,13 +307,22 @@ const fn f(insert: &'static str, label: &'static str, about: &'static str) -> Fn
 pub const FN_GROUPS: &[FnGroup] = &[
     FnGroup {
         title: "三角",
+        // 六个三角 + 六个反三角**必须全部出现**（用户 2026-10-24 要求）。
+        // 反三角的键面渲染成 `sin⁻¹` 这种上标写法（比 `asin` 更贴合数学约定），
+        // 但插入的仍是 `asin()` —— core 认那个名字。
         items: &[
             f("sin()", "sin", "正弦"),
             f("cos()", "cos", "余弦"),
             f("tan()", "tan", "正切"),
-            f("asin()", "asin", "反正弦"),
-            f("acos()", "acos", "反余弦"),
-            f("atan()", "atan", "反正切"),
+            f("cot()", "cot", "余切"),
+            f("sec()", "sec", "正割"),
+            f("csc()", "csc", "余割"),
+            f("asin()", "sin⁻¹", "反正弦"),
+            f("acos()", "cos⁻¹", "反余弦"),
+            f("atan()", "tan⁻¹", "反正切"),
+            f("acot()", "cot⁻¹", "反余切"),
+            f("asec()", "sec⁻¹", "反正割"),
+            f("acsc()", "csc⁻¹", "反余割"),
             f("sinh()", "sinh", "双曲正弦"),
             f("cosh()", "cosh", "双曲余弦"),
             f("tanh()", "tanh", "双曲正切"),

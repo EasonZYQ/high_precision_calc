@@ -68,6 +68,12 @@ struct Entry {
     output: String,
     /// 是否错误
     error: bool,
+    /// **只是提示，不是错误**（目前唯一的来源是「计算已中断」）。
+    ///
+    /// 用户 2026-10-24："计算已中断不是错误，只需要提示就行了" ——
+    /// 它确实是用户自己按的取消，不该按错误染红、也不该像失败那样抢注意力，
+    /// 所以单独一个标记走 `hint` 色。
+    notice: bool,
     /// 结果是否为精确值（决定 `=` 用成功色还是普通色）
     precise: bool,
     /// 这一条算完花了多久（worker 侧的实测值，见 [`crate::evaluator`]）。
@@ -463,6 +469,8 @@ pub enum Message {
     Cancel,
     /// **起一个独立的命令行版进程**（设置按钮旁边那个 `>_`）
     LaunchCli,
+    /// **把历史上第 n 条的「原式」插到光标前**（结果旁边那个插入键）
+    InsertHistory(usize),
     /// 计算中的**秒表跳动**（订阅每 100ms 发一条，只为刷新"计算中 3.2s"）
     Tick,
     /// 点了排版层里的**空参数框**：把光标挪到源文本的第 n 个字符处
@@ -731,6 +739,22 @@ impl State {
                 theme::set_dark(self.dark);
                 self.persist_prefs();
             }
+            Message::InsertHistory(i) => {
+                // 用户 2026-10-24："计算完的式子旁边增加插入键，插入输入栏里光标前面"。
+                //
+                // 插的是**原式**（`Entry::input`，用户当时敲的那串），不是结果 ——
+                // 想再算一遍、或者在某一步上改一改，要的是式子。
+                // 走 `insert_key` 而不是 `insert_text`：它会把 `sum(k^2,k,1,10)`
+                // 这类模板重新解析成**结构**，插进去就是可编辑的 Σ，而不是一坨文本。
+                if let Some(e) = self.history.get(i) {
+                    let src = e.input.clone();
+                    self.input.insert_key(&src);
+                    self.input_hint = None;
+                    // 不用 `operation::focus`：输入框是**自绘的结构化编辑器**，
+                    // 光标是我们自己的模型（`Doc::cursor`），键盘走窗口级订阅，
+                    // 不存在"抢焦点"这回事。
+                }
+            }
             Message::LaunchCli => {
                 // 起**独立进程**：GUI 关掉也不影响它（用户明确要求）。
                 // 失败时不打扰用户 —— 只在 stderr 留一行（开发时能看见）。
@@ -929,10 +953,14 @@ impl State {
                 self.busy_since = None;
                 self.pending = None;
                 let precise = is_precise(&out.text);
+                // 「计算已中断」是**用户自己按的取消**，不是失败：按提示样式显示，
+                // 不算 error（否则整行染红、还带错误底色）。
+                let cancelled = out.text.contains(hipercalc_core::cancel::ERROR_CANCELLED);
                 self.history.push(Entry {
                     input: out.input,
                     output: out.text,
-                    error: out.is_error,
+                    error: out.is_error && !cancelled,
+                    notice: cancelled,
                     precise,
                     elapsed: out.elapsed,
                 });
@@ -1814,8 +1842,8 @@ impl State {
                 .center_x(Length::Fill),
             );
         } else {
-            for e in &self.history {
-                col = col.push(self.history_entry(e, math));
+            for (i, e) in self.history.iter().enumerate() {
+                col = col.push(self.history_entry(i, e, math));
             }
         }
 
@@ -1825,6 +1853,21 @@ impl State {
         // 程序又卡死了 —— 而那正是本次要修掉的观感。放在历史最下面（也就是
         // 视线落点，因为 `anchor_bottom` 会把视图钉在底部）。
         if self.busy {
+            // 用户要求（2026-10-24）：「计算中要显示原式」——
+            // 大算跑几十秒时，"我在算哪一条"比"还在算"更重要（尤其连按几次之后）。
+            if !self.last_input.is_empty() {
+                col = col.push(
+                    container(
+                        Row::new()
+                            .align_y(Alignment::Center)
+                            .spacing(6)
+                            .push(theme::label(t("正在计算：")).size(13).style(theme::hint))
+                            .push(theme::label(self.last_input.clone()).size(15)),
+                    )
+                    .width(Length::Fill)
+                    .padding([4, 9]),
+                );
+            }
             // 用户要求（2026-10-23）：「不要只写一个计算中，要计时，以秒为单位；
             // 计算栏旁边要有一个取消按钮」。
             let secs = self
@@ -1890,7 +1933,7 @@ impl State {
     }
 
     /// 一条历史：上面是表达式回显，下面是（可排版的）结果
-    fn history_entry<'a>(&'a self, e: &'a Entry, math: bool) -> Element<'a, Message> {
+    fn history_entry<'a>(&'a self, idx: usize, e: &'a Entry, math: bool) -> Element<'a, Message> {
         // 回显也走 `mathrender`：用户敲的 `sqrt(2)/3` 在回显里同样应该显示成
         // 根号 + 分数，而不是一行原始 ASCII —— 与输入框里看到的样子保持一致。
         //
@@ -1916,12 +1959,22 @@ impl State {
             None,
         );
 
+        // 插入键（用户 2026-10-24）：把这一条的**原式**送回输入栏光标前。
+        // 放在回显行最右侧、用低调的 chip 样式 —— 它是"顺手再来一次"的辅助动作，
+        // 不该跟结果抢注意力。
+        let insert = button(theme::label(t("插入")).size(11))
+            .padding([2, 8])
+            .style(|t, s| theme::mode_chip(t, s, false))
+            .on_press(Message::InsertHistory(idx));
+
         let echo = row![
             text("›")
                 .size(15)
                 .style(theme::accent_text)
                 .font(theme::font_math()),
             echo_text,
+            Space::new().width(Length::Fill).height(Length::Shrink),
+            insert,
         ]
         .spacing(8)
         .align_y(Alignment::Center);
@@ -1941,11 +1994,21 @@ impl State {
         // 所以：**报错时退回纯文本**（`math = false`），与 LineIO 走同一条路。
         let result: Element<'a, Message> = mathrender::render(
             &e.output,
-            math && !e.error,
+            math && !e.error && !e.notice,
             mathrender::Style2 {
-                size: if e.error { 18.0 } else { 24.0 },
+                // 提示行（「计算已中断」）用小字号 + hint 色：它是**用户的动作回执**，
+                // 不是失败，别用错误的红与大字号去刺激人（用户 2026-10-24 要求）。
+                size: if e.error {
+                    18.0
+                } else if e.notice {
+                    15.0
+                } else {
+                    24.0
+                },
                 color: Some(if e.error {
                     theme::colors().danger
+                } else if e.notice {
+                    theme::colors().text_dim
                 } else if precise_for_style {
                     theme::colors().success
                 } else {

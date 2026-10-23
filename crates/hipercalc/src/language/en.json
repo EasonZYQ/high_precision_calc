@@ -352,6 +352,8 @@
   "计算中…": "Computing…",
   "计算中 {0} 秒": "Computing… {0}s",
   "取消": "Cancel",
+  "正在计算：": "Computing: ",
+  "插入": "Insert",
   "主键盘": "Main",
   "字母键盘": "ABC",
   "虚拟键盘": "Keypad",
