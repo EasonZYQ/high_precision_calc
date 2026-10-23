@@ -103,6 +103,10 @@ jobs:
             target: aarch64-apple-darwin
             bin: hipercalc-gui
             asset: hipercalc-gui-macos-aarch64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: hipercalc-gui
+            asset: hipercalc-gui-linux-x86_64
     steps:
       - uses: actions/checkout@v4
 
@@ -114,6 +118,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: gui-${{ matrix.target }}
+
+      # Linux 上 iced/winit 需要这些开发包才能编（xkbcommon / wayland / x11 / fontconfig）
+      - name: Install Linux GUI deps
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-dev libxkbcommon-x11-0 \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libfontconfig1-dev libudev-dev
 
       - name: Build GUI
         run: cargo build --release --target ${{ matrix.target }} -p hipercalc-gui
@@ -162,6 +177,16 @@ jobs:
             | macOS Intel | `hipercalc-x86_64-apple-darwin` |
             | macOS Apple Silicon | `hipercalc-aarch64-apple-darwin` |
 
+            **图形界面（GUI）**
+
+            | 平台 | 文件 |
+            |---|---|
+            | Windows x86_64 | `hipercalc-gui-windows-x86_64.exe` |
+            | macOS Apple Silicon | `hipercalc-gui-macos-aarch64` |
+            | Linux x86_64 | `hipercalc-gui-linux-x86_64` |
+
+            Linux 的 GUI 依赖系统库：`sudo apt install libxkbcommon-x11-0 libwayland-client0`（玻璃质感只在 Windows 可用，其它平台自动退回"关闭"）。
+
             **Linux / macOS 需要先加可执行位**（GitHub 不保留它）：
 
             ```bash
@@ -186,6 +211,16 @@ jobs:
             | Linux aarch64 | `hipercalc-aarch64-unknown-linux-gnu` |
             | macOS Intel | `hipercalc-x86_64-apple-darwin` |
             | macOS Apple Silicon | `hipercalc-aarch64-apple-darwin` |
+
+            **GUI builds**
+
+            | Platform | File |
+            |---|---|
+            | Windows x86_64 | `hipercalc-gui-windows-x86_64.exe` |
+            | macOS Apple Silicon | `hipercalc-gui-macos-aarch64` |
+            | Linux x86_64 | `hipercalc-gui-linux-x86_64` |
+
+            The Linux GUI needs `libxkbcommon-x11-0` and `libwayland-client0`. Glass texture is Windows-only; other platforms fall back to "off".
 
             **On Linux / macOS you must restore the executable bit first** (GitHub does not keep it):
 
