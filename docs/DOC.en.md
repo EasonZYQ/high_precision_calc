@@ -1,8 +1,24 @@
 # HiPerCalc — a high-precision calculator (CLI + GUI)
 
-A calculator with two front ends (CLI `hipercalc` + GUI `hipercalc-gui`): **80-digit internal precision**, **exact symbolic answers whenever they exist**, a Chinese
-interface, and three UI languages. This document is the **feature manual** — what it can compute, how to type it, and
-what you get back. No implementation details.
+A calculator with two front ends (CLI `hipercalc` + GUI `hipercalc-gui`): **80-digit internal precision**,
+**exact symbolic answers whenever they exist**, and a UI in Simplified Chinese, Traditional Chinese or English.
+
+This document is the **feature manual** — what it can compute, how to type it, and what you get back.
+No implementation details.
+
+---
+
+### How to read this
+
+| Your goal | Go to |
+|---|---|
+| New here, want the basic rules | **Sections 1 – 6** (a 20-minute read) |
+| Look up one function | **Sections 7 – 21** (grouped by topic, use as a reference) |
+| Change settings / recall commands | **Sections 22 – 25** |
+| "Why won't this evaluate?" | **Section 26 · Known limits** |
+| The graphical interface | **Section 27** |
+
+> Conventions: `>` marks input, `=` an exact result, `≈` an approximation, `#` starts a comment.
 
 ---
 
@@ -50,67 +66,156 @@ what you get back. No implementation details.
 
 ## 1. Starting and quitting
 
-Run the program for an interactive REPL: type an expression, press Enter, read the result. Commands start with `/`;
-quit with `/exit`.
+Run `hipercalc` and you are in **interactive mode**.
 
-Non-interactive use:
+```text
+> 1/3+1/6
+= 0.5
+```
 
-| Usage | Meaning |
+- Type an expression, press Enter, get the result;
+- Lines starting with `/` are **commands** that change settings (full list in section 22);
+- `/exit` quits — so does `Ctrl+C` while idle.
+
+### Non-interactive use
+
+For scripts and batch checking:
+
+| Command | What it does |
 |---|---|
-| `hipercalc -e "expr"` | Evaluate one expression, print only the result |
-| `hipercalc -f script` | Evaluate a file line by line |
-| `hipercalc --stdin` | Read from standard input |
-| `hipercalc --lang zh-TW` | Force the UI language (Simplified / Traditional Chinese, English) |
-| `hipercalc -q` | Suppress the timing line |
+| `hipercalc -e "1/3+1/6"` | evaluate one expression, print only the result |
+| `hipercalc -f script.txt` | run a file line by line |
+| `hipercalc --stdin` | read expressions from stdin |
+| `hipercalc --lang en` | force the UI language (`zh-CN` / `zh-TW` / `en`) |
+| `hipercalc -q` | hide the "time" line |
 
-Exit codes: 0 normal, 1 evaluation error, 2 bad arguments.
+> **Timing**: shown to **0.1 s**, truncated. For example `用时：1.9秒`
+> (below 0.1 s it prints `用时：<0.1秒`).
+
+**Exit codes**: `0` ok · `1` evaluation error · `2` bad arguments.
+
+---
 
 ## 2. Input rules
 
-- **Operators**: `+` `-` `*` `/` `^` (power), `!` (factorial), `|x|` (absolute value).
-- **Implicit multiplication**: `2x`, `3(4+5)`, `xy` all mean multiplication (`xy` is x times y).
-- **Functions**: `sin(x)`, `sqrt(2)`, `log(2, 8)` (the first argument is the base).
-- **Case**: function names are case-insensitive; **variables** are single lowercase letters.
-- Full-width characters are converted automatically. Trailing text is **not** ignored: extra characters are reported as an error.
+### Operators
 
-## 3. Exact vs. approximate results
+| Form | Meaning |
+|---|---|
+| `+` `-` `*` `/` | arithmetic |
+| `^` | power, e.g. `2^10` |
+| `!` | factorial, e.g. `5!` |
+| `\|x\|` | absolute value |
 
-This is the point of the program:
+### Rules that bite
 
-- **`=`** marks an **exact** result: the exact form (fraction, radical, multiple of π) is kept internally and only rendered
-  according to the display mode. `1/3 + 1/6` shows `= 1 / 2` in MathIO and `= 0.5` in the default LineIO; `sqrt(8)` shows
-  `= 2*sqrt(2)` in MathIO; `sin(pi/6)` gives `= 0.5`.
-- **`≈`** marks an **approximate** result (`sin(1)`, `ln(2)`), shown with the configured significant digits.
+- **Multiplication may be implied**: `2x`, `3(4+5)`, `xy` all mean multiplication.
+  ⚠️ So `xy` is x times y — **not** a variable named `xy`.
+- **Variables** are single lowercase letters; **function names** are case-insensitive.
+- **No need to leave your IME**: full-width characters (`。` `（` `，` `＝`, full-width digits)
+  are converted to half-width automatically.
+- **Parsing is from the start**: trailing characters it cannot read produce
+  "位置 N 处意外的字符" instead of being silently ignored — so do not append prose to an expression.
 
-If an exact form exists, it is never replaced by a decimal.
+---
+
+## 3. Exact vs. approximate results (the one thing to understand)
+
+The symbol in front of the result is the whole story:
+
+| Symbol | Meaning |
+|---|---|
+| `=` | the result is **exact** (a fraction, a surd, a multiple of π …) |
+| `≈` | only an **approximation** is available (shown to the current significant digits) |
+
+Internally everything is kept in exact form and only *rendered* as decimals or symbols:
+
+```text
+> 1/3+1/6        (MathIO mode)
+= 1 / 2          (LineIO would show 0.5)
+
+> sqrt(8)        (MathIO mode)
+= 2*sqrt(2)
+
+> sin(pi/6)
+= 0.5
+```
+
+> When exactness is possible it never degrades to a decimal; approximations appear only
+> when there is no exact form (`sin(1)`, `ln(2)`).
+
+---
 
 ## 4. Basic operations
 
-Beyond the four operations, powers and roots:
+**Integer division and remainder**
 
-- **Integer division and modulo**: `idiv(17, 5)` = 3, `mod(17, 5)` = 2.
-- **Combinatorics and number theory**: `nCr(5,2)`, `nPr(5,2)`, `gcd(12,18)`, `lcm(4,6)`, `isprime(97)`, `nextprime(100)`, `prevprime(100)` (largest prime below *n*; *n* must be greater than 2).
-- **Rounding and sign**: `abs(-3)`, `sign(-5)`, `floor(2.7)`, `ceil(2.1)`, `round(2.5)`.
+```text
+> idiv(17, 5)
+= 3
+> mod(17, 5)
+= 2
+```
 
-Large numbers, high powers and large factorials are supported, with **size guards**: in normal mode an oversized input
-gives a clear message instead of hanging. Use `/mode deep` when you really want it to grind through.
+**Combinatorics and number theory**
+
+```text
+> nCr(5,2)        # combinations
+> nPr(5,2)        # permutations
+> gcd(12,18)      # greatest common divisor
+> lcm(4,6)        # least common multiple
+> isprime(97)     # primality
+> nextprime(100)  # next prime
+> prevprime(100)  # previous prime (n must be > 2)
+```
+
+**Rounding and sign**: `abs(-3)` · `sign(-5)` · `floor(2.7)` · `ceil(2.1)` · `round(2.5)`
+
+> **Size guard**: big numbers, high powers and large factorials are supported, but in the
+> default mode an over-large input is **reported** instead of hanging. Use `/mode deep`
+> when you really want the brute-force answer (section 22).
+
+---
 
 ## 5. Constants and precision
 
-Built-in constants: `pi`, `e`, `tau` (2π), `phi` (golden ratio), `i` (imaginary unit), `ans` (last result).
+**Built-in constants**: `pi` · `e` · `tau` (2π) · `phi` (golden ratio) · `i` · `ans` (last result)
 
-- **Internal precision**: 80 digits by default; raise it with `/mode prec 200`.
-- **Display digits**: 20 significant digits by default; `/mode digits 30`.
-- Scientific notation is written `2.5e-8`; toggle it with `/mode sci on|off`.
-- Thousands separators: `/mode group on|off` (off by default).
+| Setting | Default | How to change |
+|---|---|---|
+| Internal precision | 80 digits | `/mode prec 200` |
+| Significant digits shown | 20 | `/mode digits 30` |
+| Scientific notation | allowed | `/mode sci on` / `off` |
+| Thousands separators | off | `/mode group on` / `off` |
+
+- Scientific notation input looks like `2.5e-8`.
+- Raising the internal precision makes computation slower — only raise it when you need it.
+
+---
 
 ## 6. Functions
 
-- **Trigonometry**: `sin` `cos` `tan` `cot` `sec` `csc`; inverse: `arcsin` `arccos` `arctan` `arccot` … (`asin`/`acos`/`atan` also work)
-- **Angle unit**: `/mode deg` or `/mode rad` (**radians by default**).
-- **Exact values at special angles**: `sin(pi/6)`, `tan(pi/4)` return exact results, not decimals. To use degrees, switch with `/mode deg` and write the angle **without** a degree sign: `cos(60)`. A literal `°` is not recognised.
-- **Logs and exponentials**: `ln`, `log(base, x)`, `log2`, `log10`, `exp`, `sqrt`, `cbrt`, `nroot(x, n)`.
-- **Hyperbolic / inverse hyperbolic**: `sinh` `cosh` `tanh`, `asinh` `acosh` `atanh` …
+**Trigonometry**: `sin` `cos` `tan` `cot` `sec` `csc`
+**Inverse trig**: `arcsin` `arccos` `arctan` `arccot`… (also spelled `asin` `acos` `atan` — same thing)
+
+```text
+> sin(pi/6)
+= 0.5
+
+> /mode deg
+> cos(60)
+= 0.5
+```
+
+- **Radians by default**; `/mode deg` switches to degrees.
+- Special angles (`sin(pi/6)`, `tan(pi/4)`) come back **exact**, not as decimals.
+- In degree mode write the angle **without `°`**: `cos(60)` works, `cos(60°)` does not.
+
+**Logs and exponentials**: `ln` · `log(base, x)` · `log2` · `log10` · `exp` · `sqrt` · `cbrt` · `nroot(x, n)`
+
+**Hyperbolic**: `sinh` `cosh` `tanh` … and their inverses `asinh` `acosh` `atanh` …
+
+---
 
 ## 7. Special functions
 
@@ -272,104 +377,178 @@ numbers, complex values, matrices or dimensioned quantities. `ans` holds the pre
 
 ## 22. Command reference
 
-Commands start with `/`; `/help` lists them all. Highlights:
+Every command starts with `/`; type `/help` for the full list. The three groups you will actually use:
+
+### Calculation mode
 
 | Command | Effect |
 |---|---|
-| `/mode fast` / `/mode deep` | Normal / grind-through mode |
-| `/mode prec N` / `/mode digits N` | Internal precision / display digits |
-| `/mode sci on\|off` / `group on\|off` | Scientific notation / thousands separators |
-| `/mode deg` / `rad` | Angle unit |
-| `/mode mathio` / `lineio` / `latex` | Symbolic / decimal / LaTeX output |
-| `/base dec\|hex\|oct\|bin` | Integer output base |
-| `/unit km` / `/unit off` | Display dimensionless results in a unit |
-| `/lang zh-CN\|zh-TW\|en` | Interface language |
-| `/set …` | Colours |
-| `/let NAME = value` | Store a variable |
+| `/mode fast` | **default** — over-large input is reported, not brute-forced |
+| `/mode deep` | brute force: no size limit, full precision output |
+| `/mode prec N` | internal precision (default 80 digits) |
+| `/mode digits N` | significant digits shown (default 20) |
+| `/mode deg` / `/mode rad` | degrees / radians |
+| `/mode mathio` / `/mode lineio` | symbolic / decimal display |
+| `/mode latex` | emit LaTeX source as the result |
+| `/mode sci on\|off` | allow scientific notation |
+| `/mode group on\|off` | thousands separators in integers |
+
+### Display
+
+| Command | Effect |
+|---|---|
+| `/base dec\|hex\|oct\|bin` | show integer results in that base |
+| `/unit km` · `/unit off` | render **dimensionless** results in a given unit |
+| `/set category colour` | recolour output categories |
+
+### Session
+
+| Command | Effect |
+|---|---|
+| `/lang zh-CN\|zh-TW\|en` | switch the UI language |
+| `/let NAME = value` | store a variable (`NAME` must be uppercase) |
+| `/var` · `/del NAME` | list / delete variables |
+
+---
 
 ## 23. Display formats
 
-MathIO (symbolic), LineIO (decimals, **the default**), LaTeX (`/mode latex`), integer base (`/base`), unit display (`/unit`,
-dimensionless results only — dimensioned values carry their own unit). All of these change **presentation only**.
+| Mode | Looks like |
+|---|---|
+| **MathIO** | symbolic: `1 / 2`, `(1 / 2)*sqrt(2)`, `pi` |
+| **LineIO** (default) | always decimal, to the configured digits |
+| **LaTeX** | source you can paste into a paper |
 
-> The symbolic examples in section 3 (`= 1 / 2`, `= 2*sqrt(2)`) require `/mode mathio` first; under the default LineIO they
-> appear as decimals (`1/3 + 1/6` gives `= 0.5`).
+- `/base` affects only how **integers are displayed**, not their value.
+- `/unit` affects only **dimensionless** results; quantities with dimensions carry their own unit.
+
+> The `= 1 / 2` and `= 2*sqrt(2)` examples in section 3 require `/mode mathio`.
+> Under the default LineIO they are decimals (`1/3 + 1/6` shows `= 0.5`).
+
+These switches change **how results look**, never what is computed.
+
+---
 
 ## 24. Language and colours
 
-Interface in Simplified Chinese, Traditional Chinese and English (auto-detected on first run, switchable with `/lang`).
-Colours for results, errors, hints and variables are configurable with `/set` and are remembered.
+- **Three languages**: Simplified Chinese · Traditional Chinese · English. The first launch
+  follows the system language; `/lang` switches afterwards.
+- **Colours**: `/set` recolours results, errors, hints, variables — the choice is remembered.
+- Settings live in `~/.hipercalc_state`, **shared by the CLI and the GUI**.
+
+---
 
 ## 25. Input experience
 
-- **Tab completion** for functions, variables and `/` commands; completing a function inserts the parentheses and puts
-  the cursor inside.
-- **Bracket auto-pairing**: typing `(` inserts `)` and places the cursor inside; typing `)` later **steps over** the
-  existing one.
-- **Bracket matching highlight**, unpaired brackets flagged in red.
-- **Argument hints** while the cursor is inside a function call.
-- **Keys**: full-width input auto-converted; `Ctrl+L` clears the screen, `Ctrl+R` searches history;
-  `Ctrl+C` quits when idle and **interrupts the running computation** while computing.
+| Feature | Behaviour |
+|---|---|
+| **Tab completion** | completes functions, variables and `/` commands; completing a function inserts its parentheses and puts the caret inside |
+| **Bracket pairing** | typing `(` inserts `)`; typing `)` **skips over** an existing one instead of doubling it |
+| **Bracket matching** | the bracket next to the caret is highlighted with its partner; unmatched ones turn red |
+| **Argument hints** | with the caret inside a function's parentheses, the hint area shows its parameter list |
+| **Full-width to half-width** | Chinese punctuation and full-width digits are converted automatically |
+
+**Keys**
+
+- `Ctrl+L` clears the screen, `Ctrl+R` searches history backwards;
+- `Ctrl+C` **quits while idle** and **interrupts the running computation** while busy.
+
+---
 
 ## 26. Known limits
 
-- **Dimensions**: results are expressed in SI base units; composite units such as km/h are not synthesised, and
-  prefixes are not split (`km` and `mm` work, `k` + `m` does not).
-- **Inequalities**: polynomial only.
-- **Matrices**: eigenvalues for 2×2 and 3×3; no matrix division (use `inv(A)*B`).
-- **Statistics**: data points must be evaluable at parse time (`/let` variables are fine).
-- **Special functions**: `gamma` supports positive integers and half-integers.
-- **Interruption**: supported on Windows, Linux and macOS, only during a computation.
+Honest list of what is not supported yet:
 
+| Area | Limit |
+|---|---|
+| Dimensions | results use SI base units; compound forms like "km²" or "km/h" are not built automatically, and prefixes cannot be split (`km`, `mm` work; `k` + `m` does not) |
+| Inequalities | polynomial only |
+| Matrices | eigenvalues for 2×2 and 3×3; no matrix division (use `inv(A)*B`) |
+| Statistics | data points must be evaluable at parse time (`/let` variables are fine) |
+| Special functions | `gamma` currently accepts positive integers and positive half-integers |
+| Interruption | supported on Windows, Linux and macOS, only during a computation |
 
 ---
 
 ## 27. GUI (hipercalc-gui)
 
-The CLI syntax works **unchanged** — the GUI is a shell around the very same evaluation path
-(`Session::eval`), so every function, command and display switch documented above applies there too.
+The CLI syntax works **unchanged** — the GUI is a shell around the same evaluation path
+(`Session::eval`), so every function, command and display switch above applies there too.
 
 ### 27.1 Layout
 
 | Area | Contents |
-| --- | --- |
-| Toolbar | mode (`MathIO` / `LineIO`), angle (`DEG` / `RAD`), base (10 / 16), history, clear history, settings |
-| Input | a **structured** editor (fractions / roots / powers / Σ are real layout nodes, not text) plus `C` and `=` |
-| Results | real math typesetting: stacked fractions, root overlines, superscripts, Σ limits, stretchable parentheses |
-| Keypad | Desmos-style panels: main / functions / units / constants, switching with the input |
+|---|---|
+| Toolbar | mode (`MathIO` / `LineIO`), angle (`DEG` / `RAD`), calc mode (fast / deep), `>_` (open the CLI), `⚙` settings, clear history |
+| Input | a **structured** editor (fractions / roots / powers / Σ are real layout nodes) plus `C` and `=` |
+| Results | real math typesetting: stacked fractions, root overlines, superscripts, Σ limits |
+| Keypad | Desmos-style panels: main / functions / units / constants |
 | Status bar | current keypad panel and evaluation time |
 
 ### 27.2 Keys
 
 | Key | Effect |
-| --- | --- |
+|---|---|
 | `Enter` | evaluate |
 | `C` | clear the input |
 | `←` `→` | move the caret in **linear reading order** (every slot of a fraction / root / Σ is a legal position) |
-| `Backspace` | delete the item before the caret; at the start of an empty slot it does **nothing** (protects whole structures) |
-| `(` `)` | `(` inserts a group, `)` leaves the current group — unbalanced parentheses cannot be built |
+| `Backspace` | delete the item before the caret; at the start of an empty slot it does **nothing** |
+| `(` `)` | `(` inserts a group, `)` leaves the current group |
 
-### 27.3 Settings
+### 27.3 Filling in big operators
+
+- Inserting `∑` / `∏` pre-fills the lower-left **variable** box with `n`, and the caret lands in the
+  **lower-right box (the lower bound)**;
+- `←` `→` follow the **visual order**:
+  - Σ / ∏: **lower-left (variable) → lower-right (lower bound) → upper (upper bound) → body**
+  - `∫`: **lower bound → upper bound → body → the variable after `d`**
+- With the caret before the whole symbol, pressing `→` walks through it in that order and ends after it.
+
+### 27.4 Settings
 
 | Setting | Meaning |
-| --- | --- |
+|---|---|
 | Theme | dark / light |
-| Texture | **acrylic** (system composited) / **glass** (our own liquid glass + refraction) / **off** (no capture, no blur) |
-| Desktop blur | blur radius of the backdrop in glass mode (0 = pixel-sharp, continuous slider) |
+| Texture | **acrylic** (system composited) / **glass** (our own liquid glass) / **off** (no capture, no blur) |
+| Desktop blur | blur radius in glass mode (0 = pixel-sharp, continuous slider) |
 | Panel shadow | shadow depth of glass panels |
-| Precision | the same setting as the CLI `/mode` (shared `~/.hipercalc_state`) |
-| Math font | one of five bundled math fonts (variables are italicised automatically) |
+| Precision | the same setting as the CLI `/mode` |
+| Math font | one of five bundled math fonts |
 | Language | Simplified Chinese / Traditional Chinese / English |
-| Render scale | 100% / 90% / 80% / 70% — **window pixel count**; lower it when frame rate matters |
-| Allow screenshots | **allow**: screenshots/recording work, but the backdrop contains a faint reflection of this window; **disallow**: the backdrop is the clean desktop, but captures miss the window (a Windows limitation — you cannot have both) |
+| Render scale | 100% / 90% / 80% / 70% |
+| Allow screenshots | allow: captures work but the backdrop shows a faint reflection of this window; disallow: clean backdrop but captures miss the window |
 | Long results | wrap / horizontal scroll |
 
-### 27.4 Relation to the CLI
+### 27.4.1 The CLI inside the GUI
 
-- Both share `~/.hipercalc_state`: language, precision and display mode are common; the GUI only writes its own keys.
-- Evaluation runs on a **background thread**, so heavy work (high-degree roots, numeric integration) never freezes the UI.
+- The **`>_`** button opens a **separate command-line window** (a real process, not a thread).
+  **Closing the GUI does not close it** — they are independent, and clicking again opens another.
+  The window is hosted by a shell, so it stays open after the program exits.
+- It is the same `hipercalc::run()` — the GUI executable simply acts as the CLI, **no extra file needed**.
+- The reverse also holds: **with any argument the GUI executable runs as the CLI** and shows no window:
+
+  ```bash
+  hipercalc-gui.exe -e "1/3+1/6"     # evaluate and exit
+  hipercalc-gui.exe --stdin < in.txt # batch
+  hipercalc-gui.exe -f script.txt    # run a script
+  ```
+
+  On Windows it attaches to or opens a console; with `> out.txt` redirection your standard
+  output is left untouched.
+
+### 27.5 While computing
+
+- The results area shows **"calculating 12.3 s"**, ticking every 0.1 s;
+- A **cancel** button sits next to it, and the input bar's `=` turns into **cancel** while busy;
+- The keypad's `↵` is **greyed out** while busy;
+- Cancelling is a *request*: the solver exits at its next checkpoint and leaves a
+  "computation interrupted" line. A few loops without checkpoints may take a moment longer.
+
+### 27.6 Relation to the CLI
+
+- Both share `~/.hipercalc_state`: language, precision and display mode are common.
+- Evaluation runs on a **background thread**, so heavy work never freezes the UI.
 - The glass texture needs screen capture: DXGI desktop duplication on Windows; other platforms fall back to "off".
-
 
 ---
 
