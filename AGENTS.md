@@ -454,6 +454,25 @@ cargo build -p hipercalc-gui   # 图形界面（唯一会编 iced 的命令，�
 - **耗时口径两边一致**：CLI 的 `timing_text()` 与 GUI 的 `elapsed_text()` 都是 **0.1 秒、向下取整**、
   不足 0.1 秒显示 `<0.1秒`。改一处就要改另一处（各有单测钉着）。
 
+## 什么文件**不进仓库**（2026-10-24 用户定）
+
+代码与文档之外的东西一律 gitignore，只留本地：
+
+| 被忽略 | 为什么 |
+| --- | --- |
+| `/.idea/` | 各人 IDE 配置不同 |
+| `/crates/hipercalc-gui/tests/snapshots/*.png` | 20 MB 像素基线，`cargo test -p hipercalc-gui --test snapshot` 可重生 |
+| `/crates/hipercalc-gui/docs/*.png` | 13 MB crate 文档截图，由基线复制而来 |
+| `/docs/gui-*-wgpu.png`、`/纯CSS液态玻璃/`、`/change_logs/` | 中间产物 / 原型 / 本地日志 |
+
+**保留在仓库里**的二进制只有两类，删了会坏：
+- `crates/hipercalc-gui/assets/fonts/*.ttf`（9 个）—— **构建必需**（`include_bytes!`），
+- `docs/demo*.gif`（README 演示）与 `docs/gui-{dark,light}.png`（README 产品图）—— 用户明确要求保留。
+
+⚠️ **快照回归网的代价**（用户已知）：新克隆的仓库第一次跑快照是"建立基线"而非比对；
+`matches_image` 在文件不存在时会自己创建并返回 `true` —— 所以别把它当成 CI 级防护，
+它只对"手上有基线"的机器有效。
+
 ## 开发用环境变量（排查用，不影响正常使用）
 
 | 变量 | 作用 |

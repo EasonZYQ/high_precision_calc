@@ -2,36 +2,28 @@
 
 `hipercalc` 的**图形界面**，基于 [Iced](https://iced.rs)（Elm 架构的跨平台 GUI 库）。
 
-![主界面（深色）](docs/main-window.png)
-
 > **当前状态：可用。** 计算 / **后台求值（界面永不卡死）** / **耗时显示** / **配置持久化** / 历史 /
 > **预览即输入栏（排版层就是输入框，自绘光标）** / **空参数占位框（可点击定位）** /
 > Desmos 式双面板虚拟键盘 / 函数弹窗 /
 > 数学排版（分数竖排、**矢量根号**、**Σ/Π 大符号**）/ 深浅双主题（可在设置里切）/ **玻璃强度与底色浓度可调** /
 > **长结果折行或横向滚动** / WinUI3 风格玻璃质感 /
 > **内置字体（等线 + 5 款数学字体）** / **全界面多语言（简体 / 繁体 / English）** 都已实现，
-> 115 项测试全绿（104 单测 + 11 快照测试，后者产出 10 张 PNG 基线）。
+> 155 项测试全绿（139 单测 + 16 快照测试）。
 > DWM 亚克力的可用性取决于运行环境（见下）。
 
-> 下面所有截图都是 `tests/snapshot.rs` 在**离屏**渲染出来的**真实界面**
-> （`docs/` 下的 PNG 与 `tests/snapshots/` 的基线同源）。改界面时重新生成基线并
-> 同步更新这里的图，是本 crate 的固定流程。
+> **截图不在仓库里**（2026-10-24 起）：`tests/snapshots/` 的基线与本 crate 的文档截图
+> 都**只留在本地**（已 gitignore，合计 30+ MB）。产品图见仓库根 README；
+> 想看界面，`cargo test -p hipercalc-gui --test snapshot` 会在本地重新生成全部基线图。
 
 ## 界面构成
 
 界面自上而下四块：**① 工具条 → ② 结果区 → ③ 输入区（含预览行）→ ④ 虚拟键盘**。
 
-| 主界面（深色，主键盘） | 浅色主题 |
-|---|---|
-| ![深色](docs/main-window.png) | ![浅色](docs/light-theme.png) |
 
 - **虚拟键盘**：双面板（数字 / 字母），布局参照 Desmos —— 左列数字与 `ABC` / `√` / `^` / `⌫` / `↵`，
   右侧网格排函数键与比较符。点击插入到**光标处**（不是末尾）。函数键（`√`、`π`…）会自动补括号
   并把光标停在括号内 —— 点 `√` 再打 `2` 直接得到 `sqrt(2)`。
 
-  | 字母面板（并切到 English） | 函数弹窗（7 个分类） |
-  |---|---|
-  | ![字母面板](docs/abc-panel-en.png) | ![函数弹窗](docs/functions.png) |
 
 - **光标常显**：`text_editor` 没有 `on_focus` / `on_blur` 回调，只能**主动 focus** ——
   凡是"点了按钮但意图仍是继续输入"的动作（键盘按键、切面板、切语言），`update` 末尾都会调
@@ -48,8 +40,6 @@
   （唯一的钩子 `Highlighter` 只有 `color` / `font` 两个字段）。所以根号渲染走**分层方案**：
   输入栏保持纯文本编辑，其下方一条预览行用 `mathrender` 把当前行排成 Desmos 样式。
 
-  ![输入框与实时预览](docs/input-preview.png)
-
 - **数学排版**：`mathrender.rs` 把 core 的 MathIO 文本解析成语法树再排版。
   难点是分数分子的边界 —— `-1 / 4 + (1 / 4)*sqrt(5)` 里分子只能是 `-1`，
   不能把后面的 `+ (1/4)√5` 也吸进去（有专项单测 `fraction_numerator_stops_at_plus`）。
@@ -63,9 +53,6 @@
   而报错信息是**散文**（`错误: 位置 2 处意外的字符: '@'`）。所以 `history_entry` 里传入的是
   `math && !e.error` —— 否则快照里会看到 `错误:位置2处意外的字符:"`（空格没了）。
 
-  | LineIO：结果退化小数、**回显仍是根号** | 换数学字体（Georgia）后整屏文字跟着换 |
-  |---|---|
-  | ![LineIO](docs/lineio.png) | ![换字体](docs/font-georgia.png) |
 
 ## 后台求值：界面永不卡死
 
@@ -101,12 +88,12 @@ UI 线程                          工作线程（"hipercalc-eval"）
 
 ### 耗时显示
 
-口径**逐字对齐 CLI**（`crates/hipercalc/src/lib.rs` 的 `Timing::elapsed_text`）：
+口径**与 CLI 完全一致**（`crates/hipercalc/src/lib.rs` 的 `timing_text`）：
 
 | 条件 | 显示 |
 |---|---|
-| < 1 秒 | `用时：<1秒`（**不是** `0秒`） |
-| ≥ 1 秒 | `用时：{n}秒`，**整秒向下取整**（1.99s → `1秒`） |
+| ≥ 0.1 秒 | `用时：{n}.{d}秒`，**向下取整到 0.1 秒**（1.99s → `1.9秒`） |
+| < 0.1 秒 | `用时：<0.1秒`（**不是** `0.0秒`） |
 | 关闭计时 | 空串（GUI 恒开） |
 
 - **计时覆盖「逐行 eval」整段**（`Instant::now()` 包住所有行）。耗时大头在结果格式化
@@ -142,8 +129,6 @@ UI 线程                          工作线程（"hipercalc-eval"）
   所以 `Cambria.ttc` 直接丢进去就能按族名取到 `Cambria Math`。
 
 ### 多语言
-
-![设置面板：精度 / 语言 / 数学字体](docs/settings.png)
 
 - 词典在 `crates/hipercalc/src/language/{en,zh-TW}.json`，**键是简体原文**
   （`zh-CN.json` 是空表 —— 简体原文即键）。界面侧统一走 `t("…")` / `t_fmt("…", &[..])`。
@@ -184,7 +169,7 @@ UI 线程                          工作线程（"hipercalc-eval"）
 ```powershell
 cargo run -p hipercalc-gui       # 开窗口
 cargo build -p hipercalc-gui     # 只编译
-cargo test  -p hipercalc-gui     # 104 单测 + 11 快照测试（产出 10 张 PNG，约 5 秒）
+cargo test  -p hipercalc-gui     # 139 单测 + 16 快照测试（快照会写 PNG 到 tests/snapshots/）
 ```
 
 > ⚠️ **release 构建不弹控制台窗口**。`main.rs` 顶上有一行
@@ -203,13 +188,15 @@ cargo test  -p hipercalc-gui     # 104 单测 + 11 快照测试（产出 10 张 
 ## 截图验证（改界面的必做步骤）
 
 `tests/snapshot.rs` 用 `iced_test` 做**离屏快照**，基线在 `tests/snapshots/*.png`
-（实际文件名会带 `-wgpu` 后缀，共 9 张；另有 1 条不产图的点击模拟测试）。
-README 里引用的图在 `docs/` 下，**由基线复制而来**（改了界面要两边一起更新）：
+（实际文件名会带 `-wgpu` 后缀，共 15 张；另有 1 条不产图的点击模拟测试）。
+
+⚠️ **基线不入库**（2026-10-24 起 gitignore，20 MB）：本机生成过就一直有效，
+但**新克隆的仓库第一次跑会重新生成一遍**（`matches_image` 在文件不存在时会自己创建）。
+于是这条回归网只对"手上有基线"的机器起作用 —— CI 里不跑快照。
 
 ```powershell
 Remove-Item crates\hipercalc-gui\tests\snapshots\*.png   # 删掉旧基线
 cargo test -p hipercalc-gui --test snapshot              # 重新生成
-# 重新生成后，把要放进 README 的那几张复制到 docs/ 并改成语义化文件名
 ```
 
 - **`matches_image` 在文件不存在时会自己创建并返回 `true`** ⇒ 必须删旧基线才会更新，

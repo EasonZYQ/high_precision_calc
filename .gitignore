@@ -48,3 +48,14 @@ Thumbs.db
 # ==== README 素材的中间产物（`Snapshot::matches_image` 会自动加 -wgpu 后缀）====
 # 真正进仓库的是缩过、量化过的 docs/gui-dark.png 与 docs/gui-light.png
 /docs/gui-*-wgpu.png
+
+# ==== IDE 私有配置（每台机器不同，不进仓库）====
+/.idea/
+
+# ==== GUI 的像素基线（20 MB）与 crate 文档截图（13 MB）====
+# 为什么要忽略：它们是**可再生的**二进制，撑大了 clone 体积却没有代码价值。
+# 代价（用户已知并接受）：新克隆的仓库**第一次**跑快照测试是"建立基线"而不是比对，
+# 所以视觉回归只对"手上有基线"的机器生效（CI 里本来也不跑快照）。
+# 想要基线：`cargo test -p hipercalc-gui --test snapshot`
+/crates/hipercalc-gui/tests/snapshots/*.png
+/crates/hipercalc-gui/docs/*.png
