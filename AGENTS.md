@@ -432,6 +432,13 @@ cargo build -p hipercalc-gui   # 图形界面（唯一会编 iced 的命令，�
 
 - **`--cli` 是内部参数**（`crates/hipercalc/src/lib.rs` 里静默忽略、不进 `--help`）：
   只用来让"GUI 的 exe 被自己拉起"的那个子进程走 CLI 分支。别把它当用户开关写进文档之外的地方。
+- 🔴 **Windows 控制台必须自己开 VT**：`colored` 会输出 ANSI 转义，而**新建/继承的 conhost 默认不解释它**，
+  屏幕上就是 `[1;94m超高精度…` 这种乱码。所以 `cli.rs` 的 `enable_vt()` 会对 stdout/stderr
+  调 `GetConsoleMode` + `SetConsoleMode(ENABLE_VIRTUAL_TERMINAL_PROCESSING)`；
+  **`GetConsoleMode` 对管道/文件天然失败**，正好实现"只在真控制台上动手"（重定向不受影响）。
+- `>_` 按钮**经命令行解释器（`cmd` 的 `/k` 选项）起**，不是直接起自己：裸 `CREATE_NEW_CONSOLE`
+  拉的是**裸 conhost**，既没 VT（乱码）也没有命令行历史；经解释器托管后程序跑在正经终端里、
+  退出后窗口还留着。拉不起来时回退到直接起自己（颜色仍对，因为 VT 是自己开的）。
 - **耗时口径两边一致**：CLI 的 `timing_text()` 与 GUI 的 `elapsed_text()` 都是 **0.1 秒、向下取整**、
   不足 0.1 秒显示 `<0.1秒`。改一处就要改另一处（各有单测钉着）。
 
@@ -442,6 +449,7 @@ cargo build -p hipercalc-gui   # 图形界面（唯一会编 iced 的命令，�
 | `HIPERCALC_FPS=1` | 帧时间探针：`listen_raw` 记 `RedrawRequested` 时间戳（**不发消息**，否则自己制造重绘），每 120 帧打一行 stderr |
 | `HIPERCALC_DUMP_BG=1` | 把"喂给玻璃的背景纹理"导出成 `%TEMP%/hc_bg_dump.ppm` + 打印几何（排查"背景发虚 / 背景里有自己的窗口"最快的手段） |
 | `HIPERCALC_BLUR=<px>` | 覆盖模糊半径（离屏快照做 0 / 6 / 14 对比用） |
+| `HIPERCALC_CONSOLE_PROBE=1` | 把**控制台模式位**（是否真控制台、VT 位前后值）追加写到 `%TEMP%/hc_console_probe.txt` —— 查"CLI 窗口里全是 `[1;94m` 乱码"时用它（控制台本身显示不出东西，日志只能落文件） |
 
 ## 容易改错的地方
 

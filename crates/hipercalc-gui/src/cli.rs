@@ -37,20 +37,45 @@ pub fn run_cli_here() -> i32 {
 
 /// 起一个**独立的 CLI 进程**（点「命令行」按钮时用），返回子进程 pid。
 ///
-/// ⚠️ Windows 上必须带 `CREATE_NEW_CONSOLE`：本 exe 是窗口子系统，
-/// 不给新控制台的话子进程的输出同样没人接（表现为"点了按钮但什么都没发生"）。
+/// ⚠️ **Windows 上必须经 `cmd.exe` 起，不能直接起自己**（用户 2026-10-23 反馈）：
+/// 直接用 `CREATE_NEW_CONSOLE` 拉起来的是**裸 conhost**，它默认不解释 ANSI 转义，
+/// 屏幕上是 `[1;94m…` 这种乱码，而且没有命令行历史/补全的终端环境。
+/// 走 `cmd /k` 就是"正经终端里跑程序"：彩色与输入都正常，程序退出后窗口还留着
+///（用 `/k` 不用 `/c`），最后的输出不会一闪就没。
 pub fn spawn_cli() -> io::Result<u32> {
     let exe = std::env::current_exe()?;
-    let mut cmd = std::process::Command::new(exe);
-    // 随便一个参数即可触发 `wants_cli()`；用 `--cli` 只是让进程列表里能看出它是被拉起来的
-    cmd.arg("--cli");
+
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-        cmd.creation_flags(CREATE_NEW_CONSOLE);
+        // `cmd /k` 的引号规则：整串以 `"` 开头且**多于两个**引号时才会剥掉最外层一对。
+        // 所以这里要写成 `""<exe>" --cli"` —— 少一层引号，带空格的路径就会被拆开。
+        let line = format!("\"\"{}\" --cli\"", exe.display());
+        let spawned = std::process::Command::new("cmd.exe")
+            .arg("/k")
+            .arg(line)
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .spawn();
+        if let Ok(child) = spawned {
+            return Ok(child.id());
+        }
+        // 极端情况（系统被裁剪到没有 cmd.exe）：退回直接起自己。
+        // 颜色仍是对的 —— `ensure_console()` 会给控制台打开 VT 处理。
+        return Ok(std::process::Command::new(exe)
+            .arg("--cli")
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .spawn()?
+            .id());
     }
-    Ok(cmd.spawn()?.id())
+
+    // 其它平台的终端本身就能解释 ANSI，直接起自己即可
+    #[cfg(not(windows))]
+    {
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg("--cli");
+        Ok(cmd.spawn()?.id())
+    }
 }
 
 /// Windows：确保这个进程有地方输出（**只在原本没有标准输出时才动手**）。
@@ -64,6 +89,8 @@ fn ensure_console() {
         fn AttachConsole(pid: u32) -> i32;
         fn AllocConsole() -> i32;
         fn SetStdHandle(which: u32, handle: *mut c_void) -> i32;
+        fn GetConsoleMode(handle: *mut c_void, mode: *mut u32) -> i32;
+        fn SetConsoleMode(handle: *mut c_void, mode: u32) -> i32;
         fn CreateFileW(
             name: *const u16,
             access: u32,
@@ -90,14 +117,54 @@ fn ensure_console() {
         v != 0 && v != INVALID_HANDLE
     }
 
+    /// 让这个控制台**解释 ANSI 转义**（`\e[1;94m` 这类彩色码）。
+    ///
+    /// 不做这一步，彩色输出就原样显示成 `[1;94m…` —— 用户截图里正是这个。
+    /// `GetConsoleMode` 对管道/文件会失败 ⇒ 天然做到"只在真控制台上动手"，
+    /// 因此 `> out.txt` 重定向时这里自动跳过，不会往文件里写垃圾。
+    fn enable_vt(handle: *mut c_void) {
+        const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
+        let mut mode: u32 = 0;
+        // SAFETY: 句柄来自 Win32，失败只是返回 0，不会越界
+        let ok = unsafe { GetConsoleMode(handle, &mut mode) };
+        let mut after = mode;
+        if ok != 0 && (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) == 0 {
+            // SAFETY: 同上，只是把同一位打开
+            let _ = unsafe { SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) };
+            let mut m2: u32 = 0;
+            if unsafe { GetConsoleMode(handle, &mut m2) } != 0 {
+                after = m2;
+            }
+        }
+        // 排查用探针（`HIPERCALC_CONSOLE_PROBE=1`）：把模式位落到文件里。
+        // 控制台本身可能显示不出东西（就是要修的那个问题），所以不能 `eprintln!`。
+        if std::env::var("HIPERCALC_CONSOLE_PROBE").ok().as_deref() == Some("1") {
+            let line = format!(
+                "handle={handle:?} is_console={ok} mode_before={mode:#010x} mode_after={after:#010x} vt={}\n",
+                after & ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0
+            );
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(std::env::temp_dir().join("hc_console_probe.txt"))
+            {
+                use std::io::Write;
+                let _ = f.write_all(line.as_bytes());
+            }
+        }
+    }
+
     // SAFETY: 全部是 Win32 的标准调用，参数都是常量或本函数内构造的缓冲；
     // `name` 的 UTF-16 缓冲在调用期间一直存活。
     unsafe {
         let have_out = valid(GetStdHandle(STD_OUTPUT_HANDLE));
         let have_err = valid(GetStdHandle(STD_ERROR_HANDLE));
-        // 已经有输出（终端继承了句柄，或被重定向到文件/管道）⇒ **什么都别动**。
-        // 动 `SetStdHandle` 会把重定向目标换掉，`hipercalc-gui -e 1+1 > out.txt` 就废了。
+        // 已经有输出（终端继承了句柄，或被重定向到文件/管道）⇒ **不动句柄**，
+        // 但要**顺手开 VT**：从 cmd 继承来的控制台同样可能没开，
+        // 那样彩色会退化成 `[1;94m` 乱码。重定向时 `GetConsoleMode` 会失败 ⇒ 自动跳过。
         if have_out && have_err {
+            enable_vt(GetStdHandle(STD_OUTPUT_HANDLE));
+            enable_vt(GetStdHandle(STD_ERROR_HANDLE));
             return;
         }
         if GetConsoleWindow().is_null() {
@@ -124,6 +191,8 @@ fn ensure_console() {
             if !have_err {
                 SetStdHandle(STD_ERROR_HANDLE, h);
             }
+            // 新开/借来的控制台默认**不开** VT 处理 ⇒ 必须显式开，否则就是乱码
+            enable_vt(h);
         }
     }
 }
