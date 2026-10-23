@@ -51,6 +51,9 @@ cargo build --release                     # 命令行 → target/release/hiperca
 cargo build -p hipercalc-gui --release    # 图形界面 → target/release/hipercalc-gui
 ```
 
+图形界面三平台都有（Windows / macOS / Linux）。Linux 需要 `libxkbcommon-x11-0` 与 `libwayland-client0`；
+「玻璃质感」用的是 Windows 的桌面复制，其它平台自动退回「关闭」。
+
 ## 文档
 
 - 📘 [完整文档（中文）](docs/DOC.zh-CN.md) · [Full manual (English)](docs/DOC.en.md) —— 每个函数、每条指令、所有开关

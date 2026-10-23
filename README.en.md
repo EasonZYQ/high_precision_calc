@@ -51,6 +51,9 @@ cargo build --release                     # CLI → target/release/hipercalc
 cargo build -p hipercalc-gui --release    # GUI → target/release/hipercalc-gui
 ```
 
+The GUI ships for all three platforms (Windows / macOS / Linux). On Linux it needs `libxkbcommon-x11-0`
+and `libwayland-client0`; the glass texture uses Windows desktop duplication and falls back to "off" elsewhere.
+
 ## Docs
 
 - 📘 [Full manual (English)](docs/DOC.en.md) · [完整文档（中文）](docs/DOC.zh-CN.md) — every function, command and switch
