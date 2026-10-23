@@ -349,6 +349,8 @@
   "关掉后背景是真实桌面，但截图/录屏拍不到窗口": "When off, the backdrop is the real desktop, but screenshots/recording will miss the window",
   "预览": "Preview",
   "计算中…": "Computing…",
+  "计算中 {0} 秒": "Computing… {0}s",
+  "取消": "Cancel",
   "主键盘": "Main",
   "字母键盘": "ABC",
   "虚拟键盘": "Keypad",

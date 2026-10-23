@@ -221,6 +221,11 @@ pub struct State {
     evaluator: Evaluator,
     /// worker 手里的会话是否正在算（决定按钮要不要禁用、是否显示「计算中」）
     busy: bool,
+    /// 本次计算**开始的时刻**（用于"计算中 3.2s"的秒表）。
+    ///
+    /// 用 `Instant` 而不是自增计数：`view` 每帧读一次就能算出精确到 0.1 秒的耗时，
+    /// 不需要一个每秒跳一次的消息在后台空转。
+    busy_since: Option<std::time::Instant>,
     /// 在飞的那一次求值的**原始请求**（输入原文 + 已拆好的行）。
     ///
     /// 产品路径其实用不到它（结果经 `Task::perform` → [`Message::Evaluated`] 回来），
@@ -454,6 +459,10 @@ pub enum Message {
     Evaluate,
     /// 后台求值完成（由 [`crate::evaluator`] 的 future 回传）
     Evaluated(Evaluated),
+    /// **取消当前计算**（用户点了「取消」按钮 / 输入栏的 `=` 变成取消时）
+    Cancel,
+    /// 计算中的**秒表跳动**（订阅每 100ms 发一条，只为刷新"计算中 3.2s"）
+    Tick,
     /// 点了排版层里的**空参数框**：把光标挪到源文本的第 n 个字符处
     PlaceCaret(usize),
     /// 点输入栏的**空白处** ⇒ 光标送到整份输入的最后面。
@@ -654,6 +663,7 @@ impl State {
             panel: Panel::default(),
             ctrl_held: false,
             busy: false,
+            busy_since: None,
             pending: None,
             modes,
             evaluator: Evaluator::spawn(session),
@@ -719,6 +729,14 @@ impl State {
                 theme::set_dark(self.dark);
                 self.persist_prefs();
             }
+            Message::Cancel => {
+                // 只置标志：真正的退出发生在求解器的检查点（`core::cancel::check`），
+                // 结果会以「计算已中断」回来 ⇒ 走正常的 `Evaluated` 通道收尾。
+                hipercalc_core::cancel::request();
+            }
+            // 秒表消息本身不做事 —— 它唯一的作用是"让 iced 重绘一帧"，
+            // 于是 `view` 里那句 `busy_since.elapsed()` 就被重新读一次。
+            Message::Tick => {}
             Message::SetUiScale(k) => {
                 self.ui_scale = k.clamp(0.5, 1.0);
                 self.persist_prefs();
@@ -899,6 +917,7 @@ impl State {
             }
             Message::Evaluated(out) => {
                 self.busy = false;
+                self.busy_since = None;
                 self.pending = None;
                 let precise = is_precise(&out.text);
                 self.history.push(Entry {
@@ -1416,6 +1435,7 @@ impl State {
         // 已经在敲下一句了，那时再清会把新打的内容一起抹掉）
         self.clear_input();
         self.busy = true;
+        self.busy_since = Some(std::time::Instant::now());
 
         // 记下这次请求（测试要能"补等一次"，见 `await_pending_for_test`）
         self.pending = Some((eval_src.clone(), eval_lines.clone()));
@@ -1793,10 +1813,30 @@ impl State {
         // 程序又卡死了 —— 而那正是本次要修掉的观感。放在历史最下面（也就是
         // 视线落点，因为 `anchor_bottom` 会把视图钉在底部）。
         if self.busy {
+            // 用户要求（2026-10-23）：「不要只写一个计算中，要计时，以秒为单位；
+            // 计算栏旁边要有一个取消按钮」。
+            let secs = self
+                .busy_since
+                .map(|t| t.elapsed().as_secs_f32())
+                .unwrap_or(0.0);
+            let cancel = button(text(t("取消")).size(12).font(crate::fonts::font_cjk()))
+                .padding([3, 10])
+                .style(|t, s| theme::key(t, KeyKind::Control, s))
+                .on_press(Message::Cancel);
             col = col.push(
-                container(theme::label(t("计算中…")).size(13).style(theme::hint))
-                    .width(Length::Fill)
-                    .padding([4, 9]),
+                container(
+                    Row::new()
+                        .align_y(Alignment::Center)
+                        .spacing(8)
+                        .push(
+                            theme::label(t_fmt("计算中 {0} 秒", &[&format!("{secs:.1}")]))
+                                .size(13)
+                                .style(theme::hint),
+                        )
+                        .push(cancel),
+                )
+                .width(Length::Fill)
+                .padding([4, 9]),
             );
         }
 
@@ -2404,14 +2444,21 @@ impl State {
         // 而 `evaluate` 里那条 `busy` 守卫会把后续点击全部静默丢掉 ——
         // 用户看到的是"点了没反应"。按钮画成不可按，意图就清楚了。
         // 同时把字形换成 `…`，与历史区那条「计算中…」互相印证。
-        let go_glyph = if self.busy { "…" } else { "=" };
-        let mut go = button(text(go_glyph).size(22).font(theme::font_math()))
-            .width(Length::Fixed(56.0))
-            .height(Length::Fixed(INPUT_HEIGHT))
-            .style(|t, s| theme::key(t, KeyKind::Equals, s));
-        if !self.busy {
-            go = go.on_press(Message::Evaluate);
-        }
+        // 计算中：`=` 变成**取消**（用户要求 2026-10-23："输入栏的 = 按钮也变成取消"）。
+        // 不再是"画成不可按"—— 那样用户只能干等。
+        let go = if self.busy {
+            button(text(t("取消")).size(15).font(crate::fonts::font_cjk()))
+                .width(Length::Fixed(56.0))
+                .height(Length::Fixed(INPUT_HEIGHT))
+                .style(|t, s| theme::key(t, KeyKind::Control, s))
+                .on_press(Message::Cancel)
+        } else {
+            button(text("=").size(22).font(theme::font_math()))
+                .width(Length::Fixed(56.0))
+                .height(Length::Fixed(INPUT_HEIGHT))
+                .style(|t, s| theme::key(t, KeyKind::Equals, s))
+                .on_press(Message::Evaluate)
+        };
 
         let clear = button(text("C").size(18).font(theme::font_math()))
             .width(Length::Fixed(46.0))
@@ -2545,6 +2592,9 @@ impl State {
 
     fn keypad_area(&self) -> Element<'_, Message> {
         let layout = layout_for(self.panel);
+        // 计算中要禁用「↵」—— 闭包里不能借用 `self`，先取出来
+        let busy = self.busy;
+        let busy_blocks = move |action: KeyAction| busy && matches!(action, KeyAction::Evaluate);
 
         let mut rows = Column::new().spacing(KEY_GAP).width(Length::Fill);
         for (ri, line) in layout.iter().enumerate() {
@@ -2594,7 +2644,14 @@ impl State {
                         // 键面本来就是居中的，不需要靠 padding 定位。
                         .padding(0)
                         .style(move |t, s| theme::key(t, k.kind, s))
-                        .on_press(Message::Key(ri, ci)),
+                        // 计算中把「↵」置灰（去掉 `on_press` ⇒ `Status::Disabled`
+                        // ⇒ `theme::key` 自动降到 30% 透明）。用户要求："虚拟键盘的
+                        // enter 变成灰色"。
+                        .on_press_maybe(if busy_blocks(k.action) {
+                            None
+                        } else {
+                            Some(Message::Key(ri, ci))
+                        }),
                 );
             }
             rows = rows.push(r);
@@ -2828,7 +2885,7 @@ mod fps {
     }
 }
 
-pub fn subscription(_state: &State) -> iced::Subscription<Message> {
+pub fn subscription(state: &State) -> iced::Subscription<Message> {
     let window_events = iced::window::events().map(|(_id, ev)| match ev {
         iced::window::Event::Opened { .. } => Message::WindowOpened,
         // ⚠️ **只有尺寸变化才要重抓背景**（抓屏区域是跟着窗口尺寸算的）。
@@ -2891,7 +2948,15 @@ pub fn subscription(_state: &State) -> iced::Subscription<Message> {
         iced::Subscription::none()
     };
 
-    iced::Subscription::batch([window_events, ctrl, fps])
+    // 秒表：**只在计算中订阅**（空闲时一条都不发，不会造成空转重绘）。
+    // 100ms 一跳 ⇒ "计算中 3.2s" 的小数位看着是连续在走的。
+    let tick = if state.busy {
+        iced::time::every(std::time::Duration::from_millis(100)).map(|_| Message::Tick)
+    } else {
+        iced::Subscription::none()
+    };
+
+    iced::Subscription::batch([window_events, ctrl, fps, tick])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3186,7 +3251,8 @@ mod tests {
             Some("还有空位没填"),
             "应给出界面语言的提示"
         );
-        assert_eq!(s.input_text(), "sum(,,,)", "输入框内容不该被动过");
+        // 变量框默认 n（2026-10-23 用户要求）
+        assert_eq!(s.input_text(), "sum(,n,,)", "输入框内容不该被动过");
 
         // 一打字提示就撤掉
         s.insert("k");

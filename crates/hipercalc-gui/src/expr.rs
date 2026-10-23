@@ -84,6 +84,31 @@ impl Expr {
         }
     }
 
+    /// 光标在该节点的插槽间移动的**视觉顺序**（`←` `→` 与"插入后光标落点"都用它）。
+    ///
+    /// 用户 2026-10-23 定的规则：
+    /// - Σ / ∏：**左下（变量）→ 右下（下限）→ 上方（上限）→ 右侧（主体）** ——
+    ///   人看 Σ 是先读"k = n"这一行，再看上限，最后看被求和式；
+    /// - ∫ 这类"下方一个框 + 上方一个框 + 右侧主体 + 末尾 `d<变量>`"：
+    ///   **下 → 上 → 主体 → 变量**；
+    /// - `lim`：变量 → 趋近值 → 主体；`diff`：变量（`d/dx` 的分母）→ 主体。
+    ///
+    /// ⚠️ 只影响**移动顺序**，不影响 `to_node` 的渲染/点击目标顺序（那是同一遍遍历，
+    /// 自己保持一致即可）；两者若混用会重演"点哪跑去别处"的老 bug。
+    pub fn slot_order(&self) -> &'static [usize] {
+        match self {
+            Expr::Text(_) => &[],
+            Expr::Frac { .. } | Expr::Pow { .. } => &[0, 1],
+            Expr::Root { .. } | Expr::Paren(_) => &[0],
+            Expr::BigOp { kind, .. } => match kind {
+                BigKind::Sum | BigKind::Prod => &[1, 2, 3, 0],
+                BigKind::Integral => &[2, 3, 0, 1],
+                BigKind::Limit => &[1, 2, 0, 3],
+                BigKind::Diff => &[1, 0, 2, 3],
+            },
+        }
+    }
+
     /// 取第 `i` 个插槽（越界给 `None`）
     pub fn slot(&self, i: usize) -> Option<&Row> {
         match self {
@@ -739,7 +764,12 @@ fn collect_positions(row: &Row, base: &[(usize, usize)], out: &mut Vec<Cursor>) 
             break;
         }
         let e = &row[i];
-        for s in 0..e.slot_count() {
+        // ⚠️ 按 `slot_order`（视觉顺序）走，不是按槽位序号 —— Σ 的下限在下、
+        // 上限在上，若按序号走 `→` 会"先跳上方再回下方"，用户明确说这是错的。
+        for &s in e.slot_order() {
+            if s >= e.slot_count() {
+                continue;
+            }
             let mut p = base.to_vec();
             p.push((i, s));
             if let Some(sub) = e.slot(s) {
@@ -752,7 +782,10 @@ fn collect_positions(row: &Row, base: &[(usize, usize)], out: &mut Vec<Cursor>) 
 /// 在 `row[from..to]` 里找第一个**空插槽**（阅读序），返回该空行的光标
 fn first_empty_in(row: &Row, from: usize, to: usize, base: &[(usize, usize)]) -> Option<Cursor> {
     for (i, e) in row.iter().enumerate().take(to.min(row.len())).skip(from) {
-        for s in 0..e.slot_count() {
+        for &s in e.slot_order() {
+            if s >= e.slot_count() {
+                continue;
+            }
             let Some(sub) = e.slot(s) else { continue };
             let mut p = base.to_vec();
             p.push((i, s));
@@ -908,12 +941,21 @@ fn big_op(kind: BigKind, inner: Row) -> Expr {
         args.push(Vec::new());
     }
     let mut it = args.into_iter();
+    let body = it.next().unwrap_or_default();
+    let mut var = it.next().unwrap_or_default();
+    let from = it.next().unwrap_or_default();
+    let to = it.next().unwrap_or_default();
+    // 用户要求（2026-10-23）：插入 Σ / ∏ 时，左下那个"变量"框里**默认就是 `n`**。
+    // 只填空的（显式写了 `sum(f,k,1,10)` 不受影响）。
+    if var.is_empty() && matches!(kind, BigKind::Sum | BigKind::Prod) {
+        var = vec![Expr::Text("n".into())];
+    }
     Expr::BigOp {
         kind,
-        body: it.next().unwrap_or_default(),
-        var: it.next().unwrap_or_default(),
-        from: it.next().unwrap_or_default(),
-        to: it.next().unwrap_or_default(),
+        body,
+        var,
+        from,
+        to,
     }
 }
 
@@ -1051,8 +1093,9 @@ mod tests {
         let Expr::BigOp { .. } = &d.root[0] else {
             panic!("应是 BigOp，实际 {:?}", d.root[0]);
         };
-        // 光标落在主体（槽 0）
-        assert_eq!(d.cursor.path, vec![(0, 0)], "插完光标应在主体里");
+        // ⚠️ 2026-10-23 用户改的规则：插完光标落在**右下框（下限，槽 2）**，
+        // 不再是主体 —— 因为 Σ 下方的"变量 = 下限"才是先要填的东西。
+        assert_eq!(d.cursor.path, vec![(0, 2)], "插完光标应在右下框（下限）里");
 
         // 四个槽的"空行光标"必须互不相同
         let mut rows = Vec::new();
@@ -1087,7 +1130,7 @@ mod tests {
         d.home();
         d.insert_key("x");
         // ⚠️ 序列化用的是求值侧的名字（`sum`），显示侧才画 `∑`
-        assert_eq!(d.source(), "xsum(,,,)", "x 应插在 Σ 之前，不是插进括号里");
+        assert_eq!(d.source(), "xsum(,n,,)", "x 应插在 Σ 之前，不是插进括号里");
     }
 
     #[test]
@@ -1257,8 +1300,9 @@ mod tests {
     #[test]
     fn templates_parse_all_big_operators() {
         for (src, want) in [
-            ("∑()", "sum(,,,)"),
-            ("∏()", "prod(,,,)"),
+            // 变量框默认 `n`（2026-10-23 用户要求），所以不是 sum(,,,)
+            ("∑()", "sum(,n,,)"),
+            ("∏()", "prod(,n,,)"),
             ("diff(,x)", "diff(,x)"),
             ("int(,x,0,1)", "int(,x,0,1)"),
             ("lim(,x,0)", "lim(,x,0)"),
@@ -1324,5 +1368,69 @@ mod tests {
                     || contains_caret(to)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod bigop_order_tests {
+    use super::*;
+
+    /// 用户 2026-10-23 的要求①：插入 Σ/∏ 时左下"变量"框默认是 `n`，
+    /// ②插入后光标落在**右下框**（下限）。
+    #[test]
+    fn sum_inserts_with_default_n_and_cursor_on_lower_bound() {
+        let mut d = Doc::default();
+        d.insert_key("∑()");
+        assert_eq!(d.source(), "sum(,n,,)", "Σ 的变量框应预填 n");
+        assert_eq!(
+            d.cursor.path,
+            vec![(0, 2)],
+            "插入后光标应在右下框（下限），而不是上方或被求和式"
+        );
+        // 接着打字应该进下限
+        d.insert_key("1");
+        assert_eq!(d.source(), "sum(,n,1,)");
+    }
+
+    /// 用户 2026-10-23 的要求③：`→` 的遍历顺序是
+    /// **左下（变量）→ 右下（下限）→ 上方（上限）→ 右侧（主体）→ 符号后面**。
+    #[test]
+    fn bigop_cursor_order_follows_the_visual_layout() {
+        let mut d = Doc::default();
+        d.insert_key("∑()");
+        let mut seen: Vec<Vec<(usize, usize)>> = Vec::new();
+        for c in d.linear() {
+            if !c.path.is_empty() && !seen.contains(&c.path) {
+                seen.push(c.path.clone());
+            }
+        }
+        // 槽位：0=body 1=var 2=from 3=to
+        assert_eq!(
+            seen,
+            vec![
+                vec![(0, 1)], // 左下：变量 n
+                vec![(0, 2)], // 右下：下限
+                vec![(0, 3)], // 上方：上限
+                vec![(0, 0)], // 右侧：被求和式
+            ],
+            "Σ 的光标顺序必须是 左下→右下→上→右"
+        );
+    }
+
+    /// 积分同族：下（下限）→ 上（上限）→ 右侧主体 → 末尾 d<变量>
+    #[test]
+    fn integral_cursor_order_is_bottom_up_then_body_then_variable() {
+        let d = Doc::from_text("int(x,x,0,1)");
+        let mut seen: Vec<Vec<(usize, usize)>> = Vec::new();
+        for c in d.linear() {
+            if !c.path.is_empty() && !seen.contains(&c.path) {
+                seen.push(c.path.clone());
+            }
+        }
+        assert_eq!(
+            seen,
+            vec![vec![(0, 2)], vec![(0, 3)], vec![(0, 0)], vec![(0, 1)]],
+            "∫ 的光标顺序应是 下限→上限→主体→变量"
+        );
     }
 }

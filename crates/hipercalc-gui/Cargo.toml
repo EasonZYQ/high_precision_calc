@@ -35,7 +35,9 @@ hipercalc = { path = "../hipercalc", version = "2.0.0" }
 # 额外开 `canvas`：根号必须用**矢量路径**画（√ 字符的字形顶钩够不到顶线，
 # 字符 + 顶线的组合在视觉上「上下分离」，见 `mathrender.rs` 的 `Radical`）。
 # canvas 不在 iced 的默认 feature 里，所以要显式打开。
-iced = { workspace = true, features = ["image", "canvas"] }
+# `tokio` 不是给业务用的，只为打开 `iced::time::every` —— 计算中的秒表靠它。
+# 它本来就在依赖树里（iced 的窗口后端要用），所以几乎不增加编译量。
+iced = { workspace = true, features = ["image", "canvas", "tokio"] }
 
 # 桌面复制（Desktop Duplication）：**只有 Windows 需要**，所以放在
 # `[target.'cfg(windows)'.dependencies]` —— 否则 Linux / macOS 的 CI 也要

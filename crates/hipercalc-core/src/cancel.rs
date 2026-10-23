@@ -49,6 +49,14 @@ fn check_with(computing: bool, cancel: bool) -> Result<(), String> {
     }
 }
 
+/// **从界面请求中断**（GUI 的「取消」按钮用；CLI 走控制台信号）。
+///
+/// 只置一个标志，真正的退出发生在求解器的检查点（见模块说明）。
+/// 下一次计算开始时 [`Scope::new`] 会把它清掉，所以不会"误伤"后面的计算。
+pub fn request() {
+    CANCEL.store(true, Ordering::Relaxed);
+}
+
 /// 计算过程中的检查点：被中断时返回 `Err(ERROR_CANCELLED)`
 pub fn check() -> Result<(), String> {
     check_with(is_computing(), CANCEL.load(Ordering::Relaxed))
