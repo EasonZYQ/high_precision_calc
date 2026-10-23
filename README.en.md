@@ -6,6 +6,12 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#install)
 [![Rust](https://img.shields.io/badge/rust-edition%202024-orange.svg)](https://www.rust-lang.org/)
 [![Precision](https://img.shields.io/badge/precision-80%20digits-brightgreen.svg)](docs/DOC.en.md)
+[![Tests](https://img.shields.io/badge/tests-380%20passed-brightgreen.svg)](.github/workflows/ci.yml)
+[![GUI](https://img.shields.io/badge/GUI-Iced%200.14-blueviolet.svg)](crates/hipercalc-gui)
+[![Docs](https://img.shields.io/badge/docs-27%20chapters-yellow.svg)](docs/DOC.en.md)
+[![Stars](https://img.shields.io/github/stars/EasonZYQ/high_precision_calc?label=stars&color=orange)](https://github.com/EasonZYQ/high_precision_calc/stargazers)
+[![Downloads](https://img.shields.io/github/downloads/EasonZYQ/high_precision_calc/total?label=downloads&color=success)](https://github.com/EasonZYQ/high_precision_calc/releases)
+[![Last commit](https://img.shields.io/github/last-commit/EasonZYQ/high_precision_calc)](https://github.com/EasonZYQ/high_precision_calc/commits/main)
 
 **English** · [简体中文](README.md)
 

@@ -11,6 +11,18 @@ README 的两张产品图（`docs/gui-dark.png` / `gui-light.png`）**不是真�
 产物会被 `Snapshot::matches_image` 自动加 `-wgpu` 后缀，缩一半 + 量化 256 色后改名才是进仓库的那两张
 （中间产物已在 .gitignore 里）。浅色那张刻意**不开质感** —— 浅色 + 玻璃 + 亮背景会把文字冲成灰的。
 
+## 仓库元数据（GitHub About / Topics）
+
+- **About 描述**：中英双语、**单行**（GitHub 不允许控制字符 —— 换行会 422 `control characters are not allowed`），
+  中文在前、` | ` 分隔、英文在后。别写成两三段长文（用户要求"简化一下"）。
+- **Topics（20 个）**：`rust` `calculator` `cli` `gui` `iced` `high-precision` `arbitrary-precision`
+  `mathematics` `computer-algebra-system` `symbolic-computation` `calculus` `equation-solver` `matrix`
+  `repl` `i18n` `liquid-glass` `windows` `linux` `macos` `scientific-calculator`
+  （改动用 `gh api -X PUT repos/{owner}/{repo}/topics --input <json>`）。
+- README 徽标维持两排：**第一排健康度**（CI / 版本 / 许可 / 平台 / Rust / 精度），
+  **第二排可发现性**（测试数 / GUI 框架 / 文档章节 / Star / 下载量 / 最近提交）。
+  静态徽标的数字（tests、docs 章节数）**会随版本过期**，发版时顺手改。
+
 ## 硬性要求（用户指定）
 
 - 思考过程与代码注释一律用中文，注释不要用英文。
