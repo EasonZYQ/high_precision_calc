@@ -4,6 +4,7 @@
   "\r用时：{0}秒": "\rTime: {0}s",
   "用时：{0}秒": "Time: {0}s",
   "用时：<1秒": "Time: <1s",
+  "用时：<0.1秒": "Time: <0.1s",
   "读取错误": "Read error",
   "创建 readline 编辑器失败": "Failed to create the readline editor",
   "已切换到数学显示模式 (MathIO)": "Display mode: MathIO (symbolic)",

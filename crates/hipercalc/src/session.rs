@@ -184,6 +184,13 @@ impl Session {
                 is_error: false,
             };
         }
+        // ⚠️ **标记"正在计算"**：取消按钮只置 `cancel::CANCEL`，而 `cancel::check()`
+        // 要求 `COMPUTING` 为真时才真的中断 —— 这个标志以前**只在 CLI** 的
+        // `handle_input_result` 里设，而 GUI 走的是 `Session::eval → run_line`，
+        // 于是"两个取消键点了都没用"（用户 2026-10-23 反馈）。
+        // 放在这里：表达式与 `/指令` 两条分支都覆盖，`Drop` 自动复位。
+        let _cancel_scope = hipercalc_core::cancel::Scope::new();
+
         // 静默开关是进程级的：用户可能在 GUI 里敲过 `/load`，或本进程另有一段 CLI 代码
         // 把它开着。求值前压回"不静默"，否则 `lprint!` 的内容全丢。
         calc_mode::set_quiet(false);
@@ -845,5 +852,53 @@ mod tests {
             let r = s.eval("1/2");
             assert!(!r.text.is_empty(), "混合调用后求值应正常");
         });
+    }
+
+    /// **取消必须真的能中断计算**（用户 2026-10-23："两个取消键点了都没用"）。
+    ///
+    /// 根因：`cancel::check()` 只有在 `COMPUTING` 为真时才中断，而这个标志以前
+    /// **只在 CLI 的 `handle_input_result` 里设**；GUI 走 `Session::eval → run_line`，
+    /// 于是 `request()` 置了 `CANCEL` 也没人看。
+    ///
+    /// 这条用例同时守住两件事：
+    /// 1. 求值期间 `is_computing()` 必须为真（= `Scope` 真的在）；
+    /// 2. 置中断后必须**很快**返回，且结果是「计算已中断」而不是跑完。
+    #[test]
+    fn cancel_request_interrupts_a_long_evaluation() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (tx, rx) = mpsc::channel();
+        let h = std::thread::spawn(move || {
+            let mut s = Session::new();
+            // 被积函数没有初等原函数 ⇒ 走数值积分，几十轮迭代，每轮都有检查点
+            let out = s.eval("int(exp(-x^2),x,0,6)");
+            let _ = tx.send(out.text);
+        });
+
+        // 等它真的开始算（最多 2 秒；起来了就置中断）
+        let mut started = false;
+        for _ in 0..200 {
+            if hipercalc_core::cancel::is_computing() {
+                started = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            started,
+            "求值期间 COMPUTING 未置位 ⇒ 取消标志永远没人检查（这正是那个 bug 的症状）"
+        );
+        hipercalc_core::cancel::request();
+
+        // 置中断后必须很快回来（10 秒还没回来就说明中断根本没生效）
+        let text = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("置中断后计算没有在 10 秒内返回 ⇒ 检查点没生效");
+        assert!(
+            text.contains("中断") || text.contains("中斷"),
+            "取消后应返回「计算已中断」，实际: {text}"
+        );
+        h.join().unwrap();
     }
 }

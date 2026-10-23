@@ -390,9 +390,23 @@ fn definite_finite(
         if !singular_inside(ev, f, var, a, b)? {
             return newton_leibniz(ev, &big_f, var, a, b);
         }
-        return Err(ERROR_INT_SINGULAR.to_string());
+        return Err(singular_err());
     }
     numeric(ev, f, var, a, b)
+}
+
+/// 报告"奇点/非有限值"之前的**统一出口**。
+///
+/// 为什么要绕一层：求值失败有两个完全不同的原因 ——
+/// ①真的算出界了（奇点、复数、溢出）；②**用户点了取消**（`ERROR_CANCELLED`）。
+/// 以前一律当成 ①，于是用户按下取消后看到的是
+/// "被积函数在积分区间内出现奇点或非有限值"，会以为是自己式子写错了。
+/// 现在：被取消时原样冒泡中断错误，其余情况才报奇点。
+fn singular_err() -> String {
+    match hipercalc_core::cancel::check() {
+        Err(cancelled) => cancelled,
+        Ok(()) => ERROR_INT_SINGULAR.to_string(),
+    }
 }
 
 /// 牛顿-莱布尼茨：F(b) - F(a)
@@ -405,12 +419,12 @@ fn newton_leibniz(
 ) -> Result<Number, String> {
     let fa = ev
         .evaluate_with_var(big_f, var, a)
-        .map_err(|_| ERROR_INT_SINGULAR.to_string())?;
+        .map_err(|_| singular_err())?;
     let fb = ev
         .evaluate_with_var(big_f, var, b)
-        .map_err(|_| ERROR_INT_SINGULAR.to_string())?;
+        .map_err(|_| singular_err())?;
     if fa.is_complex() || fb.is_complex() {
-        return Err(ERROR_INT_SINGULAR.to_string());
+        return Err(singular_err());
     }
     Ok(hipercalc_core::number::Number::sub(&fb, &fa))
 }
@@ -705,9 +719,9 @@ impl<'a> Integrator<'a> {
         let v = self
             .ev
             .evaluate_with_var(self.f, self.var, x)
-            .map_err(|_| ERROR_INT_SINGULAR.to_string())?;
+            .map_err(|_| singular_err())?;
         if v.is_complex() {
-            return Err(ERROR_INT_SINGULAR.to_string());
+            return Err(singular_err());
         }
         Ok(v)
     }

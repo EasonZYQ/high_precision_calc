@@ -2765,28 +2765,29 @@ fn is_precise(text: &str) -> bool {
 /// **恒为真**（除非这行是错误）—— 原因见 `history_entry` 的注释：回显是用户
 /// 自己敲的表达式，天生就是数学式，**不随显示模式（MathIO / LineIO）变化**。
 /// 抽成函数是为了能单测这条约定（用户要求："根号应当始终渲染"）。
-/// 把实测耗时格式化成展示文本，**口径与 CLI 完全一致**。
+/// 把实测耗时格式化成展示文本（**精确到 0.1 秒**）。
 ///
-/// CLI 的 `Timing::elapsed_text`（`crates/hipercalc/src/lib.rs`）是：
+/// 用户 2026-10-23："把计算完的用时精确到 0.1s" —— 所以从"只报整秒"改成一位小数。
 ///
-/// ```text
-/// 整秒；不足 1 秒显示 `用时：<1秒`；关闭计时显示时返回空串
-/// ```
+/// 两条规则：
+/// - **向下取整到 0.1 秒**（`1.99s` → `1.9秒`），**不四舍五入** ——
+///   宁可少报也不要多报：`1.99` 说成 `2.0` 会让用户以为比实际更慢；
+/// - **不足 0.1 秒显示 `<0.1秒`**，而不是 `0.0秒` —— 后者会让人以为"没计时"。
 ///
-/// 这里照抄它的两条规则：
-/// - **只报整秒**、向下取整（`1.99 秒` 显示 `用时：1秒`）——
-///   用户要的是量级（`100^100^10` 是"几十秒"还是"零点几秒"），不是毫秒精度；
-/// - **不足 1 秒显示 `<1秒`**，而不是 `0秒` —— 后者会让人以为"没计时"。
+/// ⚠️ CLI 仍是**整秒**口径（`Timing::elapsed_text`）：CLI 每行都打一条，
+/// 一位小数会把输出挤得很吵；两边刻意不同，不要"顺手统一"。
 ///
-/// 文案过 `i18n`（`用时：{0}秒` / `用时：<1秒` 两条词条已在词典里），
-/// 所以切到 English 会变成 `Time: 3s`。
+/// 文案过 `i18n`（`用时：{0}秒` / `用时：<0.1秒` 两条词条在词典里）。
 fn elapsed_text(d: std::time::Duration) -> String {
-    let secs = d.as_secs();
-    if secs < 1 {
-        t("用时：<1秒")
-    } else {
-        t_fmt("用时：{0}秒", &[&secs.to_string()])
+    // 直接用整数运算算 0.1 秒的个数，避免浮点格式化带来的舍入惊喜
+    let tenths = d.as_millis() / 100;
+    if tenths == 0 {
+        return t("用时：<0.1秒");
     }
+    t_fmt(
+        "用时：{0}秒",
+        &[&format!("{}.{}", tenths / 10, tenths % 10)],
+    )
 }
 
 /// 订阅：窗口事件（亚克力探测）+ 键盘修饰键状态（区分 Enter / Ctrl+Enter）。
@@ -3260,34 +3261,29 @@ mod tests {
     }
 
     #[test]
-    fn elapsed_text_matches_cli_convention() {
+    fn elapsed_text_is_precise_to_a_tenth_of_a_second() {
         use std::time::Duration;
         let _ = State::default().update(Message::SetLang(UiLang::ZhCn));
 
-        // 不足 1 秒 → `<1秒`（**不是** `0秒`：后者会让人以为没计时）
+        // 用户 2026-10-23："把计算完的用时精确到 0.1s"
+        assert_eq!(elapsed_text(Duration::from_millis(1000)), "用时：1.0秒");
+        // **向下取整**：1.99 秒是 1.9，不是 2.0（宁可少报也不多报）
+        assert_eq!(elapsed_text(Duration::from_millis(1999)), "用时：1.9秒");
+        assert_eq!(elapsed_text(Duration::from_millis(1234)), "用时：1.2秒");
+        assert_eq!(elapsed_text(Duration::from_secs(125)), "用时：125.0秒");
+        // 不足 0.1 秒：给 `<0.1秒`，不是 `0.0秒`（后者像"没计时"）
         for d in [
             Duration::ZERO,
-            Duration::from_millis(1),
-            Duration::from_millis(999),
             Duration::from_micros(1),
+            Duration::from_millis(99),
         ] {
-            let s = elapsed_text(d);
-            assert!(
-                s.contains("<1"),
-                "{d:?} 应显示 <1秒，实际 {s:?}（对齐 CLI 的 elapsed_text）"
+            assert_eq!(
+                elapsed_text(d),
+                "用时：<0.1秒",
+                "{d:?} 应显示 <0.1秒，实际 {:?}",
+                elapsed_text(d)
             );
         }
-
-        // 整秒向下取整：1.99 秒 = `用时：1秒`（不是 2 秒）
-        assert!(elapsed_text(Duration::from_millis(1000)).contains('1'));
-        assert!(elapsed_text(Duration::from_millis(1999)).contains('1'));
-        assert_eq!(
-            elapsed_text(Duration::from_millis(1999)),
-            elapsed_text(Duration::from_millis(1000)),
-            "1.99 秒与 1.00 秒都应取整成 1 秒（向下取整，不四舍五入）"
-        );
-        assert!(elapsed_text(Duration::from_secs(2)).contains('2'));
-        assert!(elapsed_text(Duration::from_secs(125)).contains("125"));
     }
 
     /// 耗时文案跟着界面语言走（`用时：{0}秒` / `用时：<1秒` 两条词条都在词典里）
