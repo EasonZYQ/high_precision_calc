@@ -56,8 +56,18 @@ use crate::theme::{self, MathFont};
 /// 硬套会渲染成豆腐块（`⌫` 实测如此）。这些键保持默认字体。
 const UI_ICON_KEYS: &[&str] = &["⌫"];
 
-/// 函数面板每行的列数。抽成常量是因为 `func_panel` 的分行逻辑与测试都依赖它。
-const FN_COLS: usize = 7;
+/// **函数面板浮层**的尺寸与锚定（Desmos 式小面板，用户 2026-10-24 拍板）。
+///
+/// 固定宽度是"目录可扫读"的前提：一行一条、签名+说明+问号右对齐，
+/// 宽度抖动的列表没法扫。高度同理 —— 比键盘略高一点，底部锚在 `ƒ` 键上方。
+const FN_PANEL_W: f32 = 440.0;
+const FN_PANEL_H: f32 = 380.0;
+/// 浮层底部距窗口底边的距离 = **整个键盘区的高度**（含容器 padding 与分区标题）。
+/// 键盘区 ≈ 标题行 26 + 分隔线 1 + 4 行键（4×40 + 3×5）+ 两级 spacing ≈ 235，
+/// 留 250 让面板底边正好悬在"展开函数面板"按钮上方。改键盘行数时这里要跟着调。
+const FN_PANEL_BOTTOM_PAD: f32 = 250.0;
+/// 浮层右缘距窗口右边的距离（对齐 `ƒ` 按钮附近，照 Desmos 的锚定观感）。
+const FN_PANEL_RIGHT_PAD: f32 = 26.0;
 
 /// 一条历史记录
 #[derive(Debug, Clone)]
@@ -84,16 +94,6 @@ struct Entry {
     /// 所以格式化推迟到 `history_entry` 里做。
     elapsed: std::time::Duration,
 }
-
-/// 函数面板里每个按钮的宽度。
-///
-/// 取一个**固定值**而不是 `Length::Shrink`：按钮内容差异极大
-/// （`√` 只有 1 个字符，`transpose` 有 9 个），Shrink 会让整行宽窄参差，
-/// 而且单字符标签会把下方的中文说明挤没（见 `func_panel` 的注释）。
-///
-/// 112 px 是实测值：再窄一点，微积分组的说明（`定积分 int(f,x,a,b)`，10px 字号）
-/// 就会折成两行、把整排按钮撑高，看起来像布局出错。
-const FN_BUTTON_W: f32 = 112.0;
 
 /// 虚拟键盘按键的字号。
 ///
@@ -1561,12 +1561,21 @@ impl State {
             )
             .on_press(Message::CloseFuncs);
 
+            // ⚠️ **Desmos 式锚定**（用户 2026-10-24 拍板的小面板方案）：
+            // 面板不再是"居中的大卡"，而是**悬在 `ƒ` 按钮上方**的一块小浮层 ——
+            // 右下对齐 + 底部留出整个键盘区的高度，看起来就像从 `ƒ` 键上弹出来的。
             let panel = container(self.func_panel())
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .padding(28)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill);
+                .align_x(Alignment::End)
+                .align_y(Alignment::End)
+                // ⚠️ iced 的 `Padding` 只支持单值/二元组，四向要写字面量结构
+                .padding(iced::Padding {
+                    top: 0.0,
+                    right: FN_PANEL_RIGHT_PAD,
+                    bottom: FN_PANEL_BOTTOM_PAD,
+                    left: 0.0,
+                });
 
             // ⚠️ **必须把 `body` 垫在最底下**（用户："我的意思不是遮住整个界面，
             // 是设置这个小框在最顶层，不是全部遮住啊"）。
@@ -2751,79 +2760,136 @@ impl State {
 
     // ── 函数弹窗 ────────────────────────────────────────────────────────────
 
+    /// **Desmos 式函数面板**（用户 2026-10-24 拍板）：悬在 `ƒ` 键上方的小浮层，
+    /// 一行一条、上下滚动。每条 = **结构化签名** + 一行简述 + 带圈 `?`（悬停出详细用法）。
+    ///
+    /// ## 与旧版（7 列小按钮网格）的差别
+    ///
+    /// 旧版一行 7 个小按钮只有函数名，参数与用法完全看不到；改版后一行一条
+    /// 信息完整。代价是面板变高、需要滚动 —— 所以固定 [`FN_PANEL_W`]×[`FN_PANEL_H`]，
+    /// 超出部分交给 `scrollable`，锚定交给 view 侧的容器（见 `view_inner`）。
     fn func_panel(&self) -> Element<'_, Message> {
-        // 每个分组按每行 `COLS` 个**手动切行**。
-        //
-        // ⚠️ 两个都试过的坑：
-        // 1. 单个 `Row` —— 不换行，按钮加宽后放不下的项被**静默裁掉**
-        //    （三角组直接看不到 `cosh` / `tanh`）；
-        // 2. `Grid::columns(n)` —— 会换行，但 `Grid` 的语义是**整行等高**，
-        //    换行后第一行被撑到几十像素高，看起来像布局崩了。
-        // 手动切行用普通 `Row`，行高由内容决定，两个问题都没有。
-        const COLS: usize = FN_COLS;
-
-        let mut body = Column::new().spacing(12);
+        let mut body = Column::new().spacing(14);
         for (gi, g) in FN_GROUPS.iter().enumerate() {
-            let mut items_col = Column::new().spacing(6);
-            for (chunk_i, chunk) in g.items.chunks(COLS).enumerate() {
-                let mut r = Row::new().spacing(6).align_y(Alignment::Center);
-                for (j, it) in chunk.iter().enumerate() {
-                    // 全局下标 = 本行起点 + 列偏移（chunks 会丢掉原始下标，得自己算）
-                    let ii = chunk_i * COLS + j;
-                    r = r.push(
-                        button(
-                            column![
-                                // 函数名是拉丁文（`sin`、`transpose`），走数学字体；
-                                // 说明是中文，走等线。
-                                text(it.label).size(15).font(theme::font_math()),
-                                theme::label(t(it.about)).size(10).style(theme::hint),
-                            ]
-                            .spacing(1)
-                            .align_x(Alignment::Center),
-                        )
-                        // ⚠️ 固定宽度**必须有**：`√` / `∛` 这类单字符标签会让按钮
-                        // shrink 到只剩符号本身，下面那行说明文字（"平方根"/"立方根"）
-                        // 就被挤没了 —— 第一版快照里这两个按钮是空白的，就是这个原因。
-                        .width(Length::Fixed(FN_BUTTON_W))
-                        .padding([7, 6])
-                        .style(|t, s| theme::key(t, KeyKind::Function, s))
-                        .on_press(Message::Function(gi, ii)),
-                    );
-                }
-                items_col = items_col.push(r);
+            let mut items_col = Column::new().spacing(2);
+            for (ii, it) in g.items.iter().enumerate() {
+                items_col = items_col.push(Self::func_entry(gi, ii, it));
             }
             body = body.push(
                 column![
-                    theme::label(t(g.title)).size(13).style(theme::accent_text),
+                    theme::label(t(g.title)).size(12).style(theme::accent_text),
                     items_col,
                 ]
-                .spacing(6),
+                .spacing(4),
             );
         }
 
         let card = container(
             column![
+                // 头部只留一个"关闭"：小浮层不需要大标题（分组标题本身就是导航）
                 row![
-                    theme::label(t("展开函数面板")).size(17),
+                    text("ƒ")
+                        .size(16)
+                        .font(theme::font_math())
+                        .style(theme::accent_text),
                     Space::new().width(Length::Fill),
-                    button(theme::label(t("关闭函数面板")).size(13))
-                        .padding([4, 12])
+                    button(text("×").size(14))
+                        .padding([2, 8])
                         .style(|t, s| theme::mode_chip(t, s, false))
                         .on_press(Message::CloseFuncs),
                 ]
                 .align_y(Alignment::Center),
                 rule::horizontal(1.0).style(theme::divider),
-                scrollable(body).height(Length::Fill),
+                scrollable(body).width(Length::Fill).height(Length::Fill),
             ]
-            .spacing(10),
+            .spacing(8),
         )
-        .width(Length::FillPortion(4))
-        .height(Length::FillPortion(5))
-        .padding(16)
+        .width(Length::Fixed(FN_PANEL_W))
+        .height(Length::Fixed(FN_PANEL_H))
+        .padding(12)
         // 与设置面板同理：浮层必须压得住下面的内容（见 `theme::dialog`）
         .style(theme::dialog);
 
         card.into()
+    }
+
+    /// 函数面板里的**一条**目录项：签名 + 简述 + 带圈问号。
+    ///
+    /// 整行是一个按钮（点了插入函数）；问号叠在行内右侧，悬停弹出详细用法。
+    fn func_entry(gi: usize, ii: usize, it: &crate::keypad::FnItem) -> Element<'static, Message> {
+        // ── 签名：交给 mathrender 排版 ─────────────────────────────────────
+        // 含逗号的签名**必须退回纯文本**：mathrender 把逗号当参数分隔符渲染成空
+        // （见 `mathrender::Node::Comma`），直排会让 `diff(f, x)` 丢掉逗号。
+        let sig_style = mathrender::Style2 {
+            size: 16.0,
+            ..mathrender::Style2::default()
+        };
+        let math = |s: &'static str| mathrender::render(s, !s.contains(','), sig_style, None);
+        // log 的底数下标要**夹在名字与括号之间**（`log_b(x)`）：
+        // 所以带下标的条目，sig 只写名字部分（"log"），"(x)" 由这里补排。
+        // ⚠️ 第一版把下标拼在整串签名后面，得到 `log(x)_b`，顺序是错的。
+        let sig: Element<'static, Message> = match it.sub {
+            None => math(it.sig),
+            Some(sub) => row![
+                math(it.sig),
+                container(
+                    text(sub.to_string())
+                        .size(11)
+                        .font(theme::font_math_italic())
+                )
+                // 下移量 ≈ 主字号的一半，让 `b` 落在基线之下（视觉下标）
+                .padding([9.0, 1.0]),
+                math("(x)"),
+            ]
+            .align_y(Alignment::Start)
+            .into(),
+        };
+
+        // ── 带圈问号：悬停出详细用法 ────────────────────────────────────────
+        let c = theme::colors();
+        let help = container(text("?").size(11).font(theme::font_cjk()).style(move |_t| {
+            iced::widget::text::Style {
+                color: Some(c.text_dim),
+            }
+        }))
+        .width(Length::Fixed(18.0))
+        .height(Length::Fixed(18.0))
+        .center_x(Length::Fixed(18.0))
+        .center_y(Length::Fixed(18.0))
+        .style(move |_t| container::Style {
+            // 圆圈 = 正方形 + 全圆角；描边用面板高光色，不抢签名的注意力
+            border: iced::Border {
+                radius: 9.0.into(),
+                width: 1.0,
+                color: c.stroke,
+            },
+            ..container::Style::default()
+        });
+        let help = iced::widget::tooltip(
+            help,
+            container(theme::label(t(it.detail)).size(12))
+                .max_width(320)
+                .padding(10)
+                .style(theme::dialog),
+            iced::widget::tooltip::Position::Right,
+        );
+
+        // ── 整行按钮 ────────────────────────────────────────────────────────
+        button(
+            row![
+                column![sig, theme::label(t(it.about)).size(11).style(theme::hint)]
+                    .spacing(2)
+                    .width(Length::Fill),
+                help,
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8),
+        )
+        .width(Length::Fill)
+        .padding([5, 8])
+        .style(|t, s| theme::key(t, KeyKind::Function, s))
+        .on_press(Message::Function(gi, ii))
+        .into()
     }
 }
 
@@ -4294,30 +4360,32 @@ mod tests {
         let _ = s.update(Message::SetCalc(false));
     }
 
-    /// 函数面板按每行 7 个切行时，**全局下标必须逐行累加**。
+    /// 函数面板"一行一条"之后，**面板下标必须与 `FN_GROUPS` 的条目一一对应**。
     ///
-    /// `chunks(7)` 丢掉原始下标，要自己算 `chunk_i * 7 + j`。
-    /// 写错的话第 8 项之后点下去会插错函数。
-    /// 这里用真实的 `Message::Function` 验证：算出的下标 → 插入的文本必须对得上。
+    /// 旧版按 7 列切行、要手工把"第几行第几列"累加成全局下标（`chunks` 丢下标
+    /// 是当时的坑）；改版后一行一条，下标天然就是条目下标 —— 这条测试改盯
+    /// "每个分组逐条点过去，插入的文本必须与条目一致"，防止将来再改布局时
+    /// 把下标对错位。
     #[test]
-    fn function_panel_index_survives_chunking() {
-        const COLS: usize = FN_COLS;
-        // 三角组有 9 项：下标 0..=6 在第一行，7、8 在第二行（跨行处最容易算错）
-        assert!(
-            FN_GROUPS[0].items.len() > COLS,
-            "这条测试要求三角组超过一行，否则验证不到跨行"
-        );
-
-        for (chunk_i, chunk) in FN_GROUPS[0].items.chunks(COLS).enumerate() {
-            for (j, it) in chunk.iter().enumerate() {
-                let ii = chunk_i * COLS + j;
+    fn function_panel_index_maps_to_entries() {
+        for (gi, g) in FN_GROUPS.iter().enumerate() {
+            for (ii, it) in g.items.iter().enumerate() {
                 let mut s = State::default();
-                let _ = s.update(Message::Function(0, ii));
+                let _ = s.update(Message::Function(gi, ii));
+                // ⚠️ `∑` / `∏` 不是普通文本插入：`insert` 会把它们升级成
+                // **结构化大运算符**（Σ 四个空位 + 默认变量 n，见 `insert`），
+                // 线性化文本因此是 `sum(,n,,)` 而不是键面写的 `∑()`。
+                let expected: &str = match it.insert {
+                    "∑()" => "sum(,n,,)",
+                    "∏()" => "prod(,n,,)",
+                    // 结构化输入的线性化会**去掉空格**（空格不是记号）
+                    "triangle(a= b= c=)" => "triangle(a=b=c=)",
+                    other => other,
+                };
                 assert_eq!(
                     s.input_text(),
-                    it.insert,
-                    "下标 {ii}（第 {chunk_i} 行第 {j} 列）应插入 {:?}，实际插入了 {:?}",
-                    it.insert,
+                    expected,
+                    "分组 {gi} 第 {ii} 条应插入 {expected:?}，实际插入了 {:?}",
                     s.input_text()
                 );
             }

@@ -285,20 +285,45 @@ pub struct FnGroup {
 }
 
 /// 函数目录中的一项
+///
+/// ## 2026-10-24 面板改版后每个条目自带四样东西
+///
+/// 面板从"7 列小按钮"改成"一行一条"的目录（Desmos 式小浮层），每行要展示：
+/// **结构化签名** + 一行简述 + 问号悬停的详细用法。所以条目从三字段扩到五字段。
 pub struct FnItem {
     /// 插入的文本（含括号，光标会自动落进括号内）
     pub insert: &'static str,
-    /// 键面显示（`sqrt` 显示成 `√` 更直观）
-    pub label: &'static str,
-    /// 简短说明（中文，鼠标悬停/列表里显示）
+    /// 面板里展示的**结构化签名**，交给 mathrender 排版（如 `sin(x)`、`sqrt(x)`）。
+    ///
+    /// ⚠️ 两个排版陷阱：
+    /// - `sqrt(x)` 要写成**文本形式**才会被排成真正的根号（矢量画的 √ 折线 +
+    ///   顶线）；字面 `√` 字符只会当普通文本。所以平方根的 sig 是 `sqrt(x)`；
+    /// - **含逗号的签名会自动退回纯文本排版**（app 侧按"有没有 `,`"分流）：
+    ///   mathrender 把逗号当参数分隔符、渲染成空（见 `mathrender::Node::Comma`），
+    ///   `diff(f, x)` 直排会变成 `diff(f x)`，逗号凭空消失。
+    pub sig: &'static str,
+    /// 签名里的**下标**（log 的底数 `b`）；`None` = 没有下标
+    pub sub: Option<&'static str>,
+    /// 一行简述（条目下方的小字）
     pub about: &'static str,
+    /// 问号悬停弹出的**详细用法**（说明 + 实测过的例子）。
+    /// 例子一律用 CLI 跑过核对（如 `nCr(5,2) = 10`），不许凭记忆写。
+    pub detail: &'static str,
 }
 
-const fn f(insert: &'static str, label: &'static str, about: &'static str) -> FnItem {
+const fn f(
+    insert: &'static str,
+    sig: &'static str,
+    sub: Option<&'static str>,
+    about: &'static str,
+    detail: &'static str,
+) -> FnItem {
     FnItem {
         insert,
-        label,
+        sig,
+        sub,
         about,
+        detail,
     }
 }
 
@@ -308,85 +333,346 @@ pub const FN_GROUPS: &[FnGroup] = &[
     FnGroup {
         title: "三角",
         // 六个三角 + 六个反三角**必须全部出现**（用户 2026-10-24 要求）。
-        // 反三角的键面渲染成 `sin⁻¹` 这种上标写法（比 `asin` 更贴合数学约定），
+        // 反三角的签名渲染成 `sin⁻¹(x)` 这种上标写法（比 `asin` 更贴合数学约定），
         // 但插入的仍是 `asin()` —— core 认那个名字。
         items: &[
-            f("sin()", "sin", "正弦"),
-            f("cos()", "cos", "余弦"),
-            f("tan()", "tan", "正切"),
-            f("cot()", "cot", "余切"),
-            f("sec()", "sec", "正割"),
-            f("csc()", "csc", "余割"),
-            f("asin()", "sin⁻¹", "反正弦"),
-            f("acos()", "cos⁻¹", "反余弦"),
-            f("atan()", "tan⁻¹", "反正切"),
-            f("acot()", "cot⁻¹", "反余切"),
-            f("asec()", "sec⁻¹", "反正割"),
-            f("acsc()", "csc⁻¹", "反余割"),
-            f("sinh()", "sinh", "双曲正弦"),
-            f("cosh()", "cosh", "双曲余弦"),
-            f("tanh()", "tanh", "双曲正切"),
+            f(
+                "sin()",
+                "sin(x)",
+                None,
+                "正弦",
+                "正弦函数。例：sin(π/6) = 1/2（弧度制）；角度制/弧度制由全局设置决定。",
+            ),
+            f(
+                "cos()",
+                "cos(x)",
+                None,
+                "余弦",
+                "余弦函数。例：cos(π/3) = 1/2。",
+            ),
+            f(
+                "tan()",
+                "tan(x)",
+                None,
+                "正切",
+                "正切函数，sin(x)/cos(x)；在 cos(x) = 0 处无定义。例：tan(π/4) = 1。",
+            ),
+            f(
+                "cot()",
+                "cot(x)",
+                None,
+                "余切",
+                "余切函数，cos(x)/sin(x)；在 sin(x) = 0 处无定义。例：cot(π/4) = 1。",
+            ),
+            f(
+                "sec()",
+                "sec(x)",
+                None,
+                "正割",
+                "正割函数，1/cos(x)。例：sec(π/3) = 2。",
+            ),
+            f(
+                "csc()",
+                "csc(x)",
+                None,
+                "余割",
+                "余割函数，1/sin(x)。例：csc(π/6) = 2。",
+            ),
+            f(
+                "asin()",
+                "sin⁻¹(x)",
+                None,
+                "反正弦",
+                "反正弦。输入范围 [-1, 1]，返回角。例：asin(1/2) = π/6。",
+            ),
+            f(
+                "acos()",
+                "cos⁻¹(x)",
+                None,
+                "反余弦",
+                "反余弦。输入范围 [-1, 1]。例：acos(1/2) = π/3。",
+            ),
+            f(
+                "atan()",
+                "tan⁻¹(x)",
+                None,
+                "反正切",
+                "反正切。输入任意实数。例：atan(1) = π/4。",
+            ),
+            f(
+                "acot()",
+                "cot⁻¹(x)",
+                None,
+                "反余切",
+                "反余切。例：acot(1) = π/4。",
+            ),
+            f(
+                "asec()",
+                "sec⁻¹(x)",
+                None,
+                "反正割",
+                "反正割，要求 |x| ≥ 1。例：asec(2) = π/3。",
+            ),
+            f(
+                "acsc()",
+                "csc⁻¹(x)",
+                None,
+                "反余割",
+                "反余割，要求 |x| ≥ 1。例：acsc(2) = π/6。",
+            ),
+            f(
+                "sinh()",
+                "sinh(x)",
+                None,
+                "双曲正弦",
+                "双曲正弦，(e^x − e^(−x))/2。例：sinh(0) = 0。",
+            ),
+            f(
+                "cosh()",
+                "cosh(x)",
+                None,
+                "双曲余弦",
+                "双曲余弦，(e^x + e^(−x))/2。例：cosh(0) = 1。",
+            ),
+            f(
+                "tanh()",
+                "tanh(x)",
+                None,
+                "双曲正切",
+                "双曲正切，sinh(x)/cosh(x)，值域 (−1, 1)。",
+            ),
         ],
     },
     FnGroup {
         title: "对数与指数",
         items: &[
-            f("log()", "log", "对数 log(base, x)"),
-            f("ln()", "ln", "自然对数"),
-            f("exp()", "exp", "指数 e^x"),
-            f("sqrt()", "√", "平方根"),
-            f("cbrt()", "∛", "立方根"),
-            f("abs()", "|x|", "绝对值"),
+            // ⚠️ 插入串是 `log(,)`：第一个槽是底数、第二个是真数（与 `diff(,x)`
+            //    同一套"空槽"约定）。旧版 `log()` 只给一个空位，用户得自己补逗号。
+            //    sig 只写名字 "log"：下标条目的 "(x)" 由 app 侧补排（见 func_entry），
+            //    这样底数下标才能夹在 log 与 (x) 之间。
+            f(
+                "log(,)",
+                "log",
+                Some("b"),
+                "对数 log(base, x)",
+                "对数：log(b, x) 求以 b 为底 x 的对数，两个参数都须为正。例：log(2, 8) = 3。",
+            ),
+            f(
+                "ln()",
+                "ln(x)",
+                None,
+                "自然对数",
+                "自然对数（以 e 为底）。例：ln(e^2) = 2。",
+            ),
+            f(
+                "exp()",
+                "exp(x)",
+                None,
+                "指数 e^x",
+                "指数函数 e^x。例：exp(1) ≈ 2.718。",
+            ),
+            // sig 写 `sqrt(x)`（文本形式）才会被排成矢量根号；字面 `√` 只是普通文本
+            f(
+                "sqrt()",
+                "sqrt(x)",
+                None,
+                "平方根",
+                "平方根 √x，要求 x ≥ 0，结果取非负值。例：√9 = 3。",
+            ),
+            f(
+                "cbrt()",
+                "∛(x)",
+                None,
+                "立方根",
+                "立方根，对任意实数（含负数）有定义。例：∛27 = 3。",
+            ),
+            f("abs()", "|x|", None, "绝对值", "绝对值。例：|−5| = 5。"),
         ],
     },
     FnGroup {
         title: "微积分",
         items: &[
-            f("diff(,x)", "diff", "求导 diff(f, x)"),
-            f("int(,x,0,1)", "int", "定积分 int(f,x,a,b)"),
-            f("lim(,x,0)", "lim", "极限 lim(f, x, a)"),
+            f(
+                "diff(,x)",
+                "diff(f, x)",
+                None,
+                "求导",
+                "求导：diff(f, x) 对变量 x 求 f 的导数。例：diff(x^2, x) = 2x。",
+            ),
+            f(
+                "int(,x,0,1)",
+                "int(f, x, a, b)",
+                None,
+                "定积分",
+                "定积分：int(f, x, a, b) 计算 f 从 a 到 b 的定积分。例：int(x^2, x, 0, 1) = 1/3。",
+            ),
+            f(
+                "lim(,x,0)",
+                "lim(f, x, a)",
+                None,
+                "极限",
+                "极限：lim(f, x, a) 求 x 趋于 a 时 f 的极限。例：lim(sin(x)/x, x, 0) = 1。",
+            ),
             // ⚠️ 插入时**不带参数**（曾经是 `sum(,k,1,10)`）：那些预填的值会让用户
             //    以为"参数是定死的"，而他要改的时候还得先删掉它们 ——
             //    用户原话："求和符号这种符号输入时应当无参数"。
-            f("∑()", "sum", "求和 sum(f,k,a,b)"),
-            f("∏()", "prod", "求积 prod(f,k,a,b)"),
+            f(
+                "∑()",
+                "sum(f, k, a, b)",
+                None,
+                "求和",
+                "求和 Σ：sum(f, k, a, b) 对 k 从 a 到 b 逐项求和。例：sum(k^2, k, 1, 3) = 14。",
+            ),
+            f(
+                "∏()",
+                "prod(f, k, a, b)",
+                None,
+                "求积",
+                "求积 Π：prod(f, k, a, b) 对 k 从 a 到 b 连乘。例：prod(k, k, 1, 4) = 24。",
+            ),
         ],
     },
     FnGroup {
         title: "方程与多项式",
         items: &[
-            f("fac()", "fac", "因式分解"),
-            f("primefac()", "primefac", "素因数分解"),
-            f("gcd(,)", "gcd", "最大公约数"),
-            f("lcm(,)", "lcm", "最小公倍数"),
+            f(
+                "fac()",
+                "fac(f)",
+                None,
+                "因式分解",
+                "因式分解：fac(多项式) 分解为因式乘积。例：fac(x^2 − 1) = (x − 1)(x + 1)。",
+            ),
+            f(
+                "primefac()",
+                "primefac(n)",
+                None,
+                "素因数分解",
+                "素因数分解：primefac(n) 列出 n 的全部素因子。例：primefac(360) = 2^3 · 3^2 · 5。",
+            ),
+            f(
+                "gcd(,)",
+                "gcd(a, b)",
+                None,
+                "最大公约数",
+                "最大公约数：gcd(a, b)，a、b 为非零整数，结果恒非负。例：gcd(12, 18) = 6。",
+            ),
+            f(
+                "lcm(,)",
+                "lcm(a, b)",
+                None,
+                "最小公倍数",
+                "最小公倍数：lcm(a, b)，同样要求非零整数。例：lcm(4, 6) = 12。",
+            ),
         ],
     },
     FnGroup {
         title: "统计",
         items: &[
-            f("mean([])", "mean", "平均值 mean([1,2])"),
-            f("median([])", "median", "中位数"),
-            f("stddev([])", "stddev", "标准差 σ"),
-            f("stddev_s([])", "stddev_s", "样本标准差 s"),
-            f("var([])", "var", "方差"),
+            f(
+                "mean([])",
+                "mean([…])",
+                None,
+                "平均值",
+                "算术平均：mean([a, b, …])。例：mean([1, 2, 3]) = 2。",
+            ),
+            f(
+                "median([])",
+                "median([…])",
+                None,
+                "中位数",
+                "中位数：median([...]) 排序后取中间值；偶数个取中间两项的平均。例：median([1, 2, 3]) = 2。",
+            ),
+            f(
+                "stddev([])",
+                "stddev([…])",
+                None,
+                "标准差 σ",
+                "总体标准差（除以 n）：stddev([...])。例：stddev([1, 2, 3]) ≈ 0.816。",
+            ),
+            f(
+                "stddev_s([])",
+                "stddev_s([…])",
+                None,
+                "样本标准差 s",
+                "样本标准差（除以 n − 1）：stddev_s([...])。例：stddev_s([1, 2, 3]) = 1。",
+            ),
+            f(
+                "var([])",
+                "var([…])",
+                None,
+                "方差",
+                "方差：var([...])，等于标准差的平方。例：var([1, 2, 3]) = 2/3。",
+            ),
         ],
     },
     FnGroup {
         title: "数论与组合",
         items: &[
-            f("comb(,)", "comb", "组合数 C(n,k)"),
-            f("perm(,)", "perm", "排列数 P(n,k)"),
-            f("fib()", "fib", "斐波那契数"),
-            f("zeta()", "zeta", "黎曼 ζ 函数"),
+            // ⚠️ core 里的真名是 `nCr` / `nPr`（拉丁写法），不是 `comb` / `perm` ——
+            //    旧条目写错名字，点了就报"未知函数"（改版时用 CLI 实测抓出来的）。
+            f(
+                "nCr(,)",
+                "nCr(n, k)",
+                None,
+                "组合数 C(n,k)",
+                "组合数：nCr(n, k) 从 n 个里选 k 个（不计顺序），要求非负整数。例：nCr(5, 2) = 10。",
+            ),
+            f(
+                "nPr(,)",
+                "nPr(n, k)",
+                None,
+                "排列数 P(n,k)",
+                "排列数：nPr(n, k) 从 n 个里选 k 个排成一列（计顺序）。例：nPr(5, 2) = 20。",
+            ),
+            f(
+                "fib()",
+                "fib(n)",
+                None,
+                "斐波那契数",
+                "斐波那契数：fib(n)，第 0 项为 0、第 1 项为 1。例：fib(10) = 55。",
+            ),
+            f(
+                "zeta()",
+                "zeta(s)",
+                None,
+                "黎曼 ζ 函数",
+                "黎曼 ζ 函数：zeta(s) = Σ 1/k^s，s > 1 时收敛。例：zeta(2) = π²/6 ≈ 1.645。",
+            ),
         ],
     },
     FnGroup {
         title: "矩阵与几何",
         items: &[
-            f("det([[]])", "det", "行列式 det([[1,2]])"),
-            f("inv([[]])", "inv", "逆矩阵"),
-            f("transpose([[]])", "transpose", "转置"),
-            f("triangle()", "triangle", "解三角形"),
+            f(
+                "det([[]])",
+                "det(A)",
+                None,
+                "行列式",
+                "行列式：det(A)。例：det([[1, 2], [3, 4]]) = 1·4 − 2·3 = −2。",
+            ),
+            f(
+                "inv([[]])",
+                "inv(A)",
+                None,
+                "逆矩阵",
+                "逆矩阵：inv(A) 求可逆方阵 A 的逆，满足 A·inv(A) = I。",
+            ),
+            f(
+                "transpose([[]])",
+                "transpose(A)",
+                None,
+                "转置",
+                "转置：transpose(A) 把矩阵的行列互换。例：transpose([[1, 2], [3, 4]]) = [[1, 3], [2, 4]]。",
+            ),
+            // triangle 的记号是 `记号=表达式`（小写为边、大写为角），
+            // 不是普通的逗号参数 —— 插入串直接给出三边模板。
+            f(
+                "triangle(a= b= c=)",
+                "triangle(a= b= c=)",
+                None,
+                "解三角形",
+                "解三角形：triangle(a= b= c=) 由已知边/角解出全部未知元素、面积与周长。例：triangle(a=3 b=4 c=5)。",
+            ),
         ],
     },
 ];
@@ -612,12 +898,10 @@ mod tests {
             for it in g.items {
                 let open = it.insert.chars().filter(|c| *c == '(').count();
                 let close = it.insert.chars().filter(|c| *c == ')').count();
-                assert_eq!(
-                    open, close,
-                    "{} 的插入串括号不配对：{}",
-                    it.label, it.insert
-                );
-                assert!(!it.about.is_empty(), "{} 缺少说明", it.label);
+                assert_eq!(open, close, "{} 的插入串括号不配对：{}", it.sig, it.insert);
+                assert!(!it.about.is_empty(), "{} 缺少说明", it.sig);
+                assert!(!it.detail.is_empty(), "{} 缺少详细用法", it.sig);
+                assert!(!it.sig.is_empty(), "{} 缺少签名", it.insert);
             }
         }
     }
@@ -634,8 +918,42 @@ mod tests {
                 assert!(
                     chars[c..].contains(&')'),
                     "{} 插入后光标不在括号内：{:?} @ {c}",
-                    it.label,
+                    it.sig,
                     t
+                );
+            }
+        }
+    }
+
+    /// 面板插入串里的函数名必须是解析器**认识**的名字。
+    ///
+    /// ## 为什么要有这条
+    ///
+    /// 面板清单（[`FN_GROUPS`]）与解析器（`parser::FUNCTIONS`）是两份独立维护的
+    /// 名单，离得远了就会各改各的 —— 旧条目写的 `comb()` / `perm()` 在 core 里
+    /// 根本不存在（真名是 `nCr` / `nPr`），点了就报"未知函数"，一直没人发现。
+    /// 抽取规则：取 insert 里第一个 `(` 之前的标识符；`∑`/`∏` 是符号键面、
+    /// 走大运算符渲染，跳过。
+    #[test]
+    fn fn_panel_inserts_use_known_function_names() {
+        use hipercalc::parser_api::{FUNCTIONS, canonical_fn_name};
+
+        for g in FN_GROUPS {
+            for it in g.items {
+                if it.insert.starts_with('∑') || it.insert.starts_with('∏') {
+                    continue;
+                }
+                let name: String = it
+                    .insert
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphabetic())
+                    .collect();
+                // `asin` 这类别名要先规范化成正式名（`arcsin`）再查名单
+                let canonical = canonical_fn_name(&name);
+                assert!(
+                    FUNCTIONS.contains(&canonical),
+                    "{} 插入的函数 {name:?} 不在解析器名单里（面板与 parser::FUNCTIONS 脱节）",
+                    it.sig
                 );
             }
         }

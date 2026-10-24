@@ -114,6 +114,15 @@ pub use session::{Base, LineResult, Session};
 /// 不导出公用就没法写 `match`）。
 pub mod parser_api {
     pub use crate::parser::DisplayMode;
+    /// 解析器认识的全部函数名。
+    ///
+    /// GUI 的函数面板用它做**一致性守卫**：面板条目插入的函数名必须在列，
+    /// 否则点了就报"未知函数"（`comb`/`perm` 写错成死条目就是教训 —— 面板
+    /// 清单和解析器清单离得太远，谁改了谁都不知道）。
+    pub use crate::parser::FUNCTIONS;
+    /// 函数别名规范化（`asin` ⇒ `arcsin`）：守卫测试查名单前先过这一步，
+    /// 否则 `asin` 会被误判成"未知函数"（它在名单里登记的是正式名 `arcsin`）。
+    pub use crate::parser::canonical_fn_name;
 }
 
 /// 全部指令（Tab 补全共用；新增指令时同时改这里与 `handle_command`）

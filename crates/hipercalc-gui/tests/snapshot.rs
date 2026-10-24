@@ -13,8 +13,13 @@
 //!
 //! ## 快照怎么更新
 //!
+//! ⚠️ **基线文件名带 `-wgpu` 后缀**（`matches_image` 内部会把
+//! `funcs.png` 换成 `<stem>-<renderer>.png`，即 `funcs-wgpu.png`）。
+//! 上次改函数面板时对着不存在的 `funcs.png` 删了半天、以为"改了但画面不变"，
+//! 实际基线一直是旁边的 `funcs-wgpu.png` —— 换基线要删它，看效果也要 Read 它。
+//!
 //! `matches_image` 在**文件不存在时会自己创建**并返回 `true`。
-//! 所以改完界面：删掉 `tests/snapshots/*.png` 再跑一次，就得到新基线 ——
+//! 所以改完界面：删掉 `tests/snapshots/*-wgpu.png` 再跑一次，就得到新基线 ——
 //! 然后**必须用 Read 打开 PNG 亲眼看一下**，不能只看测试变绿。
 
 use hipercalc_gui::app::{Message, State};
