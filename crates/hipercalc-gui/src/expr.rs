@@ -54,6 +54,17 @@ pub enum Expr {
     Frac { num: Row, den: Row },
     /// 根号：槽 0 = 被开方式
     Root { inner: Row },
+    /// **n 次根**：槽 0 = 次数（左上角小字），槽 1 = 被开方式
+    ///
+    /// `cbrt`（∛）与 `nroot(x, n)`（ⁿ√）都落在这个节点；`sqrt` 保持 [`Expr::Root`]
+    ///（不带次数，序列化成 `sqrt(...)`，与 core 的两个名字一一对应）。
+    NthRoot { degree: Row, inner: Row },
+    /// **对数**：槽 0 = 底数（渲染成 `log` 的右下标），槽 1 = 真数
+    ///
+    /// Desmos 式的 `log□(x)`：点函数面板的 `log` 插进来的就是它 ——
+    /// 底数是**下标位置的一个空框**，不再是文本 `log(,)` 里那个奇怪的逗号。
+    /// 序列化回 core 认的 `log(base, x)`。
+    Log { base: Row, arg: Row },
     /// 幂：槽 0 = 底数，槽 1 = 指数
     Pow { base: Row, exp: Row },
     /// 大运算符：槽 0 = 主体，1 = 变量，2 = 下限，3 = 上限
@@ -78,6 +89,7 @@ impl Expr {
             Expr::Text(_) => 0,
             Expr::Frac { .. } => 2,
             Expr::Root { .. } => 1,
+            Expr::NthRoot { .. } | Expr::Log { .. } => 2,
             Expr::Pow { .. } => 2,
             Expr::BigOp { .. } => 4,
             Expr::Paren(_) => 1,
@@ -100,6 +112,11 @@ impl Expr {
             Expr::Text(_) => &[],
             Expr::Frac { .. } | Expr::Pow { .. } => &[0, 1],
             Expr::Root { .. } | Expr::Paren(_) => &[0],
+            // ⁿ√：先打次数（左上角）、再打被开方式；∛ 的次数已预填 3，
+            // "第一个空插槽"自然落在被开方式里 —— 两全。
+            Expr::NthRoot { .. } => &[0, 1],
+            // log_b(x)：先打底数（下标框）、再打真数
+            Expr::Log { .. } => &[0, 1],
             Expr::BigOp { kind, .. } => match kind {
                 BigKind::Sum | BigKind::Prod => &[1, 2, 3, 0],
                 BigKind::Integral => &[2, 3, 0, 1],
@@ -119,6 +136,16 @@ impl Expr {
                 _ => None,
             },
             Expr::Root { inner } => (i == 0).then_some(inner),
+            Expr::NthRoot { degree, inner } => match i {
+                0 => Some(degree),
+                1 => Some(inner),
+                _ => None,
+            },
+            Expr::Log { base, arg } => match i {
+                0 => Some(base),
+                1 => Some(arg),
+                _ => None,
+            },
             Expr::Pow { base, exp } => match i {
                 0 => Some(base),
                 1 => Some(exp),
@@ -151,6 +178,16 @@ impl Expr {
                 _ => None,
             },
             Expr::Root { inner } => (i == 0).then_some(inner),
+            Expr::NthRoot { degree, inner } => match i {
+                0 => Some(degree),
+                1 => Some(inner),
+                _ => None,
+            },
+            Expr::Log { base, arg } => match i {
+                0 => Some(base),
+                1 => Some(arg),
+                _ => None,
+            },
             Expr::Pow { base, exp } => match i {
                 0 => Some(base),
                 1 => Some(exp),
@@ -184,6 +221,15 @@ impl Expr {
                 format!("{}/{}", wrap_row(num), wrap_row(den))
             }
             Expr::Root { inner } => format!("sqrt({})", row_source(inner)),
+            // core 的签名：cbrt(x) / nroot(x, n)（参数序：被开方式在前）
+            Expr::NthRoot { degree, inner } => match row_source(degree).as_str() {
+                "3" => format!("cbrt({})", row_source(inner)),
+                d => format!("nroot({},{})", row_source(inner), d),
+            },
+            // core 的签名：log(base, x)
+            Expr::Log { base, arg } => {
+                format!("log({},{})", row_source(base), row_source(arg))
+            }
             Expr::Pow { base, exp } => {
                 format!("{}^{}", wrap_row(base), wrap_row(exp))
             }
@@ -711,8 +757,17 @@ impl Builder<'_> {
     /// 一项 → 节点（递归进插槽）
     fn item(&mut self, e: &Expr, base: &[(usize, usize)], idx: usize) -> Node {
         match e {
-            // ⚠️ 渲染时要把 `pi` / `theta` / `inf` 换成符号（与历史区一致）
-            Expr::Text(s) => Node::Text(crate::mathrender::render_ident(s)),
+            // ⚠️ 渲染时要把 `pi` / `theta` / `inf` 换成符号（与历史区一致）。
+            // 反三角 additionally 显示成 `sin⁻¹`（用户 2026-10-24："sin^-1 打出来
+            // 为什么还是 asin"）—— 只是**显示层**的映射，`source()` 仍是 core 认的
+            // `asin`，两边互不影响。
+            Expr::Text(s) => match inverse_trig_base(s) {
+                Some(name) => Node::Pow(
+                    Box::new(Node::Text(name.to_string())),
+                    Box::new(Node::Text("−1".into())),
+                ),
+                None => Node::Text(crate::mathrender::render_ident(s)),
+            },
             Expr::Frac { num, den } => Node::Frac(
                 Box::new(self.slot_node(num, base, idx, 0)),
                 Box::new(self.slot_node(den, base, idx, 1)),
@@ -721,6 +776,24 @@ impl Builder<'_> {
                 degree: None,
                 inner: Box::new(self.slot_node(inner, base, idx, 0)),
             },
+            // ⁿ√：mathrender 的 Root 本来就支持次数（左上角小字）
+            Expr::NthRoot { degree, inner } => Node::Root {
+                degree: Some(Box::new(self.slot_node(degree, base, idx, 0))),
+                inner: Box::new(self.slot_node(inner, base, idx, 1)),
+            },
+            // log_b(x)：`log` + 右下标（底数框）+ 括号包真数。
+            // 下标用 `Node::Sub`（与上标 Pow 成对）；括号走可缩定界符，
+            // 高度跟着真数走。
+            // ⚠️ 解构名不能叫 `base` —— 会遮住外面的路径参数 `base`。
+            Expr::Log { base: b, arg: a } => Node::Seq(vec![
+                Node::Sub(
+                    Box::new(Node::Text("log".into())),
+                    Box::new(self.slot_node(b, base, idx, 0)),
+                ),
+                Node::Paren {
+                    inner: Box::new(self.slot_node(a, base, idx, 1)),
+                },
+            ]),
             Expr::Pow { base: b, exp } => Node::Pow(
                 Box::new(self.slot_node(b, base, idx, 0)),
                 Box::new(self.slot_node(exp, base, idx, 1)),
@@ -910,9 +983,67 @@ fn close_group(out: &mut Row, buf: &mut String, inner: Row) {
             out.push(Expr::Root { inner });
             return;
         }
+        // `cbrt(..)` → ∛：次数预填 3（与面板点击的观感一致）
+        if name == "cbrt" {
+            *buf = rest;
+            flush(out, buf);
+            out.push(Expr::NthRoot {
+                degree: vec![Expr::Text("3".into())],
+                inner,
+            });
+            return;
+        }
+        // `nroot(x, n)` → ⁿ√：参数序与 core 一致（被开方式在前，实测 nroot(27,3)=3）
+        if name == "nroot" {
+            *buf = rest;
+            flush(out, buf);
+            let mut args = split_args(inner);
+            while args.len() < 2 {
+                args.push(Vec::new());
+            }
+            let mut it = args.into_iter();
+            let x = it.next().unwrap_or_default();
+            let n = it.next().unwrap_or_default();
+            out.push(Expr::NthRoot {
+                degree: n,
+                inner: x,
+            });
+            return;
+        }
+        // `log(base, x)` → log_b(x)：底数进下标框（Desmos 式），
+        // 那个曾经渲染成 `log(,)` 的奇怪逗号从此消失。
+        if name == "log" {
+            *buf = rest;
+            flush(out, buf);
+            let mut args = split_args(inner);
+            while args.len() < 2 {
+                args.push(Vec::new());
+            }
+            let mut it = args.into_iter();
+            let base = it.next().unwrap_or_default();
+            let arg = it.next().unwrap_or_default();
+            out.push(Expr::Log { base, arg });
+            return;
+        }
     }
     flush(out, buf);
     out.push(Expr::Paren(inner));
+}
+
+/// 反三角函数名 → 对应正三角名（显示成 `sin⁻¹` 这种上标写法）。
+///
+/// 短写法（`asin`）与正式名（`arcsin`）都认 —— core 两种都收
+///（见 `canonical_fn_name`），显示层也应当一视同仁。
+fn inverse_trig_base(s: &str) -> Option<&'static str> {
+    Some(match s {
+        "asin" | "arcsin" => "sin",
+        "acos" | "arccos" => "cos",
+        "atan" | "arctan" => "tan",
+        "acot" | "arccot" => "cot",
+        "asec" | "arcsec" => "sec",
+        "acsc" | "arccsc" => "csc",
+        _ => return None,
+    })
 }
 
 /// 把 `buf` 末尾的标识符拆出来：`("2sqrt", ..)` → `("sqrt", "2")`
@@ -997,8 +1128,7 @@ pub fn tokenize(s: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < cs.len() {
-        let c = cs[i];
-        // ⚠️ **换行必须单独成项**：输入框用 `\n` 分隔多行（见 `app::evaluate`），
+        let c = cs[i]; // ⚠️ **换行必须单独成项**：输入框用 `\n` 分隔多行（见 `app::evaluate`），
         // 当成空白丢掉的话多行输入会粘成一行（`1+1` + `2` → `1+12`）。
         if c == '\n' {
             out.push("\n".into());
@@ -1034,10 +1164,43 @@ pub fn tokenize(s: &str) -> Vec<String> {
             i += name.chars().count();
             continue;
         }
+        // 已知**函数名**整体成项（最长优先）：`asin` 不再拆成 4 个单字母 ——
+        // 拆开的后果是显示层没法把它识别成 `sin⁻¹`（用户 2026-10-24）。
+        // ⚠️ 只在**整段一起进来**时生效（粘贴/面板插入/`parse` 的整段缓冲）；
+        // 逐键敲入每次只进一个字符，天然不受影响（退格仍逐字删）。
+        if let Some(name) = match_fn_name(&cs, i) {
+            out.push(name.to_string());
+            i += name.chars().count();
+            continue;
+        }
         out.push(c.to_string());
         i += 1;
     }
     out
+}
+
+/// 函数名的**别名**（core 经 `canonical_fn_name` 规范化；[`FUNCTION_NAMES`] 里
+/// 登记的是正式名，用户手打的短写法也要整体成项）。
+const FN_ALIASES: &[&str] = &[
+    "asin", "acos", "atan", "acot", "asec", "acsc", "asinh", "acosh", "atanh",
+];
+
+/// 在 `cs[i..]` 处做函数名的**最长匹配**。
+///
+/// 名单来自 core 的 `parser::FUNCTIONS`（本 crate 唯一权威函数清单），
+/// 加上 [`FN_ALIASES`]。这里不认识的名字不会被分组 —— 与逐键敲入行为一致。
+fn match_fn_name(cs: &[char], i: usize) -> Option<&'static str> {
+    let mut best: Option<&'static str> = None;
+    let names = hipercalc::parser_api::FUNCTIONS
+        .iter()
+        .chain(FN_ALIASES.iter());
+    for name in names {
+        let nc: Vec<char> = name.chars().collect();
+        if cs[i..].starts_with(&nc) && best.is_none_or(|b| b.chars().count() < nc.len()) {
+            best = Some(name);
+        }
+    }
+    best
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1316,9 +1479,108 @@ mod tests {
     fn abs_and_functions_keep_a_group() {
         let mut d = Doc::default();
         d.insert_key("abs()");
-        // abs 是字母 → 逐字符项；括号是结构
+        // 函数名整体成项（`tokenize` 的函数名分组，与 `pi` 同一套约定）；
+        // 括号是结构。光标落在第 1 项（括号组）的内部。
         assert_eq!(d.source(), "abs()");
-        assert_eq!(d.cursor.path, vec![(3, 0)], "光标应在括号里");
+        assert_eq!(d.cursor.path, vec![(1, 0)], "光标应在括号里");
+    }
+
+    /// 面板点 `log`：应得到**结构化** log（底数是下标框里的空槽），
+    /// 不再是文本 `log(,)` —— 用户 2026-10-24："log 打出来为什么是这个东西"。
+    #[test]
+    fn log_inserts_structured_with_base_slot() {
+        let mut d = Doc::default();
+        d.insert_key("log(,)");
+        assert_eq!(d.root.len(), 1, "log 应当是一个结构节点");
+        let Expr::Log { base, arg } = &d.root[0] else {
+            panic!("应是 Log，实际 {:?}", d.root[0]);
+        };
+        assert!(base.is_empty() && arg.is_empty(), "两个槽都该是空的");
+        assert_eq!(d.source(), "log(,)", "序列化回 core 认的写法");
+        // 光标落在**底数**（视觉顺序的第一个空插槽）
+        assert_eq!(d.cursor.path, vec![(0, 0)], "光标应进底数框");
+    }
+
+    /// 粘贴 `log(2,8)` 也要结构化，且能无损序列化回去。
+    #[test]
+    fn log_pasteparse_round_trips() {
+        let d = Doc::from_text("log(2,8)");
+        let Expr::Log { base, arg } = &d.root[0] else {
+            panic!("应是 Log，实际 {:?}", d.root[0]);
+        };
+        assert_eq!(row_source(base), "2");
+        assert_eq!(row_source(arg), "8");
+        assert_eq!(d.source(), "log(2,8)");
+    }
+
+    /// 面板点 `cbrt`：次数预填 3，光标直接进被开方式。
+    #[test]
+    fn cbrt_inserts_nthroot_with_degree_prefilled() {
+        let mut d = Doc::default();
+        d.insert_key("cbrt()");
+        let Expr::NthRoot { degree, inner } = &d.root[0] else {
+            panic!("应是 NthRoot，实际 {:?}", d.root[0]);
+        };
+        assert_eq!(row_source(degree), "3", "立方根的次数是 3");
+        assert!(inner.is_empty());
+        assert_eq!(d.source(), "cbrt()");
+        assert_eq!(d.cursor.path, vec![(0, 1)], "光标应进被开方式");
+    }
+
+    /// 面板点 `n 次根`：两个槽都空，光标先落次数（视觉顺序第一个）。
+    #[test]
+    fn nroot_inserts_with_both_slots_empty() {
+        let mut d = Doc::default();
+        d.insert_key("nroot(,)");
+        let Expr::NthRoot { degree, inner } = &d.root[0] else {
+            panic!("应是 NthRoot，实际 {:?}", d.root[0]);
+        };
+        assert!(degree.is_empty() && inner.is_empty());
+        assert_eq!(d.cursor.path, vec![(0, 0)], "光标应先进次数框");
+        // 序列化成 core 的参数序：nroot(被开方式, 次数)
+        assert_eq!(d.source(), "nroot(,)");
+    }
+
+    /// `nroot(27,3)` 粘贴 → 结构化 ⁿ√。次数为 3 时序列化**等价折叠**成
+    /// `cbrt(27)`（core 里两者同值，`cbrt` 是更规范的写法）。
+    #[test]
+    fn nroot_pasteparse_round_trips() {
+        let d = Doc::from_text("nroot(27,3)");
+        assert!(matches!(d.root[0], Expr::NthRoot { .. }));
+        assert_eq!(d.source(), "cbrt(27)");
+        // 次数不是 3 时保持 nroot
+        assert_eq!(Doc::from_text("nroot(16,4)").source(), "nroot(16,4)");
+    }
+
+    /// 反三角**显示**成 `sin⁻¹`（上标），但 `source()` 仍是 core 认的 `asin` ——
+    /// 用户 2026-10-24："sin^-1 打出来为什么还是 asin"。
+    #[test]
+    fn inverse_trig_displays_superscript_but_serializes_ascii() {
+        let mut d = Doc::default();
+        d.insert_key("asin()");
+        assert_eq!(d.source(), "asin()", "序列化必须是 core 认的名字");
+        let (node, _) = d.to_node();
+        let flat = flatten_for_test(&node);
+        assert!(flat.contains("sin^−1"), "显示层应出现 sin^−1，实际 {flat}");
+        // 正式名与短名显示一致
+        let d2 = Doc::from_text("arcsin()");
+        let (node2, _) = d2.to_node();
+        assert!(flatten_for_test(&node2).contains("sin^−1"));
+    }
+
+    /// 测试用拍平（与 `to_node` 的渲染 IR 对应）
+    fn flatten_for_test(n: &Node) -> String {
+        match n {
+            Node::Text(s) => s.clone(),
+            Node::Seq(v) => v.iter().map(flatten_for_test).collect(),
+            Node::Pow(a, b) => format!("{}^{}", flatten_for_test(a), flatten_for_test(b)),
+            Node::Sub(a, b) => format!("{}_{}", flatten_for_test(a), flatten_for_test(b)),
+            Node::Paren { inner } => format!("({})", flatten_for_test(inner)),
+            Node::At { inner, .. } | Node::Hit { inner, .. } => flatten_for_test(inner),
+            Node::Root { inner, .. } => format!("√({})", flatten_for_test(inner)),
+            Node::Frac(a, b) => format!("{}/{}", flatten_for_test(a), flatten_for_test(b)),
+            _ => String::new(),
+        }
     }
 
     #[test]
@@ -1351,7 +1613,9 @@ mod tests {
             Node::Paren { inner } => contains_caret(inner),
             Node::Seq(v) => v.iter().any(contains_caret),
             Node::At { inner, .. } | Node::Hit { inner, .. } => contains_caret(inner),
-            Node::Frac(a, b) | Node::Pow(a, b) => contains_caret(a) || contains_caret(b),
+            Node::Frac(a, b) | Node::Pow(a, b) | Node::Sub(a, b) => {
+                contains_caret(a) || contains_caret(b)
+            }
             Node::Root { degree, inner } => {
                 degree.as_ref().is_some_and(|d| contains_caret(d)) || contains_caret(inner)
             }

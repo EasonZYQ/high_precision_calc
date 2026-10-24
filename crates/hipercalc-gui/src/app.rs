@@ -60,8 +60,10 @@ const UI_ICON_KEYS: &[&str] = &["⌫"];
 ///
 /// 固定宽度是"目录可扫读"的前提：一行一条、签名+说明+问号右对齐，
 /// 宽度抖动的列表没法扫。高度同理 —— 比键盘略高一点，底部锚在 `ƒ` 键上方。
-const FN_PANEL_W: f32 = 440.0;
+const FN_PANEL_W: f32 = 464.0;
 const FN_PANEL_H: f32 = 380.0;
+/// 面板一行放**几张卡片**（用户 2026-10-24："一行一个函数太浪费空间，改为一行三个"）。
+const FN_COLS: usize = 3;
 /// 浮层底部距窗口底边的距离 = **整个键盘区的高度**（含容器 padding 与分区标题）。
 /// 键盘区 ≈ 标题行 26 + 分隔线 1 + 4 行键（4×40 + 3×5）+ 两级 spacing ≈ 235，
 /// 留 250 让面板底边正好悬在"展开函数面板"按钮上方。改键盘行数时这里要跟着调。
@@ -1963,6 +1965,8 @@ impl State {
                 size: 15.0,
                 color: Some(theme::colors().text_dim),
                 wrap: self.wrap,
+                // 回显与输入栏是同一串式子，函数名的斜体规则也保持一致
+                italic_names: true,
             },
             // 历史是只读的：占位框不可点
             None,
@@ -2027,6 +2031,9 @@ impl State {
                 // 之前 LineIO 走等宽字体（`!math`），观感上与 MathIO 判若两套；
                 // 等宽的好处只是"小数位对齐"，代价是整块结果区看起来像另一款软件。
                 wrap: self.wrap,
+                // 结果是**程序产出**（`= 3`、`sin(x) = 0.5`），函数名按排版惯例直立；
+                // 斜体只用于输入栏/回显/函数面板（用户 2026-10-24 的要求范围）。
+                italic_names: false,
             },
             // 历史是只读的：结果里的占位框不可点
             None,
@@ -2492,6 +2499,9 @@ impl State {
                     size: 19.0,
                     color: Some(theme::colors().text),
                     wrap: true,
+                    // 输入栏的函数名用斜体（用户 2026-10-24："函数都用黑色斜体字，
+                    // 与输入栏字体相同"—— 输入栏就是那个基准）
+                    italic_names: true,
                 },
                 // 点空槽位框 / 点某个记号 ⇒ 光标落在那里（用户要求）
                 Some(&|id| Message::PlaceCaret(id)),
@@ -2761,19 +2771,31 @@ impl State {
     // ── 函数弹窗 ────────────────────────────────────────────────────────────
 
     /// **Desmos 式函数面板**（用户 2026-10-24 拍板）：悬在 `ƒ` 键上方的小浮层，
-    /// 一行一条、上下滚动。每条 = **结构化签名** + 一行简述 + 带圈 `?`（悬停出详细用法）。
+    /// **一行三个**小卡片、上下滚动。每张卡 = **结构化签名** + 一行简述，
+    /// 右上角带圈 `?`（悬停出详细用法，跟随鼠标弹出、绝不盖住问号本身）。
     ///
-    /// ## 与旧版（7 列小按钮网格）的差别
+    /// ## 布局沿革
     ///
-    /// 旧版一行 7 个小按钮只有函数名，参数与用法完全看不到；改版后一行一条
-    /// 信息完整。代价是面板变高、需要滚动 —— 所以固定 [`FN_PANEL_W`]×[`FN_PANEL_H`]，
-    /// 超出部分交给 `scrollable`，锚定交给 view 侧的容器（见 `view_inner`）。
+    /// 第一版一行一条：信息全但"太浪费空间"（用户 2026-10-24 原话），
+    /// 改成一行三个 —— 卡片窄了，说明只留最短的词（`组合数` 而不是
+    /// `组合数 C(n,k)`），参数细节交给问号的悬停提示。
     fn func_panel(&self) -> Element<'_, Message> {
-        let mut body = Column::new().spacing(14);
+        let mut body = Column::new().spacing(12);
         for (gi, g) in FN_GROUPS.iter().enumerate() {
-            let mut items_col = Column::new().spacing(2);
-            for (ii, it) in g.items.iter().enumerate() {
-                items_col = items_col.push(Self::func_entry(gi, ii, it));
+            let mut items_col = Column::new().spacing(5);
+            // 一行三个，手动切行。行内卡片用等分宽度（FillPortion），
+            // 末行不满三个时补空位，保证卡片宽度与上面几行一致。
+            for (chunk_i, chunk) in g.items.chunks(FN_COLS).enumerate() {
+                let mut r = Row::new().spacing(6).align_y(Alignment::Start);
+                for (j, it) in chunk.iter().enumerate() {
+                    // 全局下标 = 本行起点 + 列偏移（chunks 会丢掉原始下标，得自己算）
+                    let ii = chunk_i * FN_COLS + j;
+                    r = r.push(Self::func_entry(gi, ii, it));
+                }
+                for _ in chunk.len()..FN_COLS {
+                    r = r.push(Space::new().width(Length::FillPortion(1)));
+                }
+                items_col = items_col.push(r);
             }
             body = body.push(
                 column![
@@ -2813,53 +2835,92 @@ impl State {
         card.into()
     }
 
-    /// 函数面板里的**一条**目录项：签名 + 简述 + 带圈问号。
+    /// 函数面板里的一张**小卡片**：结构化签名 + 简述，右上角带圈问号。
     ///
-    /// 整行是一个按钮（点了插入函数）；问号叠在行内右侧，悬停弹出详细用法。
+    /// 整卡是一个按钮（点了插入函数）；问号悬停出详细用法 ——
+    /// 位置用 **FollowCursor**：提示框跟着鼠标走、画在指针**上方**，
+    /// 永远不会盖住问号、也不会被鼠标指针挡住（用户 2026-10-24：
+    /// Right 方位的提示框在最右列会翻到左边、正好压住问号）。
     fn func_entry(gi: usize, ii: usize, it: &crate::keypad::FnItem) -> Element<'static, Message> {
         // ── 签名：交给 mathrender 排版 ─────────────────────────────────────
-        // 含逗号的签名**必须退回纯文本**：mathrender 把逗号当参数分隔符渲染成空
-        // （见 `mathrender::Node::Comma`），直排会让 `diff(f, x)` 丢掉逗号。
+        // 颜色与输入栏同源（theme 文本色 = 浅色主题下的黑），
+        // 函数名斜体也与输入栏一致（用户 2026-10-24："函数都用黑色斜体字，
+        // 与输入栏字体相同"）。
         let sig_style = mathrender::Style2 {
-            size: 16.0,
+            size: 14.0,
+            color: Some(theme::colors().text),
+            italic_names: true,
             ..mathrender::Style2::default()
         };
-        let math = |s: &'static str| mathrender::render(s, !s.contains(','), sig_style, None);
-        // log 的底数下标要**夹在名字与括号之间**（`log_b(x)`）：
-        // 所以带下标的条目，sig 只写名字部分（"log"），"(x)" 由这里补排。
-        // ⚠️ 第一版把下标拼在整串签名后面，得到 `log(x)_b`，顺序是错的。
-        let sig: Element<'static, Message> = match it.sub {
-            None => math(it.sig),
-            Some(sub) => row![
-                math(it.sig),
-                container(
-                    text(sub.to_string())
-                        .size(11)
-                        .font(theme::font_math_italic())
-                )
-                // 下移量 ≈ 主字号的一半，让 `b` 落在基线之下（视觉下标）
-                .padding([9.0, 1.0]),
-                math("(x)"),
-            ]
-            .align_y(Alignment::Start)
-            .into(),
+        // 微积分五函数直接画大运算符（Σ/Π/∫/lim/d/dx）——
+        // 槽位填占位字母（f/k/a/b），与 tooltip 里的参数说明对应
+        let sig: Element<'static, Message> = match it.bigop {
+            Some(kind) => mathrender::build(
+                &mathrender::Node::BigOp {
+                    kind,
+                    body: Box::new(mathrender::Node::Text("f".into())),
+                    var: Box::new(mathrender::Node::Text(
+                        match kind {
+                            mathrender::BigKind::Sum | mathrender::BigKind::Prod => "k",
+                            _ => "x",
+                        }
+                        .into(),
+                    )),
+                    from: Box::new(mathrender::Node::Text("a".into())),
+                    to: Box::new(mathrender::Node::Text(match kind {
+                        mathrender::BigKind::Limit => "".into(),
+                        _ => "b".into(),
+                    })),
+                },
+                sig_style,
+                None,
+            ),
+            None => {
+                // 含逗号的签名**必须退回纯文本**，除非函数被 mathrender 特判
+                //（sum/prod/int/lim/diff/nroot 会把逗号切参数、画成结构）——
+                // 普通函数直排会让 `gcd(a, b)` 丢掉逗号（Comma 渲染成空）。
+                let structural = !it.sig.contains(',')
+                    || ["sum(", "prod(", "int(", "lim(", "diff(", "nroot("]
+                        .iter()
+                        .any(|p| it.sig.starts_with(p));
+                let main = mathrender::render(it.sig, structural, sig_style, None);
+                // log 的底数下标要**夹在名字与括号之间**（`log_b(x)`）：
+                // 带下标的条目，sig 只写名字部分（"log"），"(x)" 由这里补排。
+                // ⚠️ 下标拼在整串签名后面会得到 `log(x)_b`，顺序是错的。
+                match it.sub {
+                    None => main,
+                    Some(sub) => row![
+                        main,
+                        container(
+                            text(sub.to_string())
+                                .size(10)
+                                .font(theme::font_math_italic())
+                        )
+                        // 下移量 ≈ 主字号的一半，让 `b` 落在基线之下（视觉下标）
+                        .padding([7.0, 1.0]),
+                        mathrender::render("(x)", true, sig_style, None),
+                    ]
+                    .align_y(Alignment::Start)
+                    .into(),
+                }
+            }
         };
 
-        // ── 带圈问号：悬停出详细用法 ────────────────────────────────────────
+        // ── 带圈问号：悬停出详细用法（跟随鼠标） ───────────────────────────
         let c = theme::colors();
-        let help = container(text("?").size(11).font(theme::font_cjk()).style(move |_t| {
+        let help = container(text("?").size(10).font(theme::font_cjk()).style(move |_t| {
             iced::widget::text::Style {
                 color: Some(c.text_dim),
             }
         }))
-        .width(Length::Fixed(18.0))
-        .height(Length::Fixed(18.0))
-        .center_x(Length::Fixed(18.0))
-        .center_y(Length::Fixed(18.0))
+        .width(Length::Fixed(16.0))
+        .height(Length::Fixed(16.0))
+        .center_x(Length::Fixed(16.0))
+        .center_y(Length::Fixed(16.0))
         .style(move |_t| container::Style {
             // 圆圈 = 正方形 + 全圆角；描边用面板高光色，不抢签名的注意力
             border: iced::Border {
-                radius: 9.0.into(),
+                radius: 8.0.into(),
                 width: 1.0,
                 color: c.stroke,
             },
@@ -2871,22 +2932,21 @@ impl State {
                 .max_width(320)
                 .padding(10)
                 .style(theme::dialog),
-            iced::widget::tooltip::Position::Right,
+            iced::widget::tooltip::Position::FollowCursor,
         );
 
-        // ── 整行按钮 ────────────────────────────────────────────────────────
+        // ── 卡片 ───────────────────────────────────────────────────────────
         button(
-            row![
-                column![sig, theme::label(t(it.about)).size(11).style(theme::hint)]
-                    .spacing(2)
-                    .width(Length::Fill),
-                help,
+            column![
+                row![sig, Space::new().width(Length::Fill), help]
+                    .align_y(Alignment::Start)
+                    .spacing(4),
+                theme::label(t(it.about)).size(10).style(theme::hint),
             ]
-            .align_y(Alignment::Center)
-            .spacing(8),
+            .spacing(2),
         )
-        .width(Length::Fill)
-        .padding([5, 8])
+        .width(Length::FillPortion(1))
+        .padding([6, 7])
         .style(|t, s| theme::key(t, KeyKind::Function, s))
         .on_press(Message::Function(gi, ii))
         .into()
@@ -3352,6 +3412,7 @@ mod tests {
                 None => format!("√({})", flatten_node(inner)),
             },
             Node::Pow(a, b) => format!("{}^{}", flatten_node(a), flatten_node(b)),
+            Node::Sub(a, b) => format!("{}_{}", flatten_node(a), flatten_node(b)),
             // 位置包装：拍平后就是里面那棵子树
             Node::At { inner, .. } | Node::Hit { inner, .. } => flatten_node(inner),
             // 占位框 / 光标 / 参数逗号都不携带源文本，拍平后是空的
@@ -4283,6 +4344,7 @@ mod tests {
                     size: 21.0,
                     color: None,
                     wrap: true,
+                    ..mathrender::Style2::default()
                 },
                 None,
             );
@@ -4306,6 +4368,7 @@ mod tests {
                     size: 21.0,
                     color: None,
                     wrap: true,
+                    ..mathrender::Style2::default()
                 },
                 None,
             );

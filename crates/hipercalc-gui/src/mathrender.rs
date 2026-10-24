@@ -54,6 +54,11 @@ pub enum Node {
     },
     /// 底数与指数（渲染成右上标）
     Pow(Box<Node>, Box<Node>),
+    /// 底数与**下标**（渲染成右下标，如 `log_b` 的 b）。
+    ///
+    /// 与 [`Node::Pow`]（上标）成对：排版规则同款，只是对齐方向相反 ——
+    /// 上标顶对齐、下标底对齐。目前唯一的生产者是 `log` 的底数框。
+    Sub(Box<Node>, Box<Node>),
     /// 一行按顺序排列的若干节点（乘号、加减号都在这里显式出现）
     Seq(Vec<Node>),
     /// **用户还没输入的空参数** —— 渲染成灰色方块（Desmos 风格）。
@@ -501,6 +506,39 @@ impl Parser {
                             Some(Node::Text(name))
                         }
                     }
+                    // `cbrt(x)` → ∛（带次数 3 的根号）；`nroot(x, n)` → ⁿ√
+                    //
+                    // 与 `sqrt` 同一套"矢量根号"渲染，只是 degree 不为空。
+                    // nroot 的参数序与 core 一致：`nroot(被开方式, 次数)`
+                    //（实测 `nroot(27,3) = 3`）。
+                    "cbrt" | "nroot" => {
+                        let inner_at = at + name.len();
+                        let (inner, consumed) = self.parse_call_args();
+                        if !consumed {
+                            // 没有括号跟随：当普通标识符
+                            return Some(Node::Text(name));
+                        }
+                        let e = || Node::Empty { at: inner_at + 1 };
+                        let (degree, radix) = if name == "cbrt" {
+                            (Node::Text("3".into()), inner)
+                        } else {
+                            // nroot(x, n)：第一个参数是被开方式、第二个是次数
+                            let mut it = split_args(inner, inner_at + 1).into_iter();
+                            let radix = it.next().unwrap_or_else(e);
+                            let degree = it.next().unwrap_or_else(e);
+                            (degree, vec![radix])
+                        };
+                        let radix = match radix.len() {
+                            1 => radix.into_iter().next().unwrap(),
+                            // `nroot(,3)`（被开方式还没打）—— 空占位框
+                            0 => e(),
+                            _ => Node::Seq(radix),
+                        };
+                        Some(Node::Root {
+                            degree: Some(Box::new(degree)),
+                            inner: Box::new(radix),
+                        })
+                    }
                     // `sum(f, k, a, b)` → Σ / `prod(...)` → Π
                     //
                     // 语法来自 core 的 `sum` / `prod`（见 `keypad::FN_GROUPS`：
@@ -701,6 +739,13 @@ pub struct Style2 {
     /// 右边界裁掉。用户报的「当行长过长时会被挡住，右边看不到后半段」
     /// 正是这么来的 —— 换成 `Glyph` 才能在任意字符间断行。
     pub wrap: bool,
+    /// **纯字母的记号是否用斜体**（函数名一律斜体）。
+    ///
+    /// 默认 `false`：历史区/结果区遵守数学排版惯例 —— 函数名（`sin`、`log`）
+    /// 直立、只有单字母变量斜体。输入栏与函数面板**开 true**：
+    /// 输入栏把函数名当一个个独立记号渲染，用户明确要求"函数都用斜体，
+    /// 与输入栏字体相同"（2026-10-24），所以这两处统一开。
+    pub italic_names: bool,
 }
 
 impl Default for Style2 {
@@ -710,6 +755,7 @@ impl Default for Style2 {
             color: None,
             // 默认折行：能一眼看全是第一位的，横向滚动那档留给有偏好的用户
             wrap: true,
+            italic_names: false,
         }
     }
 }
@@ -796,8 +842,17 @@ pub fn build<'a, M: Clone + 'a>(
     on_placeholder: Option<&'a dyn Fn(usize) -> M>,
 ) -> Element<'a, M> {
     match node {
-        // 变量（单个字母）用斜体 —— 数学排版规范
-        Node::Text(s) if is_variable(s) => plain_font(s, style, crate::fonts::font_math_italic()),
+        // 变量（单个字母）用斜体 —— 数学排版规范。
+        // `italic_names` 开启时（输入栏/函数面板），**纯字母的函数名也斜体**
+        //（用户 2026-10-24："函数都用黑色斜体字，与输入栏字体相同"）。
+        Node::Text(s)
+            if is_variable(s)
+                || (style.italic_names
+                    && !s.is_empty()
+                    && s.chars().all(|c| c.is_ascii_alphabetic())) =>
+        {
+            plain_font(s, style, crate::fonts::font_math_italic())
+        }
         Node::Text(s) => plain(s, style),
         // 带源位置的包装 ⇒ 一个**可点区域**：点它就把光标送到 `at`。
         //
@@ -1167,6 +1222,21 @@ pub fn build<'a, M: Clone + 'a>(
             ));
             r.into()
         }
+        Node::Sub(base, sub) => {
+            // 右下标：与 Pow（右上标）成对 —— 对齐方向相反（底对齐），
+            // 字号同样小一档。目前唯一生产者是 `log` 的底数框。
+            let mut r = Row::new().align_y(Alignment::End).spacing(0.0);
+            r = r.push(build(base, style, on_placeholder));
+            r = r.push(build(
+                sub,
+                Style2 {
+                    size: style.size * 0.62,
+                    ..style
+                },
+                on_placeholder,
+            ));
+            r.into()
+        }
     }
 }
 
@@ -1345,6 +1415,8 @@ fn node_height(node: &Node, size: f32) -> f32 {
         // `build` 里根号高度写死 `size * 1.32`
         Node::Root { .. } => size * 1.32,
         Node::Pow(a, b) => node_height(a, size).max(node_height(b, size * 0.62) + size * 0.3),
+        // 下标与上标对称：小字号 + 向下的伸出量
+        Node::Sub(a, b) => node_height(a, size).max(node_height(b, size * 0.62) + size * 0.3),
         Node::BigOp { .. } => {
             bigop_glyph_size(size) * 1.2 + 2.0 * (bigop_limit_size(size) * 1.9).max(18.0)
         }
@@ -1533,6 +1605,8 @@ fn node_width(node: &Node, size: f32) -> f32 {
         }
         // 幂：底数 + 上标（字号更小）
         Node::Pow(base, exp) => node_width(base, size) + node_width(exp, size * 0.62),
+        // 下标与上标同宽规则
+        Node::Sub(base, sub) => node_width(base, size) + node_width(sub, size * 0.62),
     }
 }
 
@@ -1616,6 +1690,7 @@ mod tests {
                     size: 15.0,
                     color: None,
                     wrap: true,
+                    ..Style2::default()
                 },
             );
         }
@@ -1632,6 +1707,8 @@ mod tests {
                 None => format!("√({})", flatten(inner)),
             },
             Node::Pow(a, b) => format!("{}^{}", flatten(a), flatten(b)),
+            // 下标拍平成 `log_b` 的读法
+            Node::Sub(a, b) => format!("{}_{}", flatten(a), flatten(b)),
             // 位置包装：拍平后就是里面那棵子树（位置不属于"文本"）
             Node::At { inner, .. } | Node::Hit { inner, .. } => flatten(inner),
             // 不携带源文本的三种（占位框 / 光标 / 参数逗号）

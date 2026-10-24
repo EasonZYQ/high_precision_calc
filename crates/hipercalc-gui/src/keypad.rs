@@ -309,6 +309,9 @@ pub struct FnItem {
     /// 问号悬停弹出的**详细用法**（说明 + 实测过的例子）。
     /// 例子一律用 CLI 跑过核对（如 `nCr(5,2) = 10`），不许凭记忆写。
     pub detail: &'static str,
+    /// 微积分五函数的**结构化大运算符**签名（Σ/Π/∫/lim/d/dx 直接画符号）。
+    /// `None` = 普通函数，签名按 [`FnItem::sig`] 文本排版。
+    pub bigop: Option<crate::mathrender::BigKind>,
 }
 
 const fn f(
@@ -324,6 +327,26 @@ const fn f(
         sub,
         about,
         detail,
+        bigop: None,
+    }
+}
+
+/// 微积分五函数：签名直接画成大运算符（用户 2026-10-24："微积分的函数
+/// 为什么不渲染符号"—— `diff(f, x)` 这类纯文本签名确实不像积分）。
+const fn fb(
+    insert: &'static str,
+    sig: &'static str,
+    about: &'static str,
+    detail: &'static str,
+    bigop: crate::mathrender::BigKind,
+) -> FnItem {
+    FnItem {
+        insert,
+        sig,
+        sub: None,
+        about,
+        detail,
+        bigop: Some(bigop),
     }
 }
 
@@ -454,7 +477,7 @@ pub const FN_GROUPS: &[FnGroup] = &[
                 "log(,)",
                 "log",
                 Some("b"),
-                "对数 log(base, x)",
+                "对数",
                 "对数：log(b, x) 求以 b 为底 x 的对数，两个参数都须为正。例：log(2, 8) = 3。",
             ),
             f(
@@ -479,12 +502,20 @@ pub const FN_GROUPS: &[FnGroup] = &[
                 "平方根",
                 "平方根 √x，要求 x ≥ 0，结果取非负值。例：√9 = 3。",
             ),
+            // `cbrt(x)` / `nroot(x, n)` 都画成带次数的矢量根号（mathrender 例外分支）
             f(
                 "cbrt()",
-                "∛(x)",
+                "cbrt(x)",
                 None,
                 "立方根",
                 "立方根，对任意实数（含负数）有定义。例：∛27 = 3。",
+            ),
+            f(
+                "nroot(,)",
+                "nroot(x, n)",
+                None,
+                "n 次根",
+                "n 次根：nroot(x, n) 求 x 的 n 次根，n 为 ≥ 2 的整数（负数只在 n 为奇数时有定义）。例：nroot(27, 3) = 3。",
             ),
             f("abs()", "|x|", None, "绝对值", "绝对值。例：|−5| = 5。"),
         ],
@@ -492,43 +523,45 @@ pub const FN_GROUPS: &[FnGroup] = &[
     FnGroup {
         title: "微积分",
         items: &[
-            f(
+            // 五个都走 `fb`：签名直接画成大运算符（d/dx、∫、lim、Σ、Π），
+            // 不再排成 `diff(f, x)` 这种纯文本（用户 2026-10-24）。
+            fb(
                 "diff(,x)",
                 "diff(f, x)",
-                None,
                 "求导",
                 "求导：diff(f, x) 对变量 x 求 f 的导数。例：diff(x^2, x) = 2x。",
+                crate::mathrender::BigKind::Diff,
             ),
-            f(
+            fb(
                 "int(,x,0,1)",
                 "int(f, x, a, b)",
-                None,
                 "定积分",
                 "定积分：int(f, x, a, b) 计算 f 从 a 到 b 的定积分。例：int(x^2, x, 0, 1) = 1/3。",
+                crate::mathrender::BigKind::Integral,
             ),
-            f(
+            fb(
                 "lim(,x,0)",
                 "lim(f, x, a)",
-                None,
                 "极限",
                 "极限：lim(f, x, a) 求 x 趋于 a 时 f 的极限。例：lim(sin(x)/x, x, 0) = 1。",
+                crate::mathrender::BigKind::Limit,
             ),
             // ⚠️ 插入时**不带参数**（曾经是 `sum(,k,1,10)`）：那些预填的值会让用户
             //    以为"参数是定死的"，而他要改的时候还得先删掉它们 ——
             //    用户原话："求和符号这种符号输入时应当无参数"。
-            f(
+            fb(
                 "∑()",
                 "sum(f, k, a, b)",
-                None,
                 "求和",
                 "求和 Σ：sum(f, k, a, b) 对 k 从 a 到 b 逐项求和。例：sum(k^2, k, 1, 3) = 14。",
+                crate::mathrender::BigKind::Sum,
             ),
-            f(
+            fb(
                 "∏()",
                 "prod(f, k, a, b)",
-                None,
                 "求积",
                 "求积 Π：prod(f, k, a, b) 对 k 从 a 到 b 连乘。例：prod(k, k, 1, 4) = 24。",
+                crate::mathrender::BigKind::Prod,
             ),
         ],
     },
@@ -614,14 +647,14 @@ pub const FN_GROUPS: &[FnGroup] = &[
                 "nCr(,)",
                 "nCr(n, k)",
                 None,
-                "组合数 C(n,k)",
+                "组合数",
                 "组合数：nCr(n, k) 从 n 个里选 k 个（不计顺序），要求非负整数。例：nCr(5, 2) = 10。",
             ),
             f(
                 "nPr(,)",
                 "nPr(n, k)",
                 None,
-                "排列数 P(n,k)",
+                "排列数",
                 "排列数：nPr(n, k) 从 n 个里选 k 个排成一列（计顺序）。例：nPr(5, 2) = 20。",
             ),
             f(
@@ -666,9 +699,11 @@ pub const FN_GROUPS: &[FnGroup] = &[
             ),
             // triangle 的记号是 `记号=表达式`（小写为边、大写为角），
             // 不是普通的逗号参数 —— 插入串直接给出三边模板。
+            // ⚠️ 签名只写名字：一行三卡的宽度排不下完整模板（会被截断），
+            // 完整语法与例子在问号的悬停详情里。
             f(
                 "triangle(a= b= c=)",
-                "triangle(a= b= c=)",
+                "triangle",
                 None,
                 "解三角形",
                 "解三角形：triangle(a= b= c=) 由已知边/角解出全部未知元素、面积与周长。例：triangle(a=3 b=4 c=5)。",
