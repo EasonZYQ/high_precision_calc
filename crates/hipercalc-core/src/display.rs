@@ -119,12 +119,10 @@ fn unit_scaled(num: &Number) -> (Number, String) {
     }
 }
 
-/// LaTeX 输出开关（`/mode latex`）。
+/// 开关 LaTeX 输出（仅影响结果的符号渲染，数值不变）。
 ///
 /// 用**显示层开关**而不是给 `DisplayMode` 加枚举分支：`DisplayMode::` 在全仓有 87 处引用，
 /// 加一个变体会牵动一大片 match；而 LaTeX 只影响"结果怎么排"，本质是显示层的事。
-
-/// 开关 LaTeX 输出（仅影响结果的符号渲染，数值不变）
 pub fn set_latex(on: bool) {
     LATEX.store(on, Ordering::Relaxed);
 }
@@ -134,12 +132,10 @@ pub fn latex() -> bool {
     LATEX.load(Ordering::Relaxed)
 }
 
-/// 结果数制（10 = 十进制；16/8/2 = 十六/八/二进制）。
+/// 设置结果数制（只接受 2 / 8 / 10 / 16，其余忽略）。
 ///
 /// 与 `bigfloat::display_digits()` 同层：**显示层**的全局开关，不动数值本身。
 /// 只对**整数**生效 —— "0.5 的十六进制"没有标准答案，所以小数与根式一律仍按十进制输出。
-
-/// 设置结果数制（只接受 2 / 8 / 10 / 16，其余忽略）
 pub fn set_base(base: u32) {
     if matches!(base, 2 | 8 | 10 | 16) {
         RESULT_BASE.store(base, Ordering::Relaxed);

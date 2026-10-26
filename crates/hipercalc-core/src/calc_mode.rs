@@ -24,13 +24,8 @@ pub enum CalcMode {
     Deep,
 }
 
-/// 当前是否处于死算模式（默认 Fast）
-
-/// 是否显示耗时（默认开）。关掉后不再打印"用时：N秒"行，便于脚本/断言
-
-/// 静默输出开关（`/load` 回放脚本时把命令自身的提示压掉，只在末尾给一行汇总）
-
-/// 当前是否处于静默输出状态（`lprint!` 等输出宏会据此跳过打印）
+/// 当前是否处于静默输出状态（`/load` 回放脚本时把命令自身的提示压掉，
+/// 只在末尾给一行汇总；`lprint!` 等输出宏会据此跳过打印）
 pub fn quiet() -> bool {
     QUIET.load(Ordering::Relaxed)
 }
@@ -40,7 +35,7 @@ pub fn set_quiet(on: bool) {
     QUIET.store(on, Ordering::Relaxed);
 }
 
-/// 是否显示耗时行
+/// 是否显示耗时行（默认开）。关掉后不再打印"用时：N秒"行，便于脚本/断言
 pub fn timing_enabled() -> bool {
     TIMING.load(Ordering::Relaxed)
 }
@@ -55,7 +50,7 @@ pub fn set(mode: CalcMode) {
     DEEP.store(mode == CalcMode::Deep, Ordering::Relaxed);
 }
 
-/// 是否死算模式（低层护栏的开关判据）
+/// 是否死算模式（默认 Fast；低层护栏的开关判据）
 pub fn is_deep() -> bool {
     DEEP.load(Ordering::Relaxed)
 }

@@ -9,6 +9,15 @@
 //! - 消元取**第一个非零主元**而不是最大主元：精确算术下不需要数值稳定性，
 //!   只需要避免"零主元做除数"；这也避开了 `Number` 没有 `Ord` 的问题。
 //!   （代价：近似矩阵的数值稳定性一般，已在注释里说明。）
+//!
+//! # 关于 `clippy::needless_range_loop`
+//!
+//! 消元法（`det` / `inv` / `solve` / `rref`）的核心形态是
+//! `a[r][c] = a[r][c].sub(&factor.mul(&a[col][c]))` —— **同时借用两行**。
+//! 改成迭代器要 `split_at_mut` 把表拆开、再手动对齐下标，代价是把教科书上的
+//! 高斯消元改成一段没人愿意读的指针体操。这里保留下标写法，在本文件关掉这条
+//! lint（`trace` 这类单行遍历仍然用迭代器）。
+#![allow(clippy::needless_range_loop)]
 
 use crate::number::Number;
 
@@ -152,8 +161,8 @@ pub fn trace(m: &Mat) -> Result<Number, String> {
         return Err("只有方阵才有迹".to_string());
     }
     let mut acc = Number::from_int(0);
-    for i in 0..rows(m) {
-        acc = acc.add(&m[i][i]);
+    for (i, row) in m.iter().enumerate() {
+        acc = acc.add(&row[i]);
     }
     Ok(acc)
 }

@@ -86,8 +86,8 @@ pub fn combine(a: &Dim, b: &Dim, sign: i8) -> Dim {
 /// 整数次幂：指数乘以 n
 pub fn pow(d: &Dim, n: i32) -> Dim {
     let mut out = *d;
-    for i in 0..7 {
-        out[i] = (out[i] as i32).saturating_mul(n).clamp(-128, 127) as i8;
+    for e in out.iter_mut() {
+        *e = (*e as i32).saturating_mul(n).clamp(-128, 127) as i8;
     }
     out
 }

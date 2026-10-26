@@ -494,11 +494,11 @@ impl Number {
         binary_op(
             self,
             other,
-            |a, b| crate::matrix::binary_add(a, b),
+            crate::matrix::binary_add,
             |x, y| Number::from_complex(x.add(y)),
             |a, b| crate::quantity::binary(a, b, crate::quantity::Op::Add),
             |x, y| x.add_exact(y),
-            |x, y, p| BigFloat::add(x, y, p),
+            BigFloat::add,
         )
     }
 
@@ -519,11 +519,11 @@ impl Number {
         binary_op(
             self,
             other,
-            |a, b| crate::matrix::binary_mul(a, b),
+            crate::matrix::binary_mul,
             |x, y| Number::from_complex(x.mul(y)),
             |a, b| crate::quantity::binary(a, b, crate::quantity::Op::Mul),
             |x, y| x.mul_exact(y),
-            |x, y, p| BigFloat::mul(x, y, p),
+            BigFloat::mul,
         )
     }
 
@@ -534,8 +534,8 @@ impl Number {
     ///    不能落到 `BigFloat::div`（它的 `assert!` 会让进程 panic），所以改为断言 + 返回 0，
     ///    便于在 debug 构建下暴露调用点。这个守卫必须**先于**精确分支，才会同时覆盖两条路径。
     /// 2. **复数除法返回 `Result`**：除数为零时要走上面同样的兜底，形态与其它运算不同。
-    /// 硬塞进助手只会把两处兜底藏进闭包、更难读 ⇒ 保留原样，并在助手里也能看出
-    /// 其它运算的形态顺序（矩阵→复数→精确→回退）与这里一致。
+    ///    硬塞进助手只会把两处兜底藏进闭包、更难读 ⇒ 保留原样，并在助手里也能看出
+    ///    其它运算的形态顺序（矩阵→复数→精确→回退）与这里一致。
     pub fn div(&self, other: &Number) -> Number {
         // 量纲：与 add/mul 同一规则（乘除让指数相减）——`div` 是有意例外，故在此手动分发
         if self.is_quantity() || other.is_quantity() {
@@ -765,7 +765,7 @@ impl Number {
         // 判据：把近似值还原成整数（值 = mantissa / 10^precision，除以 10^precision 余零即整数）。
         // 只处理 |n| ≤ u32::MAX：更大的指数本来就被 `check_pow_scale` 拦下，
         // 不必在这里重复构造大整数。
-        if let Some(n) = approx_integer(&exponent)
+        if let Some(n) = approx_integer(exponent)
             && let Some(k) = n.abs().to_u32()
         {
             self.check_pow_scale(k as f64)?;
@@ -936,8 +936,8 @@ impl Number {
             if q.dim.iter().all(|e| e % 2 == 0) {
                 let half = crate::quantity::pow(&q.dim, 0);
                 let mut hd = half;
-                for i in 0..7 {
-                    hd[i] = (q.dim[i] / 2) as i8;
+                for (dst, src) in hd.iter_mut().zip(q.dim.iter()) {
+                    *dst = *src / 2;
                 }
                 return Number::Quantity(Box::new(crate::quantity::Quantity::new(
                     q.value.sqrt(),

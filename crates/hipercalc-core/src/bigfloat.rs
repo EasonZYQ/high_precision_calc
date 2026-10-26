@@ -28,12 +28,10 @@ pub const DEFAULT_DISPLAY_DIGITS: usize = 20;
 /// 内部函数**不应**直接调用 `precision()`（否则等于把来源藏进深处）；相应地在库内
 /// 也避免用 `BigFloat` 的运算符重载（它们用的是全局精度，见文件下方注释）。
 ///
-/// 运行期工作精度（小数位数）：默认 80，可由 `/mode prec N` 修改。
-/// 之所以做成运行期开关：精度相关的常数缓存都以目标精度为键，切换精度后自动按新精度重算并各自缓存。
-
-/// 运行期显示有效位数：默认 20，可由 `/mode digits N` 修改
-
-/// 当前工作精度（小数位数）
+/// 当前工作精度（小数位数），默认 80，可由 `/mode prec N` 修改。
+///
+/// 之所以做成运行期开关：精度相关的常数缓存都以目标精度为键，
+/// 切换精度后自动按新精度重算并各自缓存。
 pub fn precision() -> usize {
     PRECISION_RT.load(Ordering::Relaxed)
 }
@@ -43,11 +41,8 @@ pub fn set_precision(p: usize) {
     PRECISION_RT.store(p, Ordering::Relaxed);
 }
 
-/// 是否允许"整数部分超过显示位数"时改用科学计数法（`/mode sci off` 关闭，改为完整写出）
-
-/// 是否给整数部分加千分位分隔（`/mode group on`；仅显示层）
-
-/// 当前是否允许科学计数法
+/// 当前是否允许科学计数法：整数部分超过显示位数时是否改用科学计数法
+///（`/mode sci off` 关闭，改为完整写出）
 pub fn sci_allowed() -> bool {
     SCI_ALLOWED.load(Ordering::Relaxed)
 }
@@ -57,7 +52,7 @@ pub fn set_sci_allowed(on: bool) {
     SCI_ALLOWED.store(on, Ordering::Relaxed);
 }
 
-/// 当前是否输出千分位
+/// 当前是否输出千分位（`/mode group on`；仅显示层）
 pub fn group_enabled() -> bool {
     GROUP_DIGITS.load(Ordering::Relaxed)
 }
@@ -109,7 +104,7 @@ pub fn group_integer_part(s: &str) -> String {
     grouped
 }
 
-/// 当前显示有效位数
+/// 当前显示有效位数，默认 20，可由 `/mode digits N` 修改
 pub fn display_digits() -> usize {
     DISPLAY_DIGITS_RT.load(Ordering::Relaxed)
 }
