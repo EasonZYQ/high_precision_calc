@@ -430,7 +430,7 @@ pub fn capture_blurred(x: i32, y: i32, w: u32, h: u32, factor: u32) -> Option<Ba
     let raw = platform::grab_scaled(x, y, w, h, dw, dh)?;
     if f == 1 {
         // 不模糊：`grab_scaled` 已经做完 BGRA→RGBA，直接当背景用
-        return Some(Backdrop {
+        let bd = Backdrop {
             x,
             y,
             width: dw,
@@ -438,7 +438,9 @@ pub fn capture_blurred(x: i32, y: i32, w: u32, h: u32, factor: u32) -> Option<Ba
             rw: w,
             rh: h,
             rgba: raw,
-        });
+        };
+        dump_if_requested(&bd);
+        return Some(bd);
     }
     // ⚠️ factor 传 **1**：图已经是目标尺寸，只需要 box blur，不再降采样
     let mut bd = blur_downsample(&raw, dw as usize, dh as usize, 1);
@@ -501,6 +503,158 @@ fn dump_if_requested(bd: &Backdrop) {
     );
 }
 
+/// 把"自己窗口那一块"从抓到的桌面里**补掉**（四边双线性插值）。
+///
+/// ## 为什么需要它
+///
+/// 「允许截图」模式下我们不能用 `WDA_EXCLUDEFROMCAPTURE`（那会让微信/PrntSc
+/// 拍到一片空白），于是 **DXGI 桌面复制抓到的帧里有我们自己**（用户
+/// 2026-10-26："一打开允许截图，背景就会把自己加进去"）。
+///
+/// ## 为什么不是"填一块平均色"
+///
+/// 上一版填的是窗口外一圈的**平均色**，用户当时的反馈是"一块死板的色块"。
+/// 这里改成**四边插值**：左边取左边界外的颜色、右边取右边界外的颜色，
+/// 上下同理，按位置双线性混合 —— 补出来是一片**跟着周围渐变**的软过渡，
+/// 再被后面的模糊一过，几乎看不出来是补的。
+///
+/// ## 成本
+///
+/// 按 8×8 像素**分块**计算（补出来本来就是平滑渐变，块内色差不到 1 个量化级），
+/// 846k 像素的窗口只需 1.3 万次循环 —— 相对抓屏本身的 3–5ms 可以忽略。
+///
+/// `rect` 是**纹理坐标**（`x0, y0, x1, y1`，右/下为开区间）。
+fn inpaint_self_rect(rgba: &mut [u8], tw: usize, th: usize, rect: (i32, i32, i32, i32)) {
+    let (mut x0, mut y0, mut x1, mut y1) = rect;
+    x0 = x0.max(0);
+    y0 = y0.max(0);
+    x1 = x1.min(tw as i32);
+    y1 = y1.min(th as i32);
+    if x1 - x0 < 2 || y1 - y0 < 2 {
+        return;
+    }
+    let (x0, y0, x1, y1) = (x0 as usize, y0 as usize, x1 as usize, y1 as usize);
+    let at = |x: usize, y: usize| -> [f32; 3] {
+        let i = (y * tw + x) * 4;
+        [rgba[i] as f32, rgba[i + 1] as f32, rgba[i + 2] as f32]
+    };
+    // 采样边界的**外侧 3px**（避开自己被模糊/抗锯齿染过的边缘）
+    const OUT: usize = 3;
+    // 每条边的可用性：贴屏边时抓屏矩形被裁，外侧可能没有像素
+    let has_l = x0 >= OUT;
+    let has_r = x1 + OUT < tw;
+    let has_t = y0 >= OUT;
+    let has_b = y1 + OUT < th;
+    if !(has_l || has_r || has_t || has_b) {
+        return;
+    }
+
+    // 逐行/逐列取边界色（每条边一条线，成本 O(宽+高)）
+    let mut left = vec![[0.0f32; 3]; y1 - y0];
+    let mut right = left.clone();
+    for (k, y) in (y0..y1).enumerate() {
+        if has_l {
+            left[k] = at(x0 - OUT, y);
+        }
+        if has_r {
+            right[k] = at(x1 + OUT - 1, y);
+        }
+    }
+    let mut top = vec![[0.0f32; 3]; x1 - x0];
+    let mut bottom = top.clone();
+    for (k, x) in (x0..x1).enumerate() {
+        if has_t {
+            top[k] = at(x, y0 - OUT);
+        }
+        if has_b {
+            bottom[k] = at(x, y1 + OUT - 1);
+        }
+    }
+
+    const STEP: usize = 8;
+    let w = (x1 - x0) as f32;
+    let h = (y1 - y0) as f32;
+    let mut by = y0;
+    while by < y1 {
+        // ⚠️ 用**块左/上边缘**的 u/v，不是块中心：中心会让第一块的左缘就掺进
+        // 20% 对侧颜色，接缝处出现一个明显的台阶（单测里差 34 个量化级）。
+        let v = (by as f32 - y0 as f32) / h;
+        let mut bx = x0;
+        while bx < x1 {
+            let u = (bx as f32 - x0 as f32) / w;
+            let (kx, ky) = (bx - x0, by - y0);
+            // 横向估计：左边界 → 右边界
+            let mut hsum = [0.0f32; 3];
+            let mut hn = 0.0f32;
+            if has_l {
+                hsum = add(hsum, scale(left[ky], 1.0 - u));
+                hn += 1.0 - u;
+            }
+            if has_r {
+                hsum = add(hsum, scale(right[ky], u));
+                hn += u;
+            }
+            // 纵向估计：上边界 → 下边界
+            let mut vsum = [0.0f32; 3];
+            let mut vn = 0.0f32;
+            if has_t {
+                vsum = add(vsum, scale(top[kx], 1.0 - v));
+                vn += 1.0 - v;
+            }
+            if has_b {
+                vsum = add(vsum, scale(bottom[kx], v));
+                vn += v;
+            }
+            // 越靠边越信"垂直于该边的那一路"，越靠中间两路越平均
+            let wv = if vn > 0.0 { 4.0 * u * (1.0 - u) } else { 0.0 };
+            let wh = if hn > 0.0 { 4.0 * v * (1.0 - v) } else { 0.0 };
+            let hcol = if hn > 0.0 {
+                scale(hsum, 1.0 / hn)
+            } else {
+                [0.0; 3]
+            };
+            let vcol = if vn > 0.0 {
+                scale(vsum, 1.0 / vn)
+            } else {
+                [0.0; 3]
+            };
+            let (a, b) = if hn > 0.0 && vn > 0.0 {
+                (wh, wv)
+            } else if hn > 0.0 {
+                (1.0, 0.0)
+            } else {
+                (0.0, 1.0)
+            };
+            let sum = (a + b).max(1e-6);
+            let c = add(scale(hcol, a / sum), scale(vcol, b / sum));
+            // 填块
+            let ye = (by + STEP).min(y1);
+            let xe = (bx + STEP).min(x1);
+            for y in by..ye {
+                for x in bx..xe {
+                    let i = (y * tw + x) * 4;
+                    rgba[i] = c[0].clamp(0.0, 255.0) as u8;
+                    rgba[i + 1] = c[1].clamp(0.0, 255.0) as u8;
+                    rgba[i + 2] = c[2].clamp(0.0, 255.0) as u8;
+                    rgba[i + 3] = 255;
+                }
+            }
+            bx += STEP;
+        }
+        by += STEP;
+    }
+}
+
+#[inline]
+fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+#[inline]
+fn scale(a: [f32; 3], k: f32) -> [f32; 3] {
+    [a[0] * k, a[1] * k, a[2] * k]
+}
+
 pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
     let (wx, wy, ww, wh) = platform::window_rect()?;
     let m = margin(ww, wh);
@@ -538,7 +692,18 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
         // 相当于放大 2 倍，文字必然发虚（实测 dump：抓屏 2160×1440、纹理 1080×720）。
         // 现在 sample=1 ⇒ 1 texel 对 1 像素，逐像素清晰。
         let sample = factor.max(1);
-        match crate::dupl::poll(x0, y0, w, h, sample) {
+        let polled = crate::dupl::poll(x0, y0, w, h, sample);
+        if std::env::var("HIPERCALC_DUMP_BG").ok().as_deref() == Some("1") {
+            eprintln!(
+                "[bg-dump] dupl = {}",
+                match &polled {
+                    crate::dupl::Poll::Fresh { .. } => "Fresh",
+                    crate::dupl::Poll::Unchanged => "Unchanged",
+                    crate::dupl::Poll::Unsupported => "Unsupported",
+                }
+            );
+        }
+        match polled {
             crate::dupl::Poll::Fresh {
                 rgba,
                 w: fw,
@@ -548,6 +713,34 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
                 rw: frw,
                 rh: frh,
             } => {
+                // ── 把自己的窗口从这一帧里**补掉** ───────────────────────────
+                //
+                // 「允许截图」时我们**不能**用 `WDA_EXCLUDEFROMCAPTURE`（那会让
+                // 微信/PrntSc 拍到空白），于是桌面复制抓到的帧里必然有自己
+                //（用户 2026-10-26："一打开允许截图，背景就会把自己加进去"）。
+                // 这里用四边插值把窗口那块补成周围的渐变（见 `inpaint_self_rect`）。
+                //
+                // 坐标换算：纹理 `fw×fh` 覆盖屏幕区域 `(fx, fy, frw, frh)`。
+                let mut rgba = rgba;
+                if capture_ok() && frw > 0 && frh > 0 {
+                    let sx = fw as f32 / frw as f32;
+                    let sy = fh as f32 / frh as f32;
+                    let rect = (
+                        (((wx - fx) as f32) * sx).round() as i32,
+                        (((wy - fy) as f32) * sy).round() as i32,
+                        (((wx + ww as i32 - fx) as f32) * sx).round() as i32,
+                        (((wy + wh as i32 - fy) as f32) * sy).round() as i32,
+                    );
+                    inpaint_self_rect(&mut rgba, fw as usize, fh as usize, rect);
+                    // 只报**一次**（排障用）：每帧都打会把 stderr 刷满
+                    static ONCE: std::sync::atomic::AtomicBool =
+                        std::sync::atomic::AtomicBool::new(true);
+                    if ONCE.swap(false, std::sync::atomic::Ordering::Relaxed)
+                        && std::env::var("HIPERCALC_DUMP_BG").ok().as_deref() == Some("1")
+                    {
+                        eprintln!("[bg-dump] inpaint 已启用，rect={rect:?}（纹理 {fw}×{fh}）");
+                    }
+                }
                 // ⚠️ **GPU 的 mip 链已经把 2×2 盒式平均做了 log2(sample) 遍**，
                 // 再加 CPU 那两趟 radius=4 的 box blur 是**重复劳动**
                 //（实测每次 0.3–0.6ms，在 30fps 上就是 1–2% 单核）。
@@ -578,15 +771,9 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
                 let ok = capture_ok();
                 #[cfg(windows)]
                 platform::exclude_from_capture(!ok);
-                // ⚠️ **不再往窗口那块填色**（用户 2026-10-22 明确要求"把色块去掉"）。
-                //
-                // 填色的本意是"别在背景里看见自己"，但它跟不上拖动（拖动时我们刻意
-                // 不重抓），结果是：静止时一块死板的色块盖住桌面、拖动时又慢半拍。
-                // 用户实测后判断"既然如此不如不要"。
-                //
-                // 现在的取舍：允许截图 ⇒ 背景里会有**自己窗口的倒影**（被模糊+染色后
-                // 是一片很淡的重影）；想要绝对干净就用「不允许截图」（那时自己已被
-                // `WDA_EXCLUDEFROMCAPTURE` 排除，背景就是纯桌面）。
+                // ⚠️ 这里**不再**说"允许截图就得接受自己的倒影"：上一版是这么定的，
+                // 用户 2026-10-26 实测（截图里左侧那一列模糊文字就是自己）否掉了。
+                // 现在自己在 `inpaint_self_rect` 里被补掉，两种模式都看不到自己。
                 dump_if_requested(&bd);
                 return Some(bd);
             }
@@ -1072,6 +1259,64 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **自己的窗口必须被"补掉"**（用户 2026-10-26："允许截图时背景里有自己"）。
+    ///
+    /// 造一张"左红右蓝、中间一块纯白（= 自己）"的纹理，补完之后：
+    /// 1. 白块必须消失（不能残留高亮）；
+    /// 2. 补出来的是**左红→右蓝的渐变**（不是一块死色）；
+    /// 3. 接缝处要连续（块内靠近左缘 ≈ 块外左侧的真实像素）。
+    #[test]
+    fn inpaint_removes_self_and_keeps_a_gradient() {
+        let (tw, th) = (60usize, 40usize);
+        let mut img = vec![0u8; tw * th * 4];
+        let put = |img: &mut Vec<u8>, x: usize, y: usize, c: [u8; 3]| {
+            let i = (y * tw + x) * 4;
+            img[i] = c[0];
+            img[i + 1] = c[1];
+            img[i + 2] = c[2];
+            img[i + 3] = 255;
+        };
+        for y in 0..th {
+            for x in 0..tw {
+                // 左半红、右半蓝，中间（x 20..40）画成"自己"（纯白）
+                let c = if (20..40).contains(&x) {
+                    [255, 255, 255]
+                } else if x < 20 {
+                    [200, 30, 30]
+                } else {
+                    [30, 30, 200]
+                };
+                put(&mut img, x, y, c);
+            }
+        }
+        inpaint_self_rect(&mut img, tw, th, (20, 0, 40, th as i32));
+        let at = |x: usize, y: usize| {
+            let i = (y * tw + x) * 4;
+            [img[i] as i32, img[i + 1] as i32, img[i + 2] as i32]
+        };
+        // ① 白块没了
+        for y in 0..th {
+            for x in 20..40 {
+                let c = at(x, y);
+                assert!(c.iter().all(|v| *v < 240), "({x},{y}) 还残留自己（{c:?}）");
+            }
+        }
+        // ② 左端偏红、右端偏蓝
+        let l = at(21, th / 2);
+        let r = at(38, th / 2);
+        assert!(l[0] > l[2], "补完的左端应当偏红：{l:?}");
+        assert!(r[2] > r[0], "补完的右端应当偏蓝：{r:?}");
+        // ③ 接缝连续：块内左缘（x=20）与块外左缘（x=19）颜色接近
+        let inside = at(20, th / 2);
+        let outside = at(19, th / 2);
+        for k in 0..3 {
+            assert!(
+                (inside[k] - outside[k]).abs() <= 12,
+                "接缝不连续：{inside:?} vs {outside:?}"
+            );
+        }
+    }
 
     /// 降采样 + 模糊这部分是**纯函数**，可以脱开抓屏单独验证。
     ///

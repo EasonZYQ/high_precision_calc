@@ -35,8 +35,16 @@ pub const WIN_BAND_FRAC: f32 = 0.18;
 /// 就没有斜度可加权（实拍图里角上的扭曲明显强于直边）。
 pub const WIN_CORNER_R: f32 = 26.0;
 
-/// 窗口环带的**最大位移**（以窗口 uv 为单位，≈ 窗口尺寸的 11%）。
-pub const WIN_AMP_UV: f32 = 0.085;
+/// 位移幅度 = **环带宽度的这个比例**（在环带中段达到最大，方向朝内）。
+///
+/// 为什么按环带算而不按窗口 uv 算：位移是"光在斜面里走多远"，量纲应该和
+/// 斜面宽度（= 环带）同源。按 uv 算会让宽高不同的窗口在横竖两个方向
+/// 折得不一样多。
+///
+/// 0.45 > 1/π ≈ 0.318 是**必须的**：只有 `幅度 × π > 环带宽度` 时，
+/// 屏幕位置→采样位置的映射才会**非单调**，也就是真的"折回来"；
+/// 小于这个值就只是把内容放大一下（用户 2026-10-26 正是嫌这个）。
+pub const WIN_AMP_FRAC: f32 = 0.45;
 
 /// 窗口折射强度（与 `app.rs` 传给 `Refraction` 的值同源）。
 ///
@@ -54,12 +62,12 @@ pub fn shader(tail: &str) -> String {
     format!(
         "const WIN_BAND_FRAC: f32 = {band:?};\n\
          const WIN_CORNER_R: f32 = {corner:?};\n\
-         const WIN_AMP_UV: f32 = {amp:?};\n\
+         const WIN_AMP_FRAC: f32 = {amp:?};\n\
          const WIN_STRENGTH: f32 = {strength:?};\n\
          {body}{tail}",
         band = WIN_BAND_FRAC,
         corner = WIN_CORNER_R,
-        amp = WIN_AMP_UV,
+        amp = WIN_AMP_FRAC,
         strength = WIN_STRENGTH,
         body = COMMON_BODY,
     )
@@ -123,25 +131,29 @@ fn rr_normal(p: vec2<f32>, half: vec2<f32>, r: f32) -> vec2<f32> {
     return select(flat_n, normalize(dv), length(dv) > 1e-4);
 }
 
-// 翻折剖面（iOS 液态玻璃的核心手感，见模块文档）
+// 翻折剖面：**只朝内**的平滑鼓包 —— 贴边 0、环带中段最大、内沿回到 0。
 //
-// `t` = 到边缘的距离 / 环带宽度（0 = 贴边，1 = 环带内沿）。
-// 返回**带符号**的位移权重：> 0 向外推（外圈鼓出），< 0 向内吸（回折）。
+// `t` = 到边缘的距离 / 环带宽度（0 = 贴边，1 = 环带内沿）；返回值 ≤ 0（朝内）。
+//
+// ## 为什么改掉上一版（外推 + 反向吸）
+//
+// 上一版贴边是**向外**推的 —— 等于把**窗外**的背景压进环带里。用户
+// 2026-10-26 实测："在边缘约 20% 的位置有明显的一条扭曲错误，再向外就变成了
+// 压缩周围的背景；我要的不是压缩窗口外围旁边的背景，而是翻折"。
+//
+// ## 现在为什么像"折"
+//
+// 位移只朝内、且中段最强 ⇒ 「屏幕位置 → 采样位置」这个映射在**靠外那一段是
+// 非单调的**（先吸得远、再回到贴边）⇒ 那一圈画的是折痕外侧的**倒影**。
+// 纸被折一下正是这个观感，而且永远不会把窗外的东西拉进来。
 //
 // ⚠️ 参数名不能叫 `t`：WGSL（naga）**不允许 `let` 覆盖同名参数**，
 // 写成 `let t = clamp(t, ..)` 会报 `redefinition of t`（实测踩过）。
 fn fold_profile(dist: f32) -> f32 {
     let t = clamp(dist, 0.0, 1.0);
-    // 外圈：贴边最猛、向里快速衰减（决定"够不够像玻璃"）
-    let out_w = exp(-t / 0.22);
-    // 内圈：靠近环带内沿才起来的反向吸力（翻折的来源）。
-    // 系数 0.45 是**实测调出来的**：0.9 时反向位移几乎和正向一样大，
-    // 在角上会把背景"撕"出一个硬三角（快照里一眼可见）；0.45 才像实拍图
-    // 那种"折一下、但不翻脸"的程度。
-    let in_w = 0.45 * exp(-(1.0 - t) / 0.36);
-    // 到环带内沿**严格归零**，否则会出现一条硬接缝
-    let cut = 1.0 - smoothstep(0.82, 1.0, t);
-    return (out_w - in_w) * cut;
+    // sin：两端严格为 0（与外圈/内沿都无缝），峰值在环带正中
+    let bump = sin(3.1415926536 * t);
+    return -bump;
 }
 
 // 角部加权：法线越"斜"（越靠角）位移越强 —— 实拍图里角上折得更狠
@@ -171,7 +183,10 @@ fn window_refract(s: vec2<f32>, win: vec2<f32>, strength: f32) -> vec2<f32> {
         return vec2<f32>(0.0);
     }
     let n = rr_normal(p, half, WIN_CORNER_R);
-    return n * (fold_profile(t) * corner_gain(n) * WIN_AMP_UV * strength);
+    // 位移先在**像素**口径里算（幅度按环带宽度给），最后折回 uv ——
+    // 这样横竖方向的折法一致，不会因为窗口宽高不同而一边折得多、一边少。
+    let disp_px = fold_profile(t) * corner_gain(n) * (WIN_AMP_FRAC * band) * strength;
+    return n * (disp_px / win);
 }
 "#;
 
@@ -208,7 +223,7 @@ mod tests {
         let s = shader("");
         assert!(s.contains(&format!("const WIN_BAND_FRAC: f32 = {WIN_BAND_FRAC:?};")));
         assert!(s.contains(&format!("const WIN_CORNER_R: f32 = {WIN_CORNER_R:?};")));
-        assert!(s.contains(&format!("const WIN_AMP_UV: f32 = {WIN_AMP_UV:?};")));
+        assert!(s.contains(&format!("const WIN_AMP_FRAC: f32 = {WIN_AMP_FRAC:?};")));
         assert!(s.contains(&format!("const WIN_STRENGTH: f32 = {WIN_STRENGTH:?};")));
         // 整数形式（`26;`）会让着色器编译失败，这里直接盯住它
         assert!(s.contains("WIN_CORNER_R: f32 = 26.0;"));

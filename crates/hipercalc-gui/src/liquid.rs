@@ -386,7 +386,7 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
         ) / u.win;
         let short = min(u.size.x, u.size.y);
         // 局部环带：`thick`（随圆角走）是下限，同时不小于短边的 18%
-        //（用户 2026-10-26："翻折在边缘约 10% 的地方"—— 18% 环带的零点在 8%）
+        //（用户 2026-10-26："翻折在边缘约 10% 的地方"—— 折痕在环带正中 ⇒ 9%）
         let lens_band = max(max(u.edge.x, 1.0), 0.18 * short);
 
         // 未经任何位移的采样点（窗口 uv → 图像 uv）
@@ -418,13 +418,15 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
             // `p` 是 y 向上的局部坐标；采样空间 y 向下 ⇒ 法线 y 取反
             let nloc = vec2<f32>(n_raw.x, -n_raw.y);
 
-            // **翻折剖面**：贴边外推 → 环带中段过零（翻折线）→ 内圈反向吸
+            // **翻折剖面**：只朝内的平滑鼓包（贴边 0 → 中段最深 → 内沿 0）。
+            // 幅度按**环带宽度**给（`bend` 是"折多深"的比例），
+            // 于是小按键与大面板折的是**同一个形状**、只是尺度不同。
             let t = inward / max(lens_band, 1.0);
             let fold = fold_profile(t) * corner_gain(nloc);
 
             // 位移用像素表达再折算成图像 uv（与抓屏分辨率、部件尺寸都解耦）
-            let strength_px = u.edge.y * clamp(short, 40.0, 240.0) * 0.8;
-            let bend_px = fold * strength_px;
+            let amp_px = u.edge.y * 4.5 * lens_band;
+            let bend_px = fold * amp_px;
             let dloc = nloc * (bend_px * u.map.xy / u.win);
 
             let disp = base + ring_off + dloc;

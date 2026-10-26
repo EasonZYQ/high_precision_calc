@@ -526,7 +526,7 @@ belong in this glass UI, so the title bar is drawn by the app
 | Math font | one of five bundled math fonts |
 | Language | Simplified Chinese / Traditional Chinese / English |
 | Render scale | 100% / 90% / 80% / 70% |
-| Allow screenshots | allow: captures work but the backdrop shows a faint reflection of this window; disallow: clean backdrop but captures miss the window |
+| Allow screenshots | allow: captures work **and** the backdrop still never shows this window (that rect is inpainted from its four edges); disallow: clean backdrop but captures miss the window |
 | Long results | wrap / horizontal scroll |
 
 ### 27.4.1 The CLI inside the GUI
