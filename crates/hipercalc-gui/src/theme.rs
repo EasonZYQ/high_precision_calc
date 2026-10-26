@@ -933,8 +933,10 @@ pub fn key_glass(kind: KeyKind, radius: f32) -> crate::liquid::Glass {
         spec: glass_spec(),
         // 边缘折射：厚度跟着圆角走（胶囊键几乎整条边都在弯），强度中等。
         // 按键是"薄玻璃"，弯得轻 —— 弯狠了小键会变成哈哈镜。
+        // 0.075 是 2026-10-26 加"翻折"后微调的值：翻折的负瓣本身会吃回一点
+        // 视觉强度，稍微抬一点正瓣才看得出"边缘折了一下"。
         thick: radius + 2.0,
-        bend: 0.06,
+        bend: 0.075,
     }
 }
 
@@ -978,7 +980,7 @@ pub fn panel_glass() -> crate::liquid::Glass {
         // 会拉得很长，看着像一条塑料反光条
         spec: glass_spec() * 0.62,
         thick: 30.0,
-        bend: 0.10,
+        bend: 0.12,
     }
 }
 

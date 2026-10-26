@@ -302,7 +302,7 @@ pub struct GlassPipeline {
 /// 即便全占满也只几十 KB，代价可以忽略。
 const MAX_SLOTS: usize = 256;
 
-const WGSL: &str = r#"
+const WGSL_TAIL: &str = r#"
 struct U {
     size: vec2<f32>,
     radius: f32,
@@ -344,46 +344,6 @@ fn vs(@builtin(vertex_index) i: u32) -> VOut {
     return o;
 }
 
-/// 背景采样：浮点半径（texel）+ 每像素旋转的 6 tap（与 `refraction.rs` 同一套）。
-fn sample_blur(uv: vec2<f32>, rad: vec2<f32>, seed: vec2<f32>) -> vec3<f32> {
-    let lo = vec2<f32>(0.001);
-    let hi = vec2<f32>(0.999);
-    if (rad.x < 1e-4 && rad.y < 1e-4) {
-        return textureSampleLevel(bg, samp, clamp(uv, lo, hi), 0.0).rgb;
-    }
-    let h = fract(sin(dot(seed, vec2<f32>(12.9898, 78.233))) * 43758.5453);
-    let a0 = h * 6.2831853;
-    let ca = cos(a0);
-    let sa = sin(a0);
-    // **两圈共 8 个环点**：内圈 4 个（0.55r）+ 外圈 4 个（1.0r）。
-    // 单圈在半径大时会看出"星芒"（只有几根辐条），加一圈后图案密一倍。
-    var ring = array<vec2<f32>, 8>(
-        vec2<f32>(0.55, 0.00),
-        vec2<f32>(-0.55, 0.00),
-        vec2<f32>(0.00, 0.55),
-        vec2<f32>(0.00, -0.55),
-        vec2<f32>(0.72, 0.69),
-        vec2<f32>(-0.72, 0.69),
-        vec2<f32>(0.72, -0.69),
-        vec2<f32>(-0.72, -0.69),
-    );
-    var acc = textureSampleLevel(bg, samp, clamp(uv, lo, hi), 0.0).rgb * 2.0;
-    var wsum = 2.0;
-    for (var i: i32 = 0; i < 8; i = i + 1) {
-        let o = ring[i];
-        let r = vec2<f32>(o.x * ca - o.y * sa, o.x * sa + o.y * ca);
-        acc = acc + textureSampleLevel(bg, samp, clamp(uv + r * rad, lo, hi), 0.0).rgb;
-        wsum = wsum + 1.0;
-    }
-    return acc / wsum;
-}
-
-// 圆角矩形的有向距离：负 = 在内部（单位 = 逻辑像素）
-fn sd_rr(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
-    let q = abs(p) - b + vec2<f32>(r);
-    return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - r;
-}
-
 @fragment
 fn fs(in: VOut) -> @location(0) vec4<f32> {
     let uv = in.uv;
@@ -415,22 +375,19 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     // **y 向下**的窗口坐标 `s`（与 refraction.rs 同一约定），采样 v = s.y。
     //
     // 两层扭曲按顺序叠加：
-    // a. **窗口边缘环带**（与 refraction.rs 同一套公式）：距窗口边 25% 短边
-    //    的环带内按边缘权重弯曲 —— 这样按钮采到的就是用户最终看到的那个
-    //    "已经弯过的背景"，而不是原始抓屏；
-    // b. **按钮局部凸透镜**：越靠近按钮边缘弯得越狠（`bend`），中心不动 ——
-    //    这就是玻璃按键"透出来的东西在边上被压弯"的来源。
+    // a. **窗口边缘环带**：调用与 `refraction.rs` **同一个** `window_refract`
+    //    —— 按键采到的就是用户在外面看到的那个"已经翻折过的背景"；
+    // b. **按钮局部透镜**：同一条翻折剖面（`fold_profile`），尺寸按部件短边缩放 ——
+    //    这就是玻璃按键"透出来的东西在边上先鼓出、再折回来"的来源。
     if (u.p.z > 0.5) {
         let s = vec2<f32>(
             u.origin.x + uv.x * u.size.x,
             u.origin.y + (1.0 - uv.y) * u.size.y,
         ) / u.win;
-        let dx = min(s.x, 1.0 - s.x) * u.win.x;
-        let dy = min(s.y, 1.0 - s.y) * u.win.y;
-        let band = 0.25 * min(u.win.x, u.win.y);
         let short = min(u.size.x, u.size.y);
-        // ⚠️ 名字不能叫 `band` —— 上面窗口环带那段已经用了这个名字（WGSL 会报重定义）
-        let lens_band = max(max(u.edge.x, 1.0), 0.085 * short);
+        // 局部环带：`thick`（随圆角走）是下限，同时不小于短边的 18%
+        //（用户 2026-10-26："翻折在边缘约 10% 的地方"—— 18% 环带的零点在 8%）
+        let lens_band = max(max(u.edge.x, 1.0), 0.18 * short);
 
         // 未经任何位移的采样点（窗口 uv → 图像 uv）
         let base = s * u.map.xy + u.map.zw;
@@ -438,54 +395,36 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
         let rad = (u.p.w * u.map.xy / u.win) * vec2<f32>(textureDimensions(bg));
         let seed = u.origin + uv * u.size;
 
+        // 窗口那一段的位移（与 refraction.rs 逐字同源）
+        let ring_off = window_refract(s, u.win, WIN_STRENGTH);
+
         var bgc: vec3<f32>;
         // ══ 快路径：面板"中间那块" ════════════════════════════════════════
         //
         // 用户要求"中间只用一次采样"，但**必须无缝** —— 所以判据不能是"猜一个阈值"，
         // 必须是**位移恰好为 0** 的地方：
-        // - 局部透镜：`cut = 1 - smoothstep(0.55·lens_band, lens_band, inward)`，
-        //   `inward >= lens_band` 时 smoothstep 已经饱和 ⇒ cut **严格 = 0** ⇒ 位移 0；
-        // - 窗口环带：`wgt = 1 - smoothstep(0, band, min(dx,dy))`，
-        //   `min(dx,dy) >= band` 时 **严格 = 0** ⇒ 位移 0。
+        // - 局部透镜：`fold_profile` 到 `t = 1` 时 `cut` 严格为 0 ⇒ 位移 0；
+        // - 窗口环带：`window_refract` 在 `t >= 1` 时**提前 return 0**。
         //
         // 两处都是"严格 0"而不是"接近 0"，所以快路径采的就是 `base` 本身，
         // 与完整路径**数学上完全等价** ⇒ 不会出现接缝/割裂（拖动窗口、背景变化都不怕）。
         // 模糊仍然照做（否则中间清晰、边缘糊，那才是真正的割裂）。
-        if (inward >= lens_band && min(dx, dy) >= band) {
+        if (inward >= lens_band && ring_off.x == 0.0 && ring_off.y == 0.0) {
             bgc = sample_blur(base, rad, seed);
         } else {
-            // ── 完整路径：窗口边缘环带 + 面板自身的凸透镜 ──────────────────
-            let wgt = pow(1.0 - smoothstep(0.0, band, min(dx, dy)), 1.6);
-            let cwin = s * 2.0 - vec2<f32>(1.0);
-            let nwin = normalize(cwin + vec2<f32>(1e-5));
-            let ring_off = nwin * (wgt * 0.10);
-
-            // **解析法线**（省掉 6 次 `sd_rr`）：圆角矩形的法线 = "最近点指向像素"，
-            // 落在直边上时退化成**轴对齐**的那条边（取 x/y 里更近的一条）。
-            let rr = max(u.radius, 0.0);
-            let inner = max(half - vec2<f32>(rr), vec2<f32>(0.0));
-            let q = clamp(p, -inner, inner);
-            let dv = p - q;
-            let ex = half.x - abs(p.x);
-            let ey = half.y - abs(p.y);
-            let flat_n = select(
-                vec2<f32>(sign(p.x), 0.0),
-                vec2<f32>(0.0, sign(p.y)),
-                ey < ex,
-            );
-            let n_raw = select(flat_n, normalize(dv), length(dv) > 1e-4);
+            // ── 完整路径：窗口环带 + 面板自身的翻折透镜 ──────────────────
+            // 解析法线（圆角矩形）：直边上轴对齐、圆角处指向圆心
+            let n_raw = rr_normal(p, half, max(u.radius, 0.0));
             // `p` 是 y 向上的局部坐标；采样空间 y 向下 ⇒ 法线 y 取反
             let nloc = vec2<f32>(n_raw.x, -n_raw.y);
 
-            // **两段剖面**：贴边一条陡壁 + 内侧一条缓坡（见 `refraction.rs` 同一套）
-            let wall = exp(-inward / max(0.09 * lens_band, 1.2));
-            let bevel = exp(-inward / max(0.80 * lens_band, 1.2));
-            let cut = 1.0 - smoothstep(0.55 * lens_band, lens_band, inward);
-            let t = clamp((0.62 * wall + 0.38 * bevel) * cut, 0.0, 1.0);
+            // **翻折剖面**：贴边外推 → 环带中段过零（翻折线）→ 内圈反向吸
+            let t = inward / max(lens_band, 1.0);
+            let fold = fold_profile(t) * corner_gain(nloc);
 
             // 位移用像素表达再折算成图像 uv（与抓屏分辨率、部件尺寸都解耦）
             let strength_px = u.edge.y * clamp(short, 40.0, 240.0) * 0.8;
-            let bend_px = t * t * strength_px;
+            let bend_px = fold * strength_px;
             let dloc = nloc * (bend_px * u.map.xy / u.win);
 
             let disp = base + ring_off + dloc;
@@ -581,7 +520,7 @@ impl GlassPipeline {
     fn build(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("hipercalc-liquid"),
-            source: wgpu::ShaderSource::Wgsl(WGSL.into()),
+            source: wgpu::ShaderSource::Wgsl(crate::glass_wgsl::shader(WGSL_TAIL).into()),
         });
 
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

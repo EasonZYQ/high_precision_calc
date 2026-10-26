@@ -1657,8 +1657,11 @@ impl State {
                 // - 亚克力：普通贴图（磨砂玻璃，不做形变）
                 // - 玻璃：走**折射 shader** —— 边缘被"压弯"，像一块凸透镜
                 // 扭曲强度：玻璃要"边缘被压弯"（0.85），亚克力是磨砂、**不做形变**（0.0）。
+                // 强度与 `liquid.rs` 共用同一个常量（`glass_wgsl::WIN_STRENGTH`）——
+                // 两边一旦不同，"按键里透出的背景"与"窗口边缘的背景"就会是
+                // 两种弯曲，按键边界处会露馅。
                 let strength = if theme::texture() == theme::Texture::Glass {
-                    0.85
+                    crate::glass_wgsl::WIN_STRENGTH
                 } else {
                     0.0
                 };

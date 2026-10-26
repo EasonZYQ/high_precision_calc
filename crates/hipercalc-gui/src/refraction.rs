@@ -14,14 +14,21 @@
 //!    并把"扭曲强度"写进 uniform；
 //! 3. [`RefractionPrimitive::draw`]：画一个**全屏三角形**（三个顶点盖满整个
 //!    bounds，比分两个三角形少一次顶点）；
-//! 4. WGSL 里按"到最近窗口边缘的距离"加权偏移 UV —— **中间一大块不动**，
-//!    只有靠边的环带（短边的 25%）逐渐弯曲，像一块有厚度的玻璃。
+//! 4. WGSL 里按"到窗口边缘的距离"算**翻折位移**：中间一大块不动，
+//!    只有靠边的环带（短边的 18%）里位移先外推、过零、再反向吸回来 ——
+//!    那道过零线就是用户说的"翻折"（用户 2026-10-26 对着 iOS 实拍图指出）。
+//!
+//! ## 公式在 `glass_wgsl.rs`
+//!
+//! 环带宽度 / 剖面 / 角部加权 / 圆角矩形 SDF 全部挪进了共用模块，
+//! 按键折射（`liquid.rs`）调用的是**同一份函数** —— 这样"按键里透出来的背景"
+//! 与"窗口边缘的背景"是同一次弯曲，不会在按键边界处露馅。
 //!
 //! ## 为什么不是真的曲面折射
 //!
 //! 真折射要追光线（Snell 定律），成本高且参数难调。这里用的是**视觉近似**：
-//! 偏移量 = 「边缘权重 × 强度」，中心平坦、贴边陡峭 —— 人眼看上去就是一块
-//! 有厚度的玻璃，而实现只有几行公式。
+//! 偏移量 = 「翻折剖面 × 法线 × 角部加权」，中心平坦、贴边最弯 —— 人眼看上去
+//! 就是一块有厚度、边缘被折了一下的玻璃，而实现只有几行公式。
 
 use iced::wgpu;
 use iced::widget::shader;
@@ -128,7 +135,7 @@ pub struct RefractionPipeline {
     last_version: u64,
 }
 
-const WGSL: &str = r#"
+const WGSL_TAIL: &str = r#"
 struct Uniforms {
     // 目标区域尺寸（逻辑像素）—— 边缘环带宽度按它算
     size: vec2<f32>,
@@ -166,44 +173,6 @@ fn vs(@builtin(vertex_index) i: u32) -> VOut {
     return o;
 }
 
-/// 背景采样：**半径是浮点**，`rad` 用 uv 表达（0 附近直接单次采样）。
-///
-/// 6 tap = 中心（权重 2）+ 5 个环点，且**每个像素旋转一个随机角度** ——
-/// 这是少采样也能得到平滑模糊的关键：固定图案在大半径下会看出"花瓣"，
-/// 随机旋转把图案打散成人眼认不出的噪声。
-fn sample_blur(uv: vec2<f32>, rad: vec2<f32>, seed: vec2<f32>) -> vec3<f32> {
-    let lo = vec2<f32>(0.001);
-    let hi = vec2<f32>(0.999);
-    if (rad.x < 1e-4 && rad.y < 1e-4) {
-        return textureSampleLevel(bg, samp, clamp(uv, lo, hi), 0.0).rgb;
-    }
-    let h = fract(sin(dot(seed, vec2<f32>(12.9898, 78.233))) * 43758.5453);
-    let a0 = h * 6.2831853;
-    let ca = cos(a0);
-    let sa = sin(a0);
-    // **两圈共 8 个环点**：内圈 4 个（0.55r）+ 外圈 4 个（1.0r）。
-    // 单圈在半径大时会看出"星芒"（只有几根辐条），加一圈后图案密一倍。
-    var ring = array<vec2<f32>, 8>(
-        vec2<f32>(0.55, 0.00),
-        vec2<f32>(-0.55, 0.00),
-        vec2<f32>(0.00, 0.55),
-        vec2<f32>(0.00, -0.55),
-        vec2<f32>(0.72, 0.69),
-        vec2<f32>(-0.72, 0.69),
-        vec2<f32>(0.72, -0.69),
-        vec2<f32>(-0.72, -0.69),
-    );
-    var acc = textureSampleLevel(bg, samp, clamp(uv, lo, hi), 0.0).rgb * 2.0;
-    var wsum = 2.0;
-    for (var i: i32 = 0; i < 8; i = i + 1) {
-        let o = ring[i];
-        let r = vec2<f32>(o.x * ca - o.y * sa, o.x * sa + o.y * ca);
-        acc = acc + textureSampleLevel(bg, samp, clamp(uv + r * rad, lo, hi), 0.0).rgb;
-        wsum = wsum + 1.0;
-    }
-    return acc / wsum;
-}
-
 @fragment
 fn fs(in: VOut) -> @location(0) vec4<f32> {
     // ⚠️ **先把 uv 转成 y 向下的屏幕坐标**。`in.uv` 来自 NDC（y 向上：
@@ -213,43 +182,23 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     // v = s.y 与抓屏行序天然一致，两层 shader 都按这个约定来。
     let s = vec2<f32>(in.uv.x, 1.0 - in.uv.y);
 
-    // ── 边缘环带扭曲（用户规格：中间一大块不动，只有靠窗口边缘才扭曲）─────
-    //
-    // 旧版是纯径向公式 `偏移 ∝ r³`：全窗口都有形变，实测观感是"整个背景
-    // 都被拧过"。现在改成**按"到最近窗口边缘的距离"加权**：
-    // - `d` = 到最近边的距离（像素，取四面里最近的那个）
-    // - 环带宽度 = 短边的 25%（用户拍板）：环带内扭曲线性增强，出环带严格为 0
-    // - `pow(.., 1.6)` 让贴边处弯得最狠、环带外沿平滑收零 —— 模仿按键边缘
-    //   那种"玻璃有厚度"的观感
+    // ── 到最近窗口边的距离（只给边缘高光用）─────────────────────────────
     let dx = min(s.x, 1.0 - s.x) * u.size.x;
     let dy = min(s.y, 1.0 - s.y) * u.size.y;
-    // 环带从 25% 收到 18%：同样的弯折量集中在更窄的一圈里，边缘才有"厚度"
-    let band = 0.18 * min(u.size.x, u.size.y);
     let dmin = min(dx, dy);
 
-    // ⚠️ 剖面：**两段指数**，不是一条平滑隆起。
+    // ── 折射：窗口环带的**翻折**位移 ────────────────────────────────────
     //
-    // 用户反馈："边缘完全是简单的扭曲，而不是 iOS 的折射"。之前的
-    // `pow(1-smoothstep, 1.6)` 是一条宽而均匀的隆起 —— 观感是"整块被轻轻推了一下"。
-    // 真实玻璃的边缘是**一条很陡的壁 + 内侧一条缓坡**：
-    // - `wall`（特征宽度 ≈ 6% 环带）：贴边 1~3px 内的强弯折，这一条决定"像不像玻璃"；
-    // - `bevel`（≈ 75% 环带）：把桌面内容缓慢压向边缘，给出"厚度"的错觉；
-    // - `cut`：到环带外沿**严格归零**，否则会看到一条突兀的接缝。
-    let wall = exp(-dmin / max(0.06 * band, 1.0));
-    let bevel = exp(-dmin / max(0.75 * band, 1.0));
-    let cut = 1.0 - smoothstep(0.55 * band, band, dmin);
-    let w = (0.70 * wall + 0.30 * bevel) * cut;
-    // 偏移方向仍用径向：在边缘附近它近似垂直于边缘（= 玻璃厚度的法线），
-    // 在角上则指向对角 —— 与按键拐角的弯法一致。
-    // `+ 1e-5` 防 `normalize(0)`：中心处 w 已是 0，方向随便给个非零向量即可。
-    let c = s * 2.0 - vec2<f32>(1.0);
-    let n = normalize(c + vec2<f32>(1e-5));
-    // 峰值偏移（× 滑条强度）。中心 0，贴边最弯。
-    let k = w * u.strength * 0.11;
+    // 用户 2026-10-26 对着 iOS 实拍图指出：边缘约 10% 处有一道**翻折**，
+    // 斜线在那里被折向另一个方向，越靠角折得越狠。
+    // 公式在 `glass_wgsl::COMMON_BODY` 里（与按键折射**同一份代码**，
+    // 这样贴边的键采到的背景和窗口边缘看到的是同一次弯曲）。
+    let off = window_refract(s, u.size, u.strength);
+
     // ── 窗口→背景图映射：窗口挪动时按原点差平移采样（拖动零抓屏）────────
     // 抓屏区域带外扩余量（见 backdrop::margin），余量内的偏移都落在
     // 真实像素上 —— 不再 clamp 到抓屏边缘（那会把最外一行拉成高饱和色块）。
-    var f = s * u.map.xy + u.map.zw + n * k;
+    var f = s * u.map.xy + u.map.zw + off;
     // 半径从"逻辑像素"折算成 uv：px → 窗口 uv（÷size）→ 图像 uv（×map.xy）
     let rad = u.blur * u.map.xy / u.size;
     var col = sample_blur(f, rad, in.uv);
@@ -283,7 +232,7 @@ impl RefractionPipeline {
     fn build(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("hipercalc-refraction"),
-            source: wgpu::ShaderSource::Wgsl(WGSL.into()),
+            source: wgpu::ShaderSource::Wgsl(crate::glass_wgsl::shader(WGSL_TAIL).into()),
         });
 
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

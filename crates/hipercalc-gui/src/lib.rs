@@ -47,6 +47,8 @@ pub mod evaluator;
 /// 输入框的**结构化表达式**模型（树 + 槽位光标）—— 见模块头。
 pub mod expr;
 pub mod fonts;
+/// 玻璃着色器的**共用 WGSL**（窗口折射与按键折射逐字共用，见模块文档）
+pub mod glass_wgsl;
 pub mod keypad;
 pub mod liquid;
 pub mod mathrender;
