@@ -503,25 +503,27 @@ fn dump_if_requested(bd: &Backdrop) {
     );
 }
 
-/// 把"自己窗口那一块"从抓到的桌面里**补掉**（四边双线性插值）。
+/// 把"自己窗口那一块"从抓到的桌面里**补掉**（四边平均色 + 双线性 + 抖动）。
 ///
 /// ## 为什么需要它
 ///
-/// 「允许截图」模式下我们不能用 `WDA_EXCLUDEFROMCAPTURE`（那会让微信/PrntSc
-/// 拍到一片空白），于是 **DXGI 桌面复制抓到的帧里有我们自己**（用户
-/// 2026-10-26："一打开允许截图，背景就会把自己加进去"）。
+/// 「允许截图」时不能用 `WDA_EXCLUDEFROMCAPTURE`（那会让微信/PrntSc 拍到空白），
+/// 于是 **DXGI 桌面复制抓到的帧里有我们自己**（用户 2026-10-26："一打开允许截图，
+/// 背景就会把自己加进去"）。
 ///
-/// ## 为什么不是"填一块平均色"
+/// ## 为什么不逐行/逐列取边界色（上一版，被否）
 ///
-/// 上一版填的是窗口外一圈的**平均色**，用户当时的反馈是"一块死板的色块"。
-/// 这里改成**四边插值**：左边取左边界外的颜色、右边取右边界外的颜色，
-/// 上下同理，按位置双线性混合 —— 补出来是一片**跟着周围渐变**的软过渡，
-/// 再被后面的模糊一过，几乎看不出来是补的。
+/// 上一版按每一行取"窗口左边那一列 / 右边那一列"的颜色再横向插值。桌面在
+/// **窗口左右边缘那两列**上的任何明暗结构（别的窗口边、壁纸的条带）都会被
+/// **原样拉成横贯整个窗口的条带**。用户实测："允许截图就会变成这样"（截图里
+/// 整片横向条纹）。
 ///
-/// ## 成本
+/// ## 现在的做法
 ///
-/// 按 8×8 像素**分块**计算（补出来本来就是平滑渐变，块内色差不到 1 个量化级），
-/// 846k 像素的窗口只需 1.3 万次循环 —— 相对抓屏本身的 3–5ms 可以忽略。
+/// 四条边各取一条 24px 宽**条带的平均色**（各一个颜色），窗口内部用这四个
+/// 颜色做双线性混合，再叠 ±1 个量化级的**抖动**（否则这么大的平坦渐变在
+/// 8bit 下会看到一条条等值线）。结果是一片**平滑、无结构**的过渡 —— 和被
+/// 模糊过的桌面在观感上是同一类东西，不会再出现假结构。
 ///
 /// `rect` 是**纹理坐标**（`x0, y0, x1, y1`，右/下为开区间）。
 fn inpaint_self_rect(rgba: &mut [u8], tw: usize, th: usize, rect: (i32, i32, i32, i32)) {
@@ -538,110 +540,112 @@ fn inpaint_self_rect(rgba: &mut [u8], tw: usize, th: usize, rect: (i32, i32, i32
         let i = (y * tw + x) * 4;
         [rgba[i] as f32, rgba[i + 1] as f32, rgba[i + 2] as f32]
     };
-    // 采样边界的**外侧 3px**（避开自己被模糊/抗锯齿染过的边缘）
+    // 条带取样：离窗口边界 3px 起，宽 24px（远离自己的圆角/抗锯齿）
     const OUT: usize = 3;
-    // 每条边的可用性：贴屏边时抓屏矩形被裁，外侧可能没有像素
-    let has_l = x0 >= OUT;
+    const STRIP: usize = 24;
+    let has_l = x0 > OUT;
     let has_r = x1 + OUT < tw;
-    let has_t = y0 >= OUT;
+    let has_t = y0 > OUT;
     let has_b = y1 + OUT < th;
     if !(has_l || has_r || has_t || has_b) {
         return;
     }
 
-    // 逐行/逐列取边界色（每条边一条线，成本 O(宽+高)）
-    let mut left = vec![[0.0f32; 3]; y1 - y0];
-    let mut right = left.clone();
-    for (k, y) in (y0..y1).enumerate() {
+    // 每条边一个平均色（条带内的像素平均）—— 刻意**丢掉**逐行结构
+    let mut acc = [[0.0f32; 3]; 4];
+    let mut cnt = [0.0f32; 4];
+    for y in y0..y1 {
         if has_l {
-            left[k] = at(x0 - OUT, y);
+            let xa = x0 - OUT - STRIP.min(x0 - OUT);
+            for x in xa..x0 - OUT {
+                let c = at(x, y);
+                acc[0] = add(acc[0], c);
+                cnt[0] += 1.0;
+            }
         }
         if has_r {
-            right[k] = at(x1 + OUT - 1, y);
+            for x in x1 + OUT..(x1 + OUT + STRIP).min(tw) {
+                let c = at(x, y);
+                acc[1] = add(acc[1], c);
+                cnt[1] += 1.0;
+            }
         }
     }
-    let mut top = vec![[0.0f32; 3]; x1 - x0];
-    let mut bottom = top.clone();
-    for (k, x) in (x0..x1).enumerate() {
+    for x in x0..x1 {
         if has_t {
-            top[k] = at(x, y0 - OUT);
+            let ya = y0 - OUT - STRIP.min(y0 - OUT);
+            for y in ya..y0 - OUT {
+                let c = at(x, y);
+                acc[2] = add(acc[2], c);
+                cnt[2] += 1.0;
+            }
         }
         if has_b {
-            bottom[k] = at(x, y1 + OUT - 1);
+            for y in y1 + OUT..(y1 + OUT + STRIP).min(th) {
+                let c = at(x, y);
+                acc[3] = add(acc[3], c);
+                cnt[3] += 1.0;
+            }
         }
     }
+    let mut side = [[0.0f32; 3]; 4];
+    let mut have = [false; 4];
+    for k in 0..4 {
+        if cnt[k] > 0.0 {
+            side[k] = scale(acc[k], 1.0 / cnt[k]);
+            have[k] = true;
+        }
+    }
+    // 缺哪边就用其余各边的平均（贴屏边时抓屏矩形被裁，那一侧本来就没有像素）
+    let mut all = [0.0f32; 3];
+    let mut n_all = 0.0f32;
+    for k in 0..4 {
+        if have[k] {
+            all = add(all, side[k]);
+            n_all += 1.0;
+        }
+    }
+    let fallback = scale(all, 1.0 / n_all.max(1.0));
+    for k in 0..4 {
+        if !have[k] {
+            side[k] = fallback;
+        }
+    }
+    let (l, r, t, b) = (side[0], side[1], side[2], side[3]);
 
-    const STEP: usize = 8;
     let w = (x1 - x0) as f32;
     let h = (y1 - y0) as f32;
-    let mut by = y0;
-    while by < y1 {
-        // ⚠️ 用**块左/上边缘**的 u/v，不是块中心：中心会让第一块的左缘就掺进
-        // 20% 对侧颜色，接缝处出现一个明显的台阶（单测里差 34 个量化级）。
-        let v = (by as f32 - y0 as f32) / h;
-        let mut bx = x0;
-        while bx < x1 {
-            let u = (bx as f32 - x0 as f32) / w;
-            let (kx, ky) = (bx - x0, by - y0);
-            // 横向估计：左边界 → 右边界
-            let mut hsum = [0.0f32; 3];
-            let mut hn = 0.0f32;
-            if has_l {
-                hsum = add(hsum, scale(left[ky], 1.0 - u));
-                hn += 1.0 - u;
-            }
-            if has_r {
-                hsum = add(hsum, scale(right[ky], u));
-                hn += u;
-            }
-            // 纵向估计：上边界 → 下边界
-            let mut vsum = [0.0f32; 3];
-            let mut vn = 0.0f32;
-            if has_t {
-                vsum = add(vsum, scale(top[kx], 1.0 - v));
-                vn += 1.0 - v;
-            }
-            if has_b {
-                vsum = add(vsum, scale(bottom[kx], v));
-                vn += v;
-            }
-            // 越靠边越信"垂直于该边的那一路"，越靠中间两路越平均
-            let wv = if vn > 0.0 { 4.0 * u * (1.0 - u) } else { 0.0 };
-            let wh = if hn > 0.0 { 4.0 * v * (1.0 - v) } else { 0.0 };
-            let hcol = if hn > 0.0 {
-                scale(hsum, 1.0 / hn)
-            } else {
-                [0.0; 3]
-            };
-            let vcol = if vn > 0.0 {
-                scale(vsum, 1.0 / vn)
-            } else {
-                [0.0; 3]
-            };
-            let (a, b) = if hn > 0.0 && vn > 0.0 {
-                (wh, wv)
-            } else if hn > 0.0 {
-                (1.0, 0.0)
-            } else {
-                (0.0, 1.0)
-            };
-            let sum = (a + b).max(1e-6);
-            let c = add(scale(hcol, a / sum), scale(vcol, b / sum));
-            // 填块
-            let ye = (by + STEP).min(y1);
-            let xe = (bx + STEP).min(x1);
-            for y in by..ye {
-                for x in bx..xe {
-                    let i = (y * tw + x) * 4;
-                    rgba[i] = c[0].clamp(0.0, 255.0) as u8;
-                    rgba[i + 1] = c[1].clamp(0.0, 255.0) as u8;
-                    rgba[i + 2] = c[2].clamp(0.0, 255.0) as u8;
-                    rgba[i + 3] = 255;
-                }
-            }
-            bx += STEP;
+    // 到四条边的归一化距离：越贴哪条边，那条边的颜色权重越大（1/d²）。
+    // ⚠️ 这样**每条边上的颜色就等于那条边的平均色**，与外侧真实像素**连续**；
+    // 内部自然过渡到四色平均。用"两组线性插值再平均"做不到这一点（实测接缝差 65 级）。
+    const EDGE_EPS: f32 = 0.02;
+    for y in y0..y1 {
+        let v = (y - y0) as f32 / h;
+        let (dv_t, dv_b) = (v + EDGE_EPS, 1.0 - v + EDGE_EPS);
+        for x in x0..x1 {
+            let u = (x - x0) as f32 / w;
+            let (du_l, du_r) = (u + EDGE_EPS, 1.0 - u + EDGE_EPS);
+            let (wl, wr) = (1.0 / (du_l * du_l), 1.0 / (du_r * du_r));
+            let (wt, wb) = (1.0 / (dv_t * dv_t), 1.0 / (dv_b * dv_b));
+            let sum = wl + wr + wt + wb;
+            let mut c = scale(
+                add(
+                    add(scale(l, wl), scale(r, wr)),
+                    add(scale(t, wt), scale(b, wb)),
+                ),
+                1.0 / sum,
+            );
+            // ±1 级抖动：打断 8bit 平坦渐变的等值线（用户看到的"横向条带"有一部分
+            // 就是量化条带）
+            let n = ((x.wrapping_mul(73_856_093) ^ y.wrapping_mul(19_349_663)) & 0xFF) as f32;
+            let d = (n / 255.0 - 0.5) * 1.6;
+            c = add(c, [d, d, d]);
+            let i = (y * tw + x) * 4;
+            rgba[i] = c[0].clamp(0.0, 255.0) as u8;
+            rgba[i + 1] = c[1].clamp(0.0, 255.0) as u8;
+            rgba[i + 2] = c[2].clamp(0.0, 255.0) as u8;
+            rgba[i + 3] = 255;
         }
-        by += STEP;
     }
 }
 

@@ -120,15 +120,35 @@ fn sd_rr(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
     return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - r;
 }
 
-// 圆角矩形的**解析法线**（单位向量，指向外）：直边上轴对齐、圆角处指向圆心
-fn rr_normal(p: vec2<f32>, half: vec2<f32>, r: f32) -> vec2<f32> {
-    let rr = max(r, 0.0);
-    let inner = max(half - vec2<f32>(rr), vec2<f32>(0.0));
-    let dv = p - clamp(p, -inner, inner);
-    let ex = half.x - abs(p.x);
-    let ey = half.y - abs(p.y);
-    let flat_n = select(vec2<f32>(sign(p.x), 0.0), vec2<f32>(0.0, sign(p.y)), ey < ex);
-    return select(flat_n, normalize(dv), length(dv) > 1e-4);
+// 圆角矩形的法线：**连续场**，没有分界线。
+//
+// ## 为什么不能"取最近的那条边"
+//
+// 上一版是 `select(水平法线, 垂直法线, ey < ex)` —— 到两条边的距离相等那条
+// **45° 对角线**上，法线会从一个方向瞬间翻到另一个方向。用户 2026-10-26：
+// "角上为什么有斜向的分界线，iOS 里可没有，而是平滑连接"。
+// 根源就是这个硬切换：位移方向突变 ⇒ 折痕边缘出现一条直边。
+//
+// ## 现在的做法：按 1/距离 加权
+//
+// `nx ∝ sign(px) / (到左右边的距离 + ε)`、`ny ∝ sign(py) / (到上下边的距离 + ε)`：
+// - 贴左右边 ⇒ 分母小 ⇒ x 分量占主导（法线水平）；
+// - 贴上下边 ⇒ y 分量主导；
+// - 45° 处两者相等 ⇒ 自然转到 45°，**连续**，不需要分支；
+// - `ε` 取短边的 4%：小按键转得利落，大窗口转得平缓。
+//
+// ⚠️ 参数名不能叫 `r` 而内部又用不到它 —— 保留参数是为了调用点一致（圆角
+// 已经被"到边的距离"隐含表达：圆角处两个距离都小 ⇒ 法线自然指向角）。
+fn rr_normal(p: vec2<f32>, half: vec2<f32>, _r: f32) -> vec2<f32> {
+    let eps = max(0.04 * min(half.x, half.y), 0.75);
+    let ex = max(half.x - abs(p.x), 0.0) + eps;
+    let ey = max(half.y - abs(p.y), 0.0) + eps;
+    let n = vec2<f32>(sign(p.x) / ex, sign(p.y) / ey);
+    // 正中心：两个分量都是 0（sign(0)），给一个任意方向避免 normalize(0)
+    if (length(n) < 1e-6) {
+        return vec2<f32>(1.0, 0.0);
+    }
+    return normalize(n);
 }
 
 // 翻折剖面：**只朝内**的平滑鼓包 —— 贴边 0、环带中段最大、内沿回到 0。
