@@ -3008,8 +3008,7 @@ fn ineq_result(items: Vec<(String, Vec<Expr>)>) -> Result<EvalResult, String> {
         let code = match &op {
             Expr::Number(n) => n
                 .as_rational()
-                .map(|r| r.to_integer().to_u8())
-                .flatten()
+                .and_then(|r| r.to_integer().to_u8())
                 .unwrap_or(0),
             _ => return Err("不等式的运算符编码异常".to_string()),
         };
@@ -3106,7 +3105,7 @@ pub fn parse_and_eval(input: &str, evaluator: &mut Evaluator) -> Result<EvalResu
     match expr {
         // 不等式（组）：元素是脱糖出的 `ineq(f, 0, op)` 调用
         Expr::Function(name, args) if name == "ineq" => {
-            return crate::parser::ineq_result(vec![(name, args)]);
+            crate::parser::ineq_result(vec![(name, args)])
         }
         Expr::System(eqs) => {
             if eqs

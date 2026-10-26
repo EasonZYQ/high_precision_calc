@@ -116,16 +116,15 @@ fn solve_one(ev: &Evaluator, f: &Expr, op: u8, var: char) -> Result<Vec<Interval
 
     // 实根（去重后升序）。复根不参与分段。
     let mut roots: Vec<BigRational> = Vec::new();
-    if !coeffs.iter().all(|c| c.is_zero()) {
-        if let Ok(sols) = crate::solver_poly::solve_poly_full(&coeffs) {
-            for s in sols {
-                if let crate::solver_poly::PolySolution::Real(n) = s {
-                    if let Some(r) = n.as_rational() {
-                        if !roots.contains(&r) {
-                            roots.push(r);
-                        }
-                    }
-                }
+    if !coeffs.iter().all(|c| c.is_zero())
+        && let Ok(sols) = crate::solver_poly::solve_poly_full(&coeffs)
+    {
+        for s in sols {
+            if let crate::solver_poly::PolySolution::Real(n) = s
+                && let Some(r) = n.as_rational()
+                && !roots.contains(&r)
+            {
+                roots.push(r);
             }
         }
     }

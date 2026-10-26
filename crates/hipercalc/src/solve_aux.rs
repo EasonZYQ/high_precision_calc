@@ -554,11 +554,18 @@ pub fn try_exponential_equation(
     let a_f = BigFloat::from_big_rational(&base_lin.1);
     let c_f = BigFloat::from_big_rational(&c_lin.1);
     // 底数必须为正且 ≠1（负底数的实数幂只在特殊点有定义；1^x 恒为 1）⇒ 交给通用路径
-    if !(a_f > BigFloat::from_u64(0)) || a_f == BigFloat::from_u64(1) {
+    //
+    // ⚠️ 不要写成 `!(a_f > 0)`：`BigFloat` 是偏序，取反会**连带把"不可比"也当成
+    // "不大于"**（clippy 的 neg_cmp_op_on_partial_ord 就是在提醒这一点）。
+    // 这里显式用 `partial_cmp`：只有明确 `Greater` 才算"为正"。
+    let zero = BigFloat::from_u64(0);
+    let one = BigFloat::from_u64(1);
+    let positive = |x: &BigFloat| matches!(x.partial_cmp(&zero), Some(std::cmp::Ordering::Greater));
+    if !positive(&a_f) || a_f == one {
         return None;
     }
     // 右端必须为正（否则实数域无解；复数解交给通用路径）
-    if !(c_f > BigFloat::from_u64(0)) {
+    if !positive(&c_f) {
         return None;
     }
 

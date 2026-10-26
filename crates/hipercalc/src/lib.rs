@@ -3281,7 +3281,7 @@ fn handle_let(input: &str, state: &mut AppState) {
     };
     let name = name.trim();
     // 内置物理常量是**只读**的：这些名字已从变量命名空间收回（见 parser::PHYS_CONSTANTS）
-    if crate::parser::is_phys_constant(&name) {
+    if crate::parser::is_phys_constant(name) {
         leprint!(
             "{}",
             i18n::fmt("{0} 是内置物理常量（只读），不能用作变量名", &[name])
