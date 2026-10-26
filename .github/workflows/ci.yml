@@ -37,6 +37,19 @@ jobs:
       - name: Check hipercalc-gui (all targets)
         run: cargo check -p hipercalc-gui --all-targets
 
+      # **GUI 的逻辑测试也要进 CI**（2026-10-26 加）。
+      #
+      # 之前这条 job 只 `check`：GUI 的 149 个 lib 测试（结构化输入、式子编辑、
+      # 键盘映射、主题/字体选择、背景填充……）**从来没在 CI 跑过** —— 本地忘了跑
+      # 就能把行为改坏而 CI 全绿。这些测试不碰 wgpu、不建窗口，跑完约 1 秒。
+      #
+      # ⚠️ 只在 Windows 跑：macOS runner 排队严重（本次实测多次被 cancelled），
+      # 而这条链路（MathIO 解析 / 槽位光标 / 填充数学）本来就与平台无关；
+      # 真正要 GPU 的快照测试（17 张）仍然只在本地跑，见 `tests/snapshot.rs` 的说明。
+      - name: Test hipercalc-gui (lib)
+        if: runner.os == 'Windows'
+        run: cargo test -p hipercalc-gui --lib
+
   # 三平台跑构建 + 单元测试
   test:
     name: Test (${{ matrix.os }})
