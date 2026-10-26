@@ -479,11 +479,21 @@ The CLI syntax works **unchanged** — the GUI is a shell around the same evalua
 
 | Area | Contents |
 |---|---|
+| **Title bar (custom-drawn)** | app name + subtitle; minimize / maximize-restore / close on the right. Drag anywhere on it to move the window, **double-click** to toggle maximize |
 | Toolbar | mode (`MathIO` / `LineIO`), angle (`DEG` / `RAD`), calc mode (fast / deep), `>_` (open the CLI), `⚙` settings, clear history |
 | Input | a **structured** editor (fractions / roots / powers / Σ are real layout nodes) plus `C` and `=` |
 | Results | real math typesetting: stacked fractions, root overlines, superscripts, Σ limits |
 | Keypad | Desmos-style panels: main / functions / units / constants |
 | Status bar | current keypad panel and evaluation time |
+
+The window has **no system title bar** (`decorations: false`) — a Win32 grey strip does not
+belong in this glass UI, so the title bar is drawn by the app
+(`crates/hipercalc-gui/src/chrome.rs`):
+
+- **Move**: drag anywhere on the title bar; snapping to screen edges still works (the OS move loop);
+- **Resize**: move the pointer to any edge or corner (the cursor turns into ↔ / ↖ …) and drag;
+- **Double-click** the title bar to maximize / restore; resize handles are hidden while maximized;
+- Maximizing via `Win+↑` / `Win+←` or double-click updates the button icon automatically.
 
 ### 27.2 Keys
 

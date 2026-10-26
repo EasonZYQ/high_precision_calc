@@ -54,11 +54,19 @@ fn main() -> iced::Result {
                 let k = hipercalc::session::GuiPrefs::load()
                     .ui_scale
                     .clamp(0.5, 1.0);
-                iced::Size::new(940.0 * k, 860.0 * k)
+                // 高度 +40：自绘标题栏占 34px（`chrome::TITLEBAR_H`），
+                // 不补的话内容区会比以前矮一截
+                iced::Size::new(940.0 * k, 900.0 * k)
             },
             // 透明窗口：让 DWM 的亚克力透上来。探测失败时
             // `theme::root` 会给出不透明背景，观感依然完整。
             transparent: true,
+            // **不要系统标题栏**：Win32 灰条 + 直角边框与这套玻璃界面是两种语言
+            //（用户 2026-10-26："程序窗口与程序的现代化界面严重割裂"）。
+            // 拖动 / 缩放 / 最小化 / 最大化 / 关闭全部由 `chrome.rs` 自绘补上。
+            decorations: false,
+            // 低于这个尺寸布局就挤不下了（键盘 4 行 + 输入区 + 历史区）
+            min_size: Some(iced::Size::new(720.0, 640.0)),
             ..window::Settings::default()
         })
         .centered()

@@ -689,6 +689,44 @@ pub fn root(_theme: &Theme) -> container::Style {
     }
 }
 
+/// **自绘标题栏按钮**（最小化 / 最大化·还原 / 关闭）。
+///
+/// 三个按钮共用一套底色规则：
+/// - 常态完全透明（标题栏要像"没有任何按钮"，只有悬停才浮出来）；
+/// - 悬停 = 文字色 8% 叠加（深浅主题自动跟着文字色走，不用两套常量）；
+/// - 按下再深一档；
+/// - 关闭键换成危险色 22% 叠加 —— 比整块红底克制，深色主题下的浅色图标
+///   也不会糊在红底上。
+///
+/// ⚠️ 右上角要给圆角（`top_right`）：窗口是圆角的，悬停方块若画成直角会
+/// 在圆角外侧戳出一块。左上角贴着标题栏中线，不需要圆角。
+pub fn caption(_theme: &Theme, status: button::Status, close: bool) -> button::Style {
+    let c = colors();
+    let (hover, press) = if close {
+        (c.danger.scale_alpha(0.22), c.danger.scale_alpha(0.34))
+    } else {
+        (c.text.scale_alpha(0.08), c.text.scale_alpha(0.16))
+    };
+    let background = match status {
+        button::Status::Hovered => Some(Background::Color(hover)),
+        button::Status::Pressed => Some(Background::Color(press)),
+        _ => None,
+    };
+    button::Style {
+        background,
+        text_color: c.text_dim,
+        border: Border {
+            // 只有右上角跟随窗口圆角
+            radius: iced::border::Radius {
+                top_right: 8.0,
+                ..iced::border::Radius::default()
+            },
+            ..Border::default()
+        },
+        ..button::Style::default()
+    }
+}
+
 /// 工具条上的模式按钮。
 ///
 /// 四态都必须显式给色 —— iced 的默认按钮样式在自定义主题下不好看，

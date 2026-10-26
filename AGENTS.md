@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**已可用**：计算 / **后台求值（界面永不卡死）** / **耗时显示（对标 CLI）** / 历史 / Desmos 式双面板虚拟键盘 / 函数弹窗 / 数学排版与实时预览 / 内置字体 / 深浅双主题 / 全界面多语言）。**当前版本 2.0.0**，**含 373 项测试**（hipercalc 200 + core 22 + GUI 134 单测 + 16 快照 + 1 doctest，其中 2 项默认 ignore），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
+`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**已可用**：计算 / **后台求值（界面永不卡死）** / **耗时显示（对标 CLI）** / 历史 / Desmos 式双面板虚拟键盘 / 函数弹窗 / 数学排版与实时预览 / 内置字体 / **自绘窗口栏（无系统标题栏）** / 深浅双主题 / 全界面多语言）。**当前版本 2.0.0**，**含 373 项测试**（hipercalc 200 + core 22 + GUI 134 单测 + 16 快照 + 1 doctest，其中 2 项默认 ignore），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
 
 **CI 分三块**：三平台 build + test（**只覆盖 default-members = core+cli**）、`Check GUI`（windows + `cargo check -p hipercalc-gui --all-targets`，2026-10-22 加，因为曾出现"CI 全绿但 GUI 编译不过"）、6 目标交叉编译。发布走 `release.yml`：tag 触发，**CLI 六目标 + GUI 三平台（Windows / macOS / Linux）**。Linux GUI 要 apt 装 libxkbcommon / wayland / x11 / fontconfig 开发包（见 workflow 里的 `Install Linux GUI deps`）。
 
@@ -94,6 +94,7 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
 
   | 文件 | 职责 |
   | --- | --- |
+  | `chrome.rs` | **自绘窗口栏**：标题栏（拖动 / 双击最大化）+ 最小化·最大化·关闭 + 8 向缩放热区。窗口 `decorations: false`，系统那套行为全由这里补（`window::drag` / `drag_resize` / `minimize` / `maximize` / `close`）。缩放热区是自定义 `Widget` —— 只有它能上报 `mouse::Interaction`（贴边变成 ↔ 光标），`mouse_area` 做不到 |
   | `app.rs` | 状态 / 消息 / update / view；**所有业务逻辑都在 `update` 里**，`view` 只读状态。求值与 UI 通过 `evaluator` 通信，`update` 本体永不阻塞 |
   | `evaluator.rs` | **后台求值线程**：常驻 worker 独占 `Session`，`mpsc` 收发 `Request::{Eval, Config}`；`Evaluator::eval` 返回一条**真异步** future（`futures::oneshot` 唤醒），由 `app.rs` 交给 `Task::perform`。⚠️ 刻意不含 `SetLang`（语言必须在 UI 线程同步设） |
   | `expr.rs` | **输入框的结构化模型**：`Expr` 树（分数/根号/幂/大运算符/括号，每个复合节点有命名**插槽**）+ `Cursor{path, at}`（指向插槽内的位置，不是字符偏移）+ 编辑操作（插入/退格/删除/左右移动/点击定位）+ 序列化（`Expr → MathIO` 文本，求值只走这一条）+ 树 → `mathrender::Node`（顺带登记可点目标）。纯函数、可脱 GUI 单测；⚠️ 见下方"为什么输入框必须是树" |

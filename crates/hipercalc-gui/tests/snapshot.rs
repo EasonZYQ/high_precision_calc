@@ -29,7 +29,7 @@ const SNAP_DIR: &str = "tests/snapshots";
 
 /// 固定视口尺寸 —— 必须与 `main.rs` 的 `window::Settings.size` 一致，
 /// 否则快照里看到的布局不等于用户真实看到的布局（这类偏差最难发现）
-const VIEWPORT: (f32, f32) = (880.0, 780.0);
+const VIEWPORT: (f32, f32) = (940.0, 900.0);
 
 /// 全局串行锁 —— **不是可选项**。
 ///
@@ -140,6 +140,26 @@ fn function_panel_snapshot() {
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "函数弹窗界面与基线不一致：{path}"
+    );
+}
+
+/// **自绘标题栏（最大化态）**：第三个按钮要画成"还原"（两个错开的小方块）。
+///
+/// 标题栏是窗口装饰之外的唯一"窗口级 UI"，它的三种图标（最小化 / 最大化 /
+/// 还原 / 关闭）都要有视觉回归 —— 平时快照只能看到"最大化"那一种
+///（默认未最大化），所以单独拍一张最大化态的。
+#[test]
+fn titlebar_maximized_snapshot() {
+    let _guard = lock();
+    let mut state = State::default();
+    state.set_dark_for_test(true);
+    state.set_maximized_for_test(true);
+
+    let snapshot = snap(&state);
+    let path = format!("{SNAP_DIR}/titlebar-max.png");
+    assert!(
+        snapshot.matches_image(&path).expect("快照比对/写入失败"),
+        "标题栏（最大化态）与基线不一致：{path}"
     );
 }
 

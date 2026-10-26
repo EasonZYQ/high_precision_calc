@@ -209,6 +209,17 @@ pub fn window_title(_state: &State) -> String {
     t("HiPerCalc — 超高精度计算器")
 }
 
+/// 拿到"最新那个窗口"的 id 再执行一个窗口命令。
+///
+/// iced 的窗口命令都要 `window::Id`，而 `State` 里刻意**不存** id
+/// （多窗口以后会变，且 id 是运行时分配、测试里也不存在）。`latest()` 是
+/// 异步查一次，代价可以忽略。
+fn win_task(f: impl Fn(iced::window::Id) -> Task<Message> + Send + 'static) -> Task<Message> {
+    // ⚠️ 这里用的是 `impl Task<Option<T>>` 上那个**特化**的 `and_then`：
+    // 它只在真的拿到窗口时才继续，闭包直接收 `Id`（不是 `Option<Id>`）。
+    iced::window::latest().and_then(f)
+}
+
 /// 抓屏数据的进程级快照：
 /// `(像素, 抓屏区域原点x, y, 纹理像素宽, 高, 抓屏区域物理宽, 高)`，见 [`State::bg_pixels`]。
 ///
@@ -266,6 +277,11 @@ pub struct State {
     input_hint: Option<String>,
     /// 深色模式
     pub dark: bool,
+    /// 窗口当前是否最大化（决定标题栏第三个按钮画"最大化"还是"还原"）。
+    ///
+    /// 由 `window::is_maximized` 回报（[`State::sync_max_state`]），**不是**本地猜测：
+    /// 双击标题栏、Win+↑、拖到屏幕顶部都会最大化，本地记的位必然漂。
+    maximized: bool,
     /// 玻璃（liquid glass）强度：`0.0` = 关闭（不透明纯色），`1.0` = 最强。
     ///
     /// ⚠️ 与 [`theme::set_glass`] **双写**：样式函数的签名是 `Fn(&Theme) -> Style`、
@@ -548,6 +564,13 @@ pub enum Message {
     /// 窗口**被移动**了（只要求重绘，不要求重抓 —— 背景靠 uv 偏移跟手，
     /// 见 [`State::bg_cycle`] 里"拖动中跳过抓屏"的说明）。
     WindowMoved,
+    /// 自绘窗口栏发来的意图（拖动 / 缩放 / 三个按钮）。
+    ///
+    /// 只用一个透传变体，而不是拆成五条消息：窗口栏的意图与 `app` 的处理
+    /// 是**一对一**的，拆开只会让 match 变长。
+    Chrome(crate::chrome::ChromeMessage),
+    /// 窗口的最大化状态（查询回来后同步给标题栏图标）。
+    WindowMaxState(bool),
     /// 抓屏链的**内部续期**（只有链自己会发，外部不许发）。
     ///
     /// 与 `CaptureBg` 分开是"单链"能成立的关键：`CaptureBg` 在链已经跑着时
@@ -671,6 +694,7 @@ impl State {
             persist,
             show_funcs: false,
             show_settings: false,
+            maximized: false,
             last_input: String::new(),
             panel: Panel::default(),
             ctrl_held: false,
@@ -989,13 +1013,18 @@ impl State {
                         theme::set_bg_ready(false);
                     }
                     self.bg_running = false;
-                    return Task::none();
+                    // 玻璃关着也要同步最大化状态（标题栏图标不能停在旧样子）
+                    return Self::sync_max_state();
                 }
                 // ⚠️ **链已经在跑就只打个标记，绝不再起第二条**。
                 //
                 // 这是"延迟越来越高、且永远不恢复"的根因（详见 [`State::bg_running`]
                 // 的注释）：实测启动即有 3 条链并发抓屏，拖一下窗口就是几十条。
-                return self.bg_request();
+                //
+                // 顺带同步最大化状态：`Resized` 是这里唯一的触发源，
+                // 而最大化/还原必然伴随尺寸变化 —— 两件事合在一条消息里做，
+                // 省掉一个额外的订阅。
+                return Task::batch([self.bg_request(), Self::sync_max_state()]);
             }
             // 链的内部续期：无条件再跑一轮（唯一的循环入口）
             Message::BgTick => return self.bg_cycle(),
@@ -1007,6 +1036,15 @@ impl State {
             Message::WindowMoved => {
                 self.bg_moved = true;
                 self.bg_dirty = true;
+            }
+            // ── 自绘窗口栏 ────────────────────────────────────────────────
+            Message::Chrome(action) => return self.chrome(action),
+            Message::WindowMaxState(max) => {
+                // 只在与当前不同时改 —— 每次改都会触发一次重建 view/重绘，
+                // 而窗口缩放期间 `Resized` 会连着来好几十条。
+                if self.maximized != max {
+                    self.maximized = max;
+                }
             }
             Message::BgCaptured(bd) => {
                 if let Some(b) = bd {
@@ -1167,6 +1205,57 @@ impl State {
     fn clear_input(&mut self) {
         self.input.clear();
         self.input_hint = None;
+    }
+
+    // ── 自绘窗口栏（标题栏 / 缩放 / 三键）──────────────────────────────────
+
+    /// 标题栏组件。
+    ///
+    /// 副标题走 `i18n`（中文"超高精度计算器"/英文"High-Precision Calculator"），
+    /// 品牌名 `HiPerCalc` 是专有名词，不翻译。
+    fn titlebar_area(&self) -> Element<'_, Message> {
+        crate::chrome::titlebar(
+            "HiPerCalc".to_string(),
+            t("超高精度计算器"),
+            self.maximized,
+            Message::Chrome,
+        )
+    }
+
+    /// 窗口栏的意图 → 系统窗口命令。
+    ///
+    /// ⚠️ 拖动 / 缩放都是**把控制权交给系统**（`drag` / `drag_resize` 会进入
+    /// Windows 自己的移动/缩放循环），我们不跟踪 mousemove —— 那样既跟不牢，
+    /// 也会和 DWM 的贴边吸附、Win+方向键冲突。
+    fn chrome(&mut self, action: crate::chrome::ChromeMessage) -> Task<Message> {
+        use crate::chrome::ChromeMessage as C;
+        use iced::window;
+        match action {
+            C::Drag => win_task(window::drag),
+            C::Resize(dir) => {
+                // 最大化时不允许拖边（系统也不允许，这里直接忽略）
+                if self.maximized {
+                    return Task::none();
+                }
+                win_task(move |id| window::drag_resize(id, dir))
+            }
+            C::Minimize => win_task(|id| window::minimize::<Message>(id, true)),
+            C::ToggleMax => {
+                // 乐观更新：图标立刻切成"还原"，系统那边稍后由 `is_maximized` 校准
+                let next = !self.maximized;
+                self.maximized = next;
+                win_task(move |id| window::maximize::<Message>(id, next))
+            }
+            C::Close => win_task(window::close::<Message>),
+        }
+    }
+
+    /// 查一次"窗口是否最大化"，结果经 [`Message::WindowMaxState`] 回来。
+    ///
+    /// 为什么不在本地维护：双击标题栏、`Win+↑`、拖到屏幕顶端都会最大化，
+    /// 本地记的位一定会漂 —— 只有问系统才准。
+    fn sync_max_state() -> Task<Message> {
+        win_task(|id| iced::window::is_maximized(id).map(Message::WindowMaxState))
     }
 
     /// 把一段"键面文本"插到光标处（键盘、函数面板、粘贴都走这里）
@@ -1533,14 +1622,23 @@ impl State {
             bg_map,
         );
 
-        let body = column![
+        // 内容区（原来的四块）保留 14px 边距；**标题栏单独一行、吃满窗口宽度**
+        // —— 最小化/最大化/关闭要贴到窗口右上角（现代窗口的样子），
+        // 如果跟内容一起被 padding 包住，按钮会离边缘 14px，看着像"浮在中间"。
+        let content_column = column![
             self.toolbar(),
             self.results(),
             self.input_area(),
             self.keypad_area(),
         ]
         .spacing(10)
-        .padding(14)
+        .padding(iced::Padding {
+            // 顶部只留 6px：标题栏自己占 34px，再加 14 会显得头重脚轻
+            top: 6.0,
+            right: 14.0,
+            bottom: 14.0,
+            left: 14.0,
+        })
         .height(Length::Fill);
 
         // 函数弹窗用 stack 做成浮层盖在最上面
@@ -1579,13 +1677,13 @@ impl State {
                     left: 0.0,
                 });
 
-            // ⚠️ **必须把 `body` 垫在最底下**（用户："我的意思不是遮住整个界面，
+            // ⚠️ **必须把内容区垫在最底下**（用户："我的意思不是遮住整个界面，
             // 是设置这个小框在最顶层，不是全部遮住啊"）。
             //
-            // 上一版写的是 `stack![backdrop, panel]` —— 浮层**替代**了 `body`，
+            // 上一版写的是 `stack![backdrop, panel]` —— 浮层**替代**了内容区，
             // 于是打开设置时工具条/历史/输入区/键盘**全都不画了**，只剩一块空白，
             // 看起来就是把整个界面盖住。我当时只改了高度，没发现根因在这里。
-            stack![body, backdrop, panel].into()
+            stack![content_column, backdrop, panel].into()
         } else if self.show_settings {
             // ── 设置浮层（用户要求）────────────────────────────────────────
             //
@@ -1620,24 +1718,42 @@ impl State {
                 .height(Length::Shrink)
                 .padding([56.0, 22.0]);
 
-            // ⚠️ **必须把 `body` 垫在最底下**（用户："我的意思不是遮住整个界面，
+            // ⚠️ **必须把内容区垫在最底下**（用户："我的意思不是遮住整个界面，
             // 是设置这个小框在最顶层，不是全部遮住啊"）。
             //
-            // 上一版写的是 `stack![backdrop, panel]` —— 浮层**替代**了 `body`，
+            // 上一版写的是 `stack![backdrop, panel]` —— 浮层**替代**了内容区，
             // 于是打开设置时工具条/历史/输入区/键盘**全都不画了**，只剩一块空白，
             // 看起来就是把整个界面盖住。我当时只改了高度，没发现根因在这里。
-            stack![body, backdrop, panel].into()
+            stack![content_column, backdrop, panel].into()
         } else {
             // ⚠️ **单独包一层 `stack!`，哪怕只有一个孩子**。
             //
             // 用户实测："历史计算较多时，打开设置就会拉到最早的历史"。
-            // 根因：两个浮层分支返回的是 `stack![body, ..]`，而这里直接返回 `body`
-            // —— 于是 `body` 在 widget 树里的**位置不同**（一个在 stack 的
-            // `children[0]`，一个就是根），iced 按位置匹配状态 ⇒ 滚动位置被判为
+            // 根因：两个浮层分支返回的是 `stack![content_column, ..]`，而这里
+            // 直接返回内容区 —— 于是它在 widget 树里的**位置不同**（一个在 stack
+            // 的 `children[0]`，一个就是根），iced 按位置匹配状态 ⇒ 滚动位置被判为
             // "新容器"而重置到顶部。
             //
-            // 统一成"body 永远是 stack 的第 0 个孩子"，状态就能跨开合保留下来。
-            stack![body].into()
+            // 统一成"内容区永远是 stack 的第 0 个孩子"，状态就能跨开合保留下来。
+            stack![content_column].into()
+        };
+
+        // ⚠️ **标题栏在浮层之外**：函数/设置浮层的透明遮罩铺满整块内容区
+        //（用来"点空白处关闭"），如果标题栏也被它盖住，浮层一打开窗口就拖不动了。
+        // 把标题栏拼在 stack **之上**，它永远可点（三个按钮、拖动都正常），
+        // 浮层只在内容区里浮。
+        let content: Element<'_, Message> = column![self.titlebar_area(), content]
+            .height(Length::Fill)
+            .into();
+
+        // ── 缩放热区：铺在**所有东西之上**（连函数面板的边也能拖）──────────
+        //
+        // 最大化时不给：那时系统本来就不让拖边，留着热区只会把"贴边点击"
+        // 白白吃掉 5px。
+        let content: Element<'_, Message> = if self.maximized {
+            content
+        } else {
+            stack![content, crate::chrome::resize_overlay(Message::Chrome)].into()
         };
 
         // 根容器负责"透出桌面"：亚克力成功时背景全透，失败时不透明。
@@ -1781,9 +1897,10 @@ impl State {
             )
         };
 
+        // ⚠️ 这里**不再**画 "HiPerCalc" 大标题：自绘标题栏已经写了应用名
+        //（用户 2026-10-26 加了窗口栏），工具条上再写一遍就是同一个名字出现两次。
+        // 工具条只放"算之前随手切"的模式。
         let mut r = Row::new().spacing(6).align_y(Alignment::Center);
-        r = r.push(text("HiPerCalc").size(17).font(theme::font_math()));
-        r = r.push(Space::new().width(Pixels(10.0)));
         // 显示模式
         r = r.push(seg(
             "MathIO",
@@ -2825,7 +2942,15 @@ impl State {
                 ]
                 .align_y(Alignment::Center),
                 rule::horizontal(1.0).style(theme::divider),
-                scrollable(body).width(Length::Fill).height(Length::Fill),
+                // 右侧留 8px：滚动条会压在内容上，卡片贴着右缘时问号会被盖住一半
+                scrollable(container(body).padding(iced::Padding {
+                    top: 0.0,
+                    right: 8.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                }))
+                .width(Length::Fill)
+                .height(Length::Fill),
             ]
             .spacing(8),
         )
@@ -3240,6 +3365,11 @@ impl State {
     /// 当前主题（测试用）
     pub fn theme_for_test(&self) -> iced::Theme {
         theme::theme(self)
+    }
+
+    /// 设置"窗口是否最大化"（测试用：让标题栏画成"还原"图标）
+    pub fn set_maximized_for_test(&mut self, maximized: bool) {
+        self.maximized = maximized;
     }
 
     /// 设置明暗（测试用）

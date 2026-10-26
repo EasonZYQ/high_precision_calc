@@ -40,6 +40,8 @@
 
 pub mod app;
 pub mod backdrop;
+/// 自绘窗口栏（标题栏 + 缩放边）
+pub mod chrome;
 pub mod cli;
 #[cfg(windows)]
 pub mod dupl;

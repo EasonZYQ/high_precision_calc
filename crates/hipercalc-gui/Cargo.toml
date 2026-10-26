@@ -37,7 +37,9 @@ hipercalc = { path = "../hipercalc", version = "2.0.0" }
 # canvas 不在 iced 的默认 feature 里，所以要显式打开。
 # `tokio` 不是给业务用的，只为打开 `iced::time::every` —— 计算中的秒表靠它。
 # 它本来就在依赖树里（iced 的窗口后端要用），所以几乎不增加编译量。
-iced = { workspace = true, features = ["image", "canvas", "tokio"] }
+# `advanced` 是为了自绘窗口栏：缩放热区要直接实现 `iced::advanced::Widget`，
+# 才能上报 `mouse::Interaction`（贴边时变成 ↔ 光标）。纯 widget 组合做不到这点。
+iced = { workspace = true, features = ["image", "canvas", "tokio", "advanced"] }
 
 # 桌面复制（Desktop Duplication）：**只有 Windows 需要**，所以放在
 # `[target.'cfg(windows)'.dependencies]` —— 否则 Linux / macOS 的 CI 也要
