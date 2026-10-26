@@ -205,6 +205,12 @@ fn t_fmt(template: &str, args: &[&str]) -> String {
 ///
 /// ⚠️ 标题里**不需要**从 `state` 取语言：语言是进程级的（`i18n::get()`），
 /// `t()` 直接读的就是当前值。收 `&State` 只是为了满足 iced 的类型要求。
+/// 窗口的**基准尺寸**（逻辑像素，`ui_scale = 1.0` 时）。
+///
+/// `main.rs` 建窗口用它；快照测试的 `VIEWPORT` 与它保持一致。
+pub const WINDOW_W: f32 = 940.0;
+pub const WINDOW_H: f32 = 900.0;
+
 pub fn window_title(_state: &State) -> String {
     t("HiPerCalc — 超高精度计算器")
 }
@@ -1113,7 +1119,7 @@ impl State {
                 }
             }
             Message::WindowOpened => {
-                // ⚠️ **这里刻意什么都不做**。
+                // ⚠️ **除此之外这里刻意什么都不做**。
                 //
                 // 上一版在这里调 `backdrop::enable` 并设 `acrylic_checked = true`，
                 // 结果是：它先于 boot 里的 Task 触发，把 `acrylic_checked` 抢占了，

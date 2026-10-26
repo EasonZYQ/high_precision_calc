@@ -56,7 +56,7 @@ fn main() -> iced::Result {
                     .clamp(0.5, 1.0);
                 // 高度 +40：自绘标题栏占 34px（`chrome::TITLEBAR_H`），
                 // 不补的话内容区会比以前矮一截
-                iced::Size::new(940.0 * k, 900.0 * k)
+                iced::Size::new(app::WINDOW_W * k, app::WINDOW_H * k)
             },
             // 透明窗口：让 DWM 的亚克力透上来。探测失败时
             // `theme::root` 会给出不透明背景，观感依然完整。
