@@ -571,8 +571,8 @@ fn desktop_like(w: u32, h: u32) -> Vec<u8> {
                 let inx = smooth(fx, x0, x0 + 0.03) * (1.0 - smooth(fx, x1 - 0.03, x1));
                 let iny = smooth(fy, y0, y0 + 0.03) * (1.0 - smooth(fy, y1 - 0.03, y1));
                 let m = inx * iny;
-                for k in 0..3 {
-                    c[k] += delta * m;
+                for v in c.iter_mut() {
+                    *v += delta * m;
                 }
             }
             let i = ((y * w + x) * 4) as usize;

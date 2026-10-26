@@ -62,11 +62,11 @@ pub fn spawn_cli() -> io::Result<u32> {
         }
         // 极端情况（系统被裁剪到没有 cmd.exe）：退回直接起自己。
         // 颜色仍是对的 —— `ensure_console()` 会给控制台打开 VT 处理。
-        return Ok(std::process::Command::new(exe)
+        Ok(std::process::Command::new(exe)
             .arg("--cli")
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn()?
-            .id());
+            .id())
     }
 
     // 其它平台的终端本身就能解释 ANSI，直接起自己即可

@@ -50,6 +50,12 @@ jobs:
         if: runner.os == 'Windows'
         run: cargo test -p hipercalc-gui --lib
 
+      # GUI 的 clippy 也一起卡住（2026-10-26 起该 crate 零告警）。
+      # Lint job 跑在 ubuntu 且不带 --workspace，覆盖不到 GUI —— 只能在这里补。
+      - name: Clippy hipercalc-gui (warnings are blocking)
+        if: runner.os == 'Windows'
+        run: cargo clippy -p hipercalc-gui --all-targets -- -D warnings
+
   # 三平台跑构建 + 单元测试
   test:
     name: Test (${{ matrix.os }})
@@ -101,15 +107,17 @@ jobs:
       - name: Rustfmt check
         run: cargo fmt --all -- --check
 
-      # clippy：core 侧已 0 告警；app 侧存量风格告警不阻塞，
-      # 但**正确性类**直接当错误拦下来（第二阶段目标态；后续可再收紧为 -D warnings）
+      # clippy：**2026-10-26 起零告警**（core 22 + cli 8 + gui 2 已全部清掉），
+      # 所以这里从"只拦 correctness"收紧成 `-D warnings` —— 新增任何一条告警
+      # 都会让 CI 变红。依赖升级带来的误报如果确实无法避免，再针对性地
+      # `#[allow(…, reason=…)]`，不要整体回退这一行。
       #
       # 这里**刻意不带 `--workspace`**：`--workspace` 会把 hipercalc-gui 一起拉进来，
       # 而 GUI 的依赖树（iced → wgpu / naga / winit）有 354 个包、且尚未纳入 CI。
       # 不带 --workspace 时按 `default-members` 走，即两个出货 crate。
       # 等 GUI 正式开工，再单开一个 job 覆盖它（含 Linux 系统依赖）。
-      - name: Clippy (correctness is blocking)
-        run: cargo clippy --all-targets -- -D clippy::correctness
+      - name: Clippy (warnings are blocking)
+        run: cargo clippy --all-targets -- -D warnings
 
   cross:
     name: Build ${{ matrix.target }}
