@@ -105,8 +105,8 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
   | 文件 | 职责 |
   | --- | --- |
   | `chrome.rs` | **自绘窗口栏**：标题栏（拖动 / 双击最大化）+ 最小化·最大化·关闭 + 8 向缩放热区。窗口 `decorations: false`，系统那套行为全由这里补（`window::drag` / `drag_resize` / `minimize` / `maximize` / `close`）。缩放热区是自定义 `Widget` —— 只有它能上报 `mouse::Interaction`（贴边变成 ↔ 光标），`mouse_area` 做不到 |
-  | `app.rs` | 状态 / 消息 / update / view；**所有业务逻辑都在 `update` 里**，`view` 只读状态。求值与 UI 通过 `evaluator` 通信，`update` 本体永不阻塞 |
-  | `evaluator.rs` | **后台求值线程**：常驻 worker 独占 `Session`，`mpsc` 收发 `Request::{Eval, Config}`；`Evaluator::eval` 返回一条**真异步** future（`futures::oneshot` 唤醒），由 `app.rs` 交给 `Task::perform`。⚠️ 刻意不含 `SetLang`（语言必须在 UI 线程同步设） |
+  | `app/`（目录模块） | **原来是单个 4650 行的 `app.rs`**（2026-10-27 拆分）。`mod.rs` 放 `Message` / `State` / `update` / 订阅 / 持久化；`view.rs` 顶层 view + 工具条 + 输入区 + 虚拟键盘；`results.rs` 结果区（历史列表 / 搜索 / 复制）；`settings.rs` 设置面板 + 函数弹窗；`tests.rs` 单测。**所有业务逻辑仍在 `update` 里**，`view` 只读状态；`update` 本体永不阻塞。⚠️ 拆出去的视图方法要 `pub(super)`，子模块用 `use super::*` 拿父模块的名字（`column`/`row` 宏要显式导入，否则与 glob 歧义） |
+  | `evaluator.rs` | **后台求值线程**：常驻 worker 独占 `Session`，`mpsc` 收发 `Request::{Eval, Config}`；`Evaluator::eval` 返回一条**真异步** future（`futures::oneshot` 唤醒），由 `app/mod.rs` 交给 `Task::perform`。⚠️ 刻意不含 `SetLang`（语言必须在 UI 线程同步设） |
   | `expr.rs` | **输入框的结构化模型**：`Expr` 树（分数/根号/幂/大运算符/括号，每个复合节点有命名**插槽**）+ `Cursor{path, at}`（指向插槽内的位置，不是字符偏移）+ 编辑操作（插入/退格/删除/左右移动/点击定位）+ 序列化（`Expr → MathIO` 文本，求值只走这一条）+ 树 → `mathrender::Node`（顺带登记可点目标）。纯函数、可脱 GUI 单测；⚠️ 见下方"为什么输入框必须是树" |
   | `keypad.rs` | 虚拟键盘布局 `LAYOUT`（主面板）+ `LAYOUT_ABC`（字母面板）+ 函数目录 `FN_GROUPS` + 插入行为 `splice`/`cursor_back_for`（纯数据 + 纯函数，可脱 GUI 单测） |
   | `mathrender.rs` | MathIO 文本 → 真正的数学排版（分数竖排、根号顶线、幂上标）。**解析与渲染分离**，解析层是纯函数 |
@@ -179,12 +179,12 @@ CLI 不解释它们，但保存时会原样保留。
 - `Session::eval` 返回的文本（错误信息、`/help` 回显）由 `hipercalc` 在**输出边界**自动翻译；
   但 **GUI 自身那些硬编码的中文标签根本不经过那条路**。
 - 所以界面里每一处会显示给用户的中文都必须写成 `theme::label(t("…"))`，
-  其中 `t` 是 `app.rs` 顶部的本地助手（转发 `hipercalc::session::translate`，
+  其中 `t` 是 `app/mod.rs` 顶部的本地助手（转发 `hipercalc::session::translate`，
   插值版是 `t_fmt`）。**漏一处**就是切成 English 后那一处还留着中文。
 - **词典键一律用完整、有辨识度的界面文案**：`i18n::t` 是**子串最长优先**匹配，
   短键会在别处的输出文本里到处替换。反例：`函数` → `functions` 这条**已存在**
   （CLI 的 `/set` 颜色分类用，小写复数才对），所以界面按钮改用 `展开函数面板` 长键。
-- 新增界面文案时：① 在 `app.rs::tests::ui_labels_follow_language` 的 `UI_STRINGS`
+- 新增界面文案时：① 在 `app/tests.rs::ui_labels_follow_language` 的 `UI_STRINGS`
   里登记；② 往 `crates/hipercalc/src/language/{en,zh-TW}.json` 各加一条
   —— **两份键集必须严格一致**，`i18n::tests` 会拦。
 - ⚠️ **窗口标题只在启动时跟随语言**：iced 0.14 只在建窗口时能设标题，
@@ -246,7 +246,7 @@ CLI 不解释它们，但保存时会原样保留。
 - **`text_editor` 没有自绘扩展点**：它自己排版自己那串文本，唯一开放的是 `Highlighter`，
   而 `Format` **只有 `color` / `font` 两个字段**（无字号、无回调）
   ⇒ **画不出根号顶线**。输入框内联数学排版在 iced 0.14 里做不到，
-  现在是"编辑器 + 下方实时预览"两层（见 `app.rs::input_area` 的长注释）。
+  现在是"编辑器 + 下方实时预览"两层（见 `app/view.rs::input_area` 的长注释）。
 - **根号必须用 `canvas` 矢量画，别用"`√` 字符 + 一条 `Rule`"拼**：
   `√` 字形的墨迹顶够不到行盒顶部 ⇒ 顶钩与顶线**上下分离**（用户实际反馈过），
   且空隙随字体变化、测不准。现在 `mathrender::Radical` 是一条连续折线
