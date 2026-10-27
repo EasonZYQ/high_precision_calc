@@ -515,7 +515,7 @@ impl Parser {
                         } else {
                             Node::Seq(inner)
                         };
-                        return Some(Node::Seq(vec![
+                        Some(Node::Seq(vec![
                             Node::Pow(
                                 Box::new(Node::Text(base.to_string())),
                                 Box::new(Node::Text("−1".to_string())),
@@ -523,7 +523,7 @@ impl Parser {
                             Node::Paren {
                                 inner: Box::new(arg),
                             },
-                        ]));
+                        ]))
                     }
                     // `sqrt(x)` → 根号
                     "sqrt" => {

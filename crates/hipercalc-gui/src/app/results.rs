@@ -10,6 +10,10 @@ use super::*;
 
 impl State {
     pub(super) fn results(&self) -> Element<'_, Message> {
+        // 三角形页（用户 2026-10-27）：整块结果区换成表单
+        if self.triangle_open {
+            return self.triangle_page();
+        }
         let math = self.modes.display == DisplayMode::MathIO;
 
         // **搜索过滤**（用户 2026-10-27）：子串、大小写不敏感，原式与结果都匹配。

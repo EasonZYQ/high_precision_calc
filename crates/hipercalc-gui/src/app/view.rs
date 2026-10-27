@@ -367,6 +367,13 @@ impl State {
         // 放在设置旁边，`>_` 是终端提示符的通用记号，比文字更省宽度。
         r = r.push(icon(">_", false, Message::LaunchCli));
         r = r.push(icon("⚙", self.show_settings, Message::ToggleSettings));
+        // 三角形求解（用户 2026-10-27：解三角形要独立界面，别让人对着
+        // `triangle(...)` 猜参数）。点了就把结果区切成表单页。
+        r = r.push(seg_t(
+            t("三角形求解"),
+            self.triangle_open,
+            Message::ToggleTriangle,
+        ));
         // 清空历史：这条**必须**翻译（工具条上最显眼的中文之一）。
         // 注意键用的是"清空历史"而不是"清空" —— 后者在 CLI 里可能被当成别的片段。
         r = r.push(seg_t(t("清空历史"), false, Message::ClearHistory));

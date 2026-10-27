@@ -143,6 +143,25 @@ fn function_panel_snapshot() {
     );
 }
 
+/// **三角形求解页**（用户 2026-10-27 要求的独立界面）
+#[test]
+fn triangle_page_snapshot() {
+    let _guard = lock();
+    let mut state = populated_state();
+    state.set_dark_for_test(true);
+    let _ = state.update(Message::ToggleTriangle);
+    // 填两个已知量，顺便看输入框/按钮排布
+    let _ = state.update(Message::TriChanged(0, "3".into()));
+    let _ = state.update(Message::TriChanged(1, "4".into()));
+
+    let snapshot = snap(&state);
+    let path = format!("{SNAP_DIR}/triangle.png");
+    assert!(
+        snapshot.matches_image(&path).expect("快照比对/写入失败"),
+        "三角形求解页与基线不一致：{path}"
+    );
+}
+
 /// **自绘标题栏（最大化态）**：第三个按钮要画成"还原"（两个错开的小方块）。
 ///
 /// 标题栏是窗口装饰之外的唯一"窗口级 UI"，它的三种图标（最小化 / 最大化 /

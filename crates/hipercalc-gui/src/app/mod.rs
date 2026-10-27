@@ -51,6 +51,7 @@ use crate::liquid;
 
 mod results;
 mod settings;
+mod triangle;
 mod view;
 use crate::mathrender;
 use crate::theme::{self, MathFont};
@@ -268,6 +269,10 @@ pub struct State {
     history: Vec<Entry>,
     /// 历史搜索关键词（**子串匹配**，大小写不敏感；空串 = 不过滤）
     search: String,
+    /// 结果区是否切成**三角形求解页**（用户 2026-10-27：解三角形要独立界面）
+    triangle_open: bool,
+    /// 三角形页的六个输入（顺序见 [`triangle::TRI_KEYS`]：a b c A B C）
+    tri_vals: [String; 6],
     /// 输入框内容（多行编辑器 —— 能读光标、能局部插入）
     /// 输入栏的**文本**。
     ///
@@ -523,6 +528,14 @@ pub enum Message {
     SearchChanged(String),
     /// 几何节流的"末尾补写"（由 [`State::save_geom_throttled`] 的延迟任务发回）
     SaveGeomNow,
+    /// 切换「三角形求解」页（结果区）
+    ToggleTriangle,
+    /// 三角形页某个输入框变化：`(字段下标 0..6, 内容)`
+    TriChanged(usize, String),
+    /// 三角形页：求解
+    TriSolve,
+    /// 三角形页：清空六个输入
+    TriClear,
     /// 计算中的**秒表跳动**（订阅每 100ms 发一条，只为刷新"计算中 3.2s"）
     Tick,
     /// 点了排版层里的**空参数框**：把光标挪到源文本的第 n 个字符处
@@ -701,6 +714,8 @@ impl State {
             input_hint: None,
             history: Vec::new(),
             search: String::new(),
+            triangle_open: false,
+            tri_vals: Default::default(),
             dark: prefs.dark,
             ui_scale: prefs.ui_scale.clamp(0.5, 1.0),
             allow_capture: prefs.capture,
@@ -818,6 +833,38 @@ impl State {
             }
             Message::SearchChanged(q) => {
                 self.search = q;
+            }
+            Message::ToggleTriangle => {
+                self.triangle_open = !self.triangle_open;
+            }
+            Message::TriChanged(i, v) => {
+                if let Some(slot) = self.tri_vals.get_mut(i) {
+                    *slot = v;
+                }
+            }
+            Message::TriClear => {
+                self.tri_vals = Default::default();
+            }
+            Message::TriSolve => {
+                // 拼成 core 认的 `triangle(a=3, A=30)`：**只带填了的字段**，
+                // 空字段不写（写了 `a=` 会被当成"给了个空值"直接报错）。
+                let args: Vec<String> = crate::app::triangle::TRI_KEYS
+                    .iter()
+                    .zip(self.tri_vals.iter())
+                    .filter(|(_, v)| !v.trim().is_empty())
+                    .map(|(k, v)| format!("{k}={}", v.trim()))
+                    .collect();
+                if args.is_empty() {
+                    self.input_hint = Some(t("至少填一个已知量"));
+                } else {
+                    let src = format!("triangle({})", args.join(", "));
+                    // 走**正式求值通道**（后台 worker），结果照常进历史 ——
+                    // 这一页只是"帮我把参数填对"，不另开一套计算路径。
+                    self.input = expr::Doc::from_text(&src);
+                    self.triangle_open = false;
+                    self.input_hint = None;
+                    return self.evaluate();
+                }
             }
             Message::SaveGeomNow => {
                 self.geom_save_pending = false;
