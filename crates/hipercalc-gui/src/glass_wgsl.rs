@@ -22,29 +22,29 @@
 //! 角部再乘 [`corner_gain`]：法线越"斜"（越靠角）位移越强，于是角上的
 //! 内容被更狠地拽向角落 —— 与实拍一致。
 
-/// 窗口环带宽度 = **短边的比例**。
+/// 窗口环带宽度 = **短边的比例**（用户 2026-10-27 定为 15%）。
 ///
-/// 0.18 是实拍图的量级：800px 高的窗口 ⇒ 环带 ~140px、翻折线在 ~60px 处
-///（≈ 窗口的 8%，用户说的"大约 10% 的地方"）。
-pub const WIN_BAND_FRAC: f32 = 0.18;
+/// 折痕落在离边 `band` 处：940×900 的窗口 ⇒ 折痕在离边 135px（≈15%）的地方。
+pub const WIN_BAND_FRAC: f32 = 0.15;
 
-/// 窗口的"圆角半径"——**只用于折射法线**，不用于裁剪。
+/// 窗口的"圆角半径"——**只用于折射**，不用于裁剪。
 ///
-/// 窗口本身是方的（圆角由 DWM 画），但要让**角上**的法线指向对角，
-/// SDF 必须带一点圆角，否则方角处的法线永远是轴对齐的，`corner_gain`
-/// 就没有斜度可加权（实拍图里角上的扭曲明显强于直边）。
+/// 两处用到：① 到边界的 SDF；② **角部圆弧折痕的半径**（折痕 = 以该角圆心为
+/// 极点的同心圆弧，半径 R + band）。窗口本身是方的（圆角由 DWM 画），
+/// 但折射必须按圆角来算，否则角上会出现尖点（见 `glass_fold` 的注释）。
 pub const WIN_CORNER_R: f32 = 26.0;
 
-/// 位移幅度 = **环带宽度的这个比例**（在环带中段达到最大，方向朝内）。
+/// 镜面系数：位移 = `WIN_MIRROR × 环带`（贴边处）。
 ///
-/// 为什么按环带算而不按窗口 uv 算：位移是"光在斜面里走多远"，量纲应该和
-/// 斜面宽度（= 环带）同源。按 uv 算会让宽高不同的窗口在横竖两个方向
-/// 折得不一样多。
+/// `2.0` = **精确镜像**：采样点与屏幕点关于折痕等距对称 ⇒ 折痕外侧画的是
+/// 倒影（用户要的"以边为镜面反射"）。`1.0` 会退化成"糊到折痕那一条线"，
+/// `< 1` 只是压缩、`> 2` 是放大的倒影。
+pub const WIN_MIRROR: f32 = 2.0;
+
+/// 角部加成：`幅度 × (1 + WIN_CORNER_BOOST · 角权)`。
 ///
-/// 0.45 > 1/π ≈ 0.318 是**必须的**：只有 `幅度 × π > 环带宽度` 时，
-/// 屏幕位置→采样位置的映射才会**非单调**，也就是真的"折回来"；
-/// 小于这个值就只是把内容放大一下（用户 2026-10-26 正是嫌这个）。
-pub const WIN_AMP_FRAC: f32 = 0.45;
+/// 用户 2026-10-27："越靠近角扭曲越大"（而不是越靠边越大）。
+pub const WIN_CORNER_BOOST: f32 = 0.6;
 
 /// 窗口折射强度（与 `app.rs` 传给 `Refraction` 的值同源）。
 ///
@@ -62,12 +62,14 @@ pub fn shader(tail: &str) -> String {
     format!(
         "const WIN_BAND_FRAC: f32 = {band:?};\n\
          const WIN_CORNER_R: f32 = {corner:?};\n\
-         const WIN_AMP_FRAC: f32 = {amp:?};\n\
+         const WIN_MIRROR: f32 = {mirror:?};\n\
+         const WIN_CORNER_BOOST: f32 = {boost:?};\n\
          const WIN_STRENGTH: f32 = {strength:?};\n\
          {body}{tail}",
         band = WIN_BAND_FRAC,
         corner = WIN_CORNER_R,
-        amp = WIN_AMP_FRAC,
+        mirror = WIN_MIRROR,
+        boost = WIN_CORNER_BOOST,
         strength = WIN_STRENGTH,
         body = COMMON_BODY,
     )
@@ -120,66 +122,63 @@ fn sd_rr(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
     return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - r;
 }
 
-// 圆角矩形的法线：**连续场**，没有分界线。
+// 平滑阶跃（0→1，两端斜率为 0）——角权用它，保证处处 C1
+fn smooth01(x: f32) -> f32 {
+    let t = clamp(x, 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// 玻璃折痕：返回**朝内**的像素位移向量（调用方加在采样坐标上）。
 //
-// ## 为什么不能"取最近的那条边"
+// ## 规则（用户 2026-10-27 定稿，仿真 `glass-sim8.py` 验证过）
 //
-// 上一版是 `select(水平法线, 垂直法线, ey < ex)` —— 到两条边的距离相等那条
-// **45° 对角线**上，法线会从一个方向瞬间翻到另一个方向。用户 2026-10-26：
-// "角上为什么有斜向的分界线，iOS 里可没有，而是平滑连接"。
-// 根源就是这个硬切换：位移方向突变 ⇒ 折痕边缘出现一条直边。
+// - **直边**：两轴镜像折叠。屏幕点离边 `d`、折痕在离边 `band` 处，
+//   贴边处的采样点关于折痕对称 ⇒ 折痕外侧画的是**倒影**；
+// - **角部**：折痕换成**以该角圆角圆心为极点的同心圆弧（半径 R + band）**，
+//   方向沿径向指向角心，幅度再乘 `(1 + boost·角权)` ⇒ **越靠角越强**；
+// - 角权 `wc` 用 smoothstep 连续过渡，**没有任何分支切换** ⇒ 不存在
+//   "某条斜线"这种分界（上一版的 45° 斜线就是这么来的）。
 //
-// ## 现在的做法：按 1/距离 加权
+// ## 为什么角部必须换成圆弧（关键）
 //
-// `nx ∝ sign(px) / (到左右边的距离 + ε)`、`ny ∝ sign(py) / (到上下边的距离 + ε)`：
-// - 贴左右边 ⇒ 分母小 ⇒ x 分量占主导（法线水平）；
-// - 贴上下边 ⇒ y 分量主导；
-// - 45° 处两者相等 ⇒ 自然转到 45°，**连续**，不需要分支；
-// - `ε` 取短边的 4%：小按键转得利落，大窗口转得平缓。
+// 矩形内缩 `band` 后的折痕在 `band > R` 时会**退化成直角**：两条折痕相交处
+// 变成一个尖点，镜像把内容全挤到那儿 —— 用户实测"角上是尖的"。
+// 换成同心圆弧后折痕是光滑曲线，尖点自动消失，而且内容会顺着弧被绕向角。
 //
-// ⚠️ 参数名不能叫 `r` 而内部又用不到它 —— 保留参数是为了调用点一致（圆角
-// 已经被"到边的距离"隐含表达：圆角处两个距离都小 ⇒ 法线自然指向角）。
-fn rr_normal(p: vec2<f32>, half: vec2<f32>, _r: f32) -> vec2<f32> {
-    let eps = max(0.04 * min(half.x, half.y), 0.75);
-    let ex = max(half.x - abs(p.x), 0.0) + eps;
-    let ey = max(half.y - abs(p.y), 0.0) + eps;
-    let n = vec2<f32>(sign(p.x) / ex, sign(p.y) / ey);
-    // 正中心：两个分量都是 0（sign(0)），给一个任意方向避免 normalize(0)
-    if (length(n) < 1e-6) {
-        return vec2<f32>(1.0, 0.0);
+// ⚠️ 不能写成"取最近边的法线 + 角上加权"：`min(dx,dy)` 在直边中部也≈0，
+// 会把整圈都当成角区；必须用**到角弧的距离**（这里的 `ρ`）。
+fn glass_fold(p: vec2<f32>, half: vec2<f32>, radius: f32, band: f32,
+              amp: f32, boost: f32) -> vec2<f32> {
+    let d = -sd_rr(p, half, radius);
+    let b = max(band, 1.0);
+    if (d >= b) {
+        return vec2<f32>(0.0);
     }
-    return normalize(n);
-}
+    // 到左右/上下边的距离，以及"朝外"的符号
+    let dx = half.x - abs(p.x);
+    let dy = half.y - abs(p.y);
+    let sx = select(-1.0, 1.0, p.x >= 0.0);
+    let sy = select(-1.0, 1.0, p.y >= 0.0);
 
-// 翻折剖面：**只朝内**的平滑鼓包 —— 贴边 0、环带中段最大、内沿回到 0。
-//
-// `t` = 到边缘的距离 / 环带宽度（0 = 贴边，1 = 环带内沿）；返回值 ≤ 0（朝内）。
-//
-// ## 为什么改掉上一版（外推 + 反向吸）
-//
-// 上一版贴边是**向外**推的 —— 等于把**窗外**的背景压进环带里。用户
-// 2026-10-26 实测："在边缘约 20% 的位置有明显的一条扭曲错误，再向外就变成了
-// 压缩周围的背景；我要的不是压缩窗口外围旁边的背景，而是翻折"。
-//
-// ## 现在为什么像"折"
-//
-// 位移只朝内、且中段最强 ⇒ 「屏幕位置 → 采样位置」这个映射在**靠外那一段是
-// 非单调的**（先吸得远、再回到贴边）⇒ 那一圈画的是折痕外侧的**倒影**。
-// 纸被折一下正是这个观感，而且永远不会把窗外的东西拉进来。
-//
-// ⚠️ 参数名不能叫 `t`：WGSL（naga）**不允许 `let` 覆盖同名参数**，
-// 写成 `let t = clamp(t, ..)` 会报 `redefinition of t`（实测踩过）。
-fn fold_profile(dist: f32) -> f32 {
-    let t = clamp(dist, 0.0, 1.0);
-    // sin：两端严格为 0（与外圈/内沿都无缝），峰值在环带正中
-    let bump = sin(3.1415926536 * t);
-    return -bump;
-}
+    // 角部：以该角的圆角圆心为极点
+    let cc = vec2<f32>((half.x - radius) * -sx, (half.y - radius) * -sy);
+    let rel = p - cc;
+    let rho = max(length(rel), 1e-4);
+    let wc = smooth01((radius + b - rho) / b);
 
-// 角部加权：法线越"斜"（越靠角）位移越强 —— 实拍图里角上折得更狠
-fn corner_gain(n: vec2<f32>) -> f32 {
-    let diag = clamp(abs(n.x * n.y) * 2.0, 0.0, 1.0);
-    return 1.0 + 0.40 * diag * diag;
+    // 距离：直边用"到最近边"，角部用"到圆弧"，按角权混合
+    let dm = mix(min(dx, dy), rho - radius, wc);
+
+    // 方向：直边法线 → 径向（都指向"朝外"），混合后归一
+    let ne = normalize(vec2<f32>(sx / (dx + 1.0), sy / (dy + 1.0)));
+    let nc = -rel / rho;
+    let n = normalize(mix(ne, nc, wc));
+
+    // 幅度：贴边最大（t=1）、折痕处为 0；角部再放大
+    let t = max(0.0, 1.0 - dm / b);
+    let mag = amp * t * t * (1.0 + boost * wc);
+    // `n` 朝外 ⇒ 采样朝内用负号
+    return -n * mag;
 }
 
 // 到窗口边缘的**向内**距离（px，负 = 在窗口外）
@@ -195,18 +194,10 @@ fn window_inward(s: vec2<f32>, win: vec2<f32>) -> f32 {
 fn window_refract(s: vec2<f32>, win: vec2<f32>, strength: f32) -> vec2<f32> {
     let half = win * 0.5;
     let p = (s - vec2<f32>(0.5)) * win;
-    let inward = -sd_rr(p, half, WIN_CORNER_R);
     let band = WIN_BAND_FRAC * min(win.x, win.y);
-    let t = inward / max(band, 1.0);
-    // 环带之外：**严格零位移**（快路径要靠这个判据，不能"接近 0"）
-    if (t >= 1.0) {
-        return vec2<f32>(0.0);
-    }
-    let n = rr_normal(p, half, WIN_CORNER_R);
-    // 位移先在**像素**口径里算（幅度按环带宽度给），最后折回 uv ——
-    // 这样横竖方向的折法一致，不会因为窗口宽高不同而一边折得多、一边少。
-    let disp_px = fold_profile(t) * corner_gain(n) * (WIN_AMP_FRAC * band) * strength;
-    return n * (disp_px / win);
+    let off = glass_fold(p, half, WIN_CORNER_R, band, WIN_MIRROR * band * strength,
+                         WIN_CORNER_BOOST);
+    return off / win;
 }
 "#;
 
@@ -224,9 +215,8 @@ mod tests {
         for needle in [
             "fn sample_blur",
             "fn sd_rr",
-            "fn rr_normal",
-            "fn fold_profile",
-            "fn corner_gain",
+            "fn smooth01",
+            "fn glass_fold",
             "fn window_refract",
             "fn window_inward",
         ] {
@@ -243,7 +233,10 @@ mod tests {
         let s = shader("");
         assert!(s.contains(&format!("const WIN_BAND_FRAC: f32 = {WIN_BAND_FRAC:?};")));
         assert!(s.contains(&format!("const WIN_CORNER_R: f32 = {WIN_CORNER_R:?};")));
-        assert!(s.contains(&format!("const WIN_AMP_FRAC: f32 = {WIN_AMP_FRAC:?};")));
+        assert!(s.contains(&format!("const WIN_MIRROR: f32 = {WIN_MIRROR:?};")));
+        assert!(s.contains(&format!(
+            "const WIN_CORNER_BOOST: f32 = {WIN_CORNER_BOOST:?};"
+        )));
         assert!(s.contains(&format!("const WIN_STRENGTH: f32 = {WIN_STRENGTH:?};")));
         // 整数形式（`26;`）会让着色器编译失败，这里直接盯住它
         assert!(s.contains("WIN_CORNER_R: f32 = 26.0;"));

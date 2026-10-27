@@ -377,7 +377,7 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     // 两层扭曲按顺序叠加：
     // a. **窗口边缘环带**：调用与 `refraction.rs` **同一个** `window_refract`
     //    —— 按键采到的就是用户在外面看到的那个"已经翻折过的背景"；
-    // b. **按钮局部透镜**：同一条翻折剖面（`fold_profile`），尺寸按部件短边缩放 ——
+    // b. **按钮局部透镜**：同一个 `glass_fold`，尺寸按部件短边缩放 ——
     //    这就是玻璃按键"透出来的东西在边上先鼓出、再折回来"的来源。
     if (u.p.z > 0.5) {
         let s = vec2<f32>(
@@ -385,9 +385,9 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
             u.origin.y + (1.0 - uv.y) * u.size.y,
         ) / u.win;
         let short = min(u.size.x, u.size.y);
-        // 局部环带：`thick`（随圆角走）是下限，同时不小于短边的 18%
-        //（用户 2026-10-26："翻折在边缘约 10% 的地方"—— 折痕在环带正中 ⇒ 9%）
-        let lens_band = max(max(u.edge.x, 1.0), 0.18 * short);
+        // 局部环带：`thick`（随圆角走）是下限，同时不小于短边的 15%
+        //（与窗口同一个 `WIN_BAND_FRAC`：折痕落在离边 15% 处）
+        let lens_band = max(max(u.edge.x, 1.0), 0.15 * short);
 
         // 未经任何位移的采样点（窗口 uv → 图像 uv）
         let base = s * u.map.xy + u.map.zw;
@@ -403,7 +403,7 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
         //
         // 用户要求"中间只用一次采样"，但**必须无缝** —— 所以判据不能是"猜一个阈值"，
         // 必须是**位移恰好为 0** 的地方：
-        // - 局部透镜：`fold_profile` 到 `t = 1` 时 `cut` 严格为 0 ⇒ 位移 0；
+        // - 局部透镜：`glass_fold` 在 `d >= band` 时**提前 return 0**；
         // - 窗口环带：`window_refract` 在 `t >= 1` 时**提前 return 0**。
         //
         // 两处都是"严格 0"而不是"接近 0"，所以快路径采的就是 `base` 本身，
@@ -413,21 +413,16 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
             bgc = sample_blur(base, rad, seed);
         } else {
             // ── 完整路径：窗口环带 + 面板自身的翻折透镜 ──────────────────
-            // 解析法线（圆角矩形）：直边上轴对齐、圆角处指向圆心
-            let n_raw = rr_normal(p, half, max(u.radius, 0.0));
-            // `p` 是 y 向上的局部坐标；采样空间 y 向下 ⇒ 法线 y 取反
-            let nloc = vec2<f32>(n_raw.x, -n_raw.y);
-
-            // **翻折剖面**：只朝内的平滑鼓包（贴边 0 → 中段最深 → 内沿 0）。
-            // 幅度按**环带宽度**给（`bend` 是"折多深"的比例），
-            // 于是小按键与大面板折的是**同一个形状**、只是尺度不同。
-            let t = inward / max(lens_band, 1.0);
-            let fold = fold_profile(t) * corner_gain(nloc);
-
-            // 位移用像素表达再折算成图像 uv（与抓屏分辨率、部件尺寸都解耦）
+            //
+            // **和窗口用同一个 `glass_fold`**（直边镜像折叠、角部走圆弧折痕、
+            // 越靠角越强），只是尺寸按部件短边缩放 —— 于是按键/面板与窗口
+            // 折的是同一个形状，边界处不会露馅。
+            //
+            // `p` 是 y 向上的局部坐标，采样空间 y 向下 ⇒ 位移的 y 要取反。
             let amp_px = u.edge.y * 4.5 * lens_band;
-            let bend_px = fold * amp_px;
-            let dloc = nloc * (bend_px * u.map.xy / u.win);
+            let fo = glass_fold(p, half, max(u.radius, 0.0), lens_band, amp_px,
+                                WIN_CORNER_BOOST);
+            let dloc = vec2<f32>(fo.x, -fo.y) * (u.map.xy / u.win);
 
             let disp = base + ring_off + dloc;
             bgc = sample_blur(disp, rad, seed);
