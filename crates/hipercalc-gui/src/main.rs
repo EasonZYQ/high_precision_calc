@@ -48,15 +48,28 @@ fn main() -> iced::Result {
         .theme(theme::theme)
         .settings(settings)
         .window(window::Settings {
-            // ⚠️ 窗口尺寸要在**建窗口之前**定下来（之后就只剩 `resize`，会闪一下），
-            // 所以这里先读一次设置里的渲染缩放。
+            // ⚠️ 尺寸与位置都要在**建窗口之前**定下来（之后再调会闪一下），
+            // 所以这里先读一次设置。
+            //
+            // 尺寸来源有两处：上次退出时记下的**实际大小**优先（用户拖过窗口就按他拖的），
+            // 没有记录才回落到"基准尺寸 × 渲染缩放"。
             size: {
-                let k = hipercalc::session::GuiPrefs::load()
-                    .ui_scale
-                    .clamp(0.5, 1.0);
-                // 高度 +40：自绘标题栏占 34px（`chrome::TITLEBAR_H`），
-                // 不补的话内容区会比以前矮一截
-                iced::Size::new(app::WINDOW_W * k, app::WINDOW_H * k)
+                let p = hipercalc::session::GuiPrefs::load();
+                let k = p.ui_scale.clamp(0.5, 1.0);
+                if p.win_w > 0.0 && p.win_h > 0.0 {
+                    iced::Size::new(p.win_w, p.win_h)
+                } else {
+                    iced::Size::new(app::WINDOW_W * k, app::WINDOW_H * k)
+                }
+            },
+            // 位置：有记录就精确还原，没有就居中（等同于原来的 `.centered()`）
+            position: {
+                let p = hipercalc::session::GuiPrefs::load();
+                if p.win_w > 0.0 && p.win_h > 0.0 {
+                    window::Position::Specific(iced::Point::new(p.win_x, p.win_y))
+                } else {
+                    window::Position::Centered
+                }
             },
             // 透明窗口：让 DWM 的亚克力透上来。探测失败时
             // `theme::root` 会给出不透明背景，观感依然完整。
@@ -69,6 +82,7 @@ fn main() -> iced::Result {
             min_size: Some(iced::Size::new(720.0, 640.0)),
             ..window::Settings::default()
         })
-        .centered()
+        // ⚠️ **不要**再调 `.centered()`：它会覆盖上面按设置还原的位置。
+        // 没有记录时的居中已经由 `window::Position::Centered` 表达。
         .run()
 }

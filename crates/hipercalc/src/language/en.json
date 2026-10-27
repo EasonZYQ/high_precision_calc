@@ -478,5 +478,9 @@
   "组合数": "combinations",
   "排列数": "permutations",
   "n 次根：nroot(x, n) 求 x 的 n 次根，n 为 ≥ 2 的整数（负数只在 n 为奇数时有定义）。例：nroot(27, 3) = 3。": "nth root: nroot(x, n) computes the nth root of x; n must be an integer ≥ 2 (negatives defined only for odd n). Example: nroot(27, 3) = 3.",
-  "超高精度计算器": "High-Precision Calculator"
+  "超高精度计算器": "High-Precision Calculator",
+  "搜索": "Search",
+  "搜索历史…": "Search history…",
+  "复制": "Copy",
+  "没有匹配的记录": "No matching entries"
 }

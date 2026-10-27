@@ -263,6 +263,12 @@ pub struct State {
     pending: Option<(String, Vec<String>)>,
     /// 求值历史，最新在末尾
     history: Vec<Entry>,
+    /// 历史搜索框是否展开（用户 2026-10-27 定：默认收起，点搜索按钮或 Ctrl+F 展开）
+    search_open: bool,
+    /// 历史搜索关键词（**子串匹配**，大小写不敏感；空串 = 不过滤）
+    search: String,
+    /// 鼠标悬在哪一条历史上（决定要不要显示"复制"按钮）
+    hover_entry: Option<usize>,
     /// 输入框内容（多行编辑器 —— 能读光标、能局部插入）
     /// 输入栏的**文本**。
     ///
@@ -288,6 +294,15 @@ pub struct State {
     /// 由 `window::is_maximized` 回报（[`State::sync_max_state`]），**不是**本地猜测：
     /// 双击标题栏、Win+↑、拖到屏幕顶部都会最大化，本地记的位必然漂。
     maximized: bool,
+    /// 窗口的**当前几何**（逻辑像素）：`(x, y, w, h)`，只记非最大化时的值。
+    ///
+    /// 由 [`Message::WindowMoved`] / [`Message::WindowResized`] 更新，
+    /// 退出时（[`crate::chrome::ChromeMessage::Close`]）写盘 —— 每次移动都写盘
+    /// 会把磁盘打满（拖动窗口每秒几十个事件），所以**只在关闭时落盘**。
+    win_geom: (f32, f32, f32, f32),
+    /// 退出时是否最大化（与 [`State::maximized`] 分开记：后者是"现在"的状态，
+    /// 这个是要写进设置的那一份；两者只在关闭那一刻同步）。
+    win_max_pref: bool,
     /// 玻璃（liquid glass）强度：`0.0` = 关闭（不透明纯色），`1.0` = 最强。
     ///
     /// ⚠️ 与 [`theme::set_glass`] **双写**：样式函数的签名是 `Fn(&Theme) -> Style`、
@@ -495,6 +510,14 @@ pub enum Message {
     LaunchCli,
     /// **把历史上第 n 条的「原式」插到光标前**（结果旁边那个插入键）
     InsertHistory(usize),
+    /// **复制历史第 n 条的结果**到剪贴板（行尾悬停出现的复制按钮）
+    CopyEntry(usize),
+    /// 展开/收起历史搜索框（按钮或 Ctrl+F）
+    ToggleSearch,
+    /// 搜索框内容变化
+    SearchChanged(String),
+    /// 鼠标进入/离开某一条历史（`None` = 离开）
+    HoverEntry(Option<usize>),
     /// 计算中的**秒表跳动**（订阅每 100ms 发一条，只为刷新"计算中 3.2s"）
     Tick,
     /// 点了排版层里的**空参数框**：把光标挪到源文本的第 n 个字符处
@@ -567,9 +590,11 @@ pub enum Message {
     /// ⚠️ 语义是"请尽快再抓一次"，**不是**"再起一条循环"。
     /// 真正的循环由 [`Message::BgTick`] 承担，全局只有一条。
     CaptureBg,
-    /// 窗口**被移动**了（只要求重绘，不要求重抓 —— 背景靠 uv 偏移跟手，
-    /// 见 [`State::bg_cycle`] 里"拖动中跳过抓屏"的说明）。
-    WindowMoved,
+    /// 窗口**被移动**了（附带新位置：只更新"记住的位置"，不重抓背景 —— 背景靠
+    /// uv 偏移跟手，见 [`State::bg_cycle`] 里"拖动中跳过抓屏"的说明）。
+    WindowMoved(iced::Point),
+    /// 窗口**尺寸变化**（附带新尺寸：既要重抓背景，也要更新"记住的大小"）。
+    WindowResized(iced::Size),
     /// 自绘窗口栏发来的意图（拖动 / 缩放 / 三个按钮）。
     ///
     /// 只用一个透传变体，而不是拆成五条消息：窗口栏的意图与 `app` 的处理
@@ -670,6 +695,9 @@ impl State {
             input: expr::Doc::default(),
             input_hint: None,
             history: Vec::new(),
+            search_open: false,
+            search: String::new(),
+            hover_entry: None,
             dark: prefs.dark,
             ui_scale: prefs.ui_scale.clamp(0.5, 1.0),
             allow_capture: prefs.capture,
@@ -700,7 +728,9 @@ impl State {
             persist,
             show_funcs: false,
             show_settings: false,
-            maximized: false,
+            maximized: prefs.win_max,
+            win_geom: (prefs.win_x, prefs.win_y, prefs.win_w, prefs.win_h),
+            win_max_pref: prefs.win_max,
             last_input: String::new(),
             panel: Panel::default(),
             ctrl_held: false,
@@ -770,6 +800,30 @@ impl State {
                 self.dark = !self.dark;
                 theme::set_dark(self.dark);
                 self.persist_prefs();
+            }
+            Message::CopyEntry(i) => {
+                // 用户 2026-10-27："行尾悬停出现复制图标，点它复制该条结果"。
+                //
+                // 复制的是**结果文本**（不带 `= ` / `≈ ` 前缀 —— 那是界面上用来
+                // 区分精确/近似的记号，粘到别处只会碍事）。
+                if let Some(e) = self.history.get(i) {
+                    let text = copy_payload(&e.output);
+                    return iced::clipboard::write(text);
+                }
+            }
+            Message::ToggleSearch => {
+                self.search_open = !self.search_open;
+                // 收起时清空关键词：下次展开应该是"全新一次搜索"，
+                // 而不是残留上次的条件（否则用户会以为历史少了）。
+                if !self.search_open {
+                    self.search.clear();
+                }
+            }
+            Message::SearchChanged(q) => {
+                self.search = q;
+            }
+            Message::HoverEntry(i) => {
+                self.hover_entry = i;
             }
             Message::InsertHistory(i) => {
                 // 用户 2026-10-24："计算完的式子旁边增加插入键，插入输入栏里光标前面"。
@@ -1039,9 +1093,23 @@ impl State {
             // 但**要留下"还在动"的痕迹**：`bg_moved` 让 `bg_cycle` 知道本轮可以
             // 跳过抓屏；`bg_dirty` 让"停下来之后的那一轮"立刻补抓一帧
             //（否则要等 `bg_idle` 把间隔放慢到 2s，拖完会有明显的一段旧背景）。
-            Message::WindowMoved => {
+            Message::WindowMoved(pos) => {
                 self.bg_moved = true;
                 self.bg_dirty = true;
+                // 最大化时窗口位置是屏幕左上角，那不是"用户想要的位置" ⇒ 只在
+                // 普通状态下记。大小同理（见 `WindowResized`）。
+                if !self.maximized {
+                    self.win_geom.0 = pos.x;
+                    self.win_geom.1 = pos.y;
+                }
+            }
+            Message::WindowResized(size) => {
+                if !self.maximized {
+                    self.win_geom.2 = size.width;
+                    self.win_geom.3 = size.height;
+                }
+                // 尺寸变了，抓屏区域也要跟着变（原来这条是 `CaptureBg` 的职责）
+                return self.bg_request();
             }
             // ── 自绘窗口栏 ────────────────────────────────────────────────
             Message::Chrome(action) => return self.chrome(action),
@@ -1119,6 +1187,11 @@ impl State {
                 }
             }
             Message::WindowOpened => {
+                // **恢复"上次退出时是最大化"**：`window::Settings` 只能给尺寸/位置，
+                // 没有"以最大化启动"的字段，所以在窗口真正建好之后补一次。
+                if self.win_max_pref && !self.maximized {
+                    return win_task(move |id| iced::window::maximize::<Message>(id, true));
+                }
                 // ⚠️ **除此之外这里刻意什么都不做**。
                 //
                 // 上一版在这里调 `backdrop::enable` 并设 `acrylic_checked = true`，
@@ -1181,6 +1254,35 @@ impl State {
                 if self.allow_capture { "on" } else { "off" }.to_string(),
             ),
             ("ui_scale", format!("{:.2}", self.ui_scale)),
+            // 窗口几何：没拿到过事件（w == 0）就不写，免得首启把"居中"覆盖成 (0,0)
+            ("win_x", format!("{:.0}", self.win_geom.0)),
+            ("win_y", format!("{:.0}", self.win_geom.1)),
+            (
+                "win_w",
+                format!(
+                    "{:.0}",
+                    if self.win_geom.2 > 0.0 {
+                        self.win_geom.2
+                    } else {
+                        0.0
+                    }
+                ),
+            ),
+            (
+                "win_h",
+                format!(
+                    "{:.0}",
+                    if self.win_geom.3 > 0.0 {
+                        self.win_geom.3
+                    } else {
+                        0.0
+                    }
+                ),
+            ),
+            (
+                "win_max",
+                if self.win_max_pref { "on" } else { "off" }.to_string(),
+            ),
             ("glass2_blur", format!("{:.2}", self.glass_blur)),
             ("glass2_tint", format!("{:.2}", self.glass_tint2)),
             ("glass_tint", format!("{:.2}", self.acrylic_tint)),
@@ -1252,7 +1354,13 @@ impl State {
                 self.maximized = next;
                 win_task(move |id| window::maximize::<Message>(id, next))
             }
-            C::Close => win_task(window::close::<Message>),
+            C::Close => {
+                // **退出前落盘**：窗口位置/大小/最大化只在关闭这一刻写 ——
+                // 拖动窗口每秒几十个 Moved 事件，逐个写盘会把磁盘打满。
+                self.win_max_pref = self.maximized;
+                self.persist_prefs();
+                win_task(window::close::<Message>)
+            }
         }
     }
 
@@ -1462,6 +1570,14 @@ impl State {
                 K::Named(Named::Enter) => self.insert("\n"),
                 K::Character(c) if c.as_ref().eq_ignore_ascii_case("v") => {
                     return iced::clipboard::read().map(Message::Pasted);
+                }
+                // Ctrl+F：展开/收起历史搜索（用户 2026-10-27 定）
+                K::Character(c) if c.as_ref().eq_ignore_ascii_case("f") => {
+                    self.search_open = !self.search_open;
+                    if !self.search_open {
+                        self.search.clear();
+                    }
+                    return Task::none();
                 }
                 _ => {}
             }
@@ -1965,6 +2081,22 @@ impl State {
     fn results(&self) -> Element<'_, Message> {
         let math = self.modes.display == DisplayMode::MathIO;
 
+        // **搜索过滤**（用户 2026-10-27）：子串、大小写不敏感，原式与结果都匹配。
+        // 保留**真实下标**（`shown` 存的是 history 的下标）：插入/复制都按它取条目，
+        // 否则过滤后点"插入"会插到别的式子上。
+        let q = self.search.trim().to_lowercase();
+        let shown: Vec<usize> = self
+            .history
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                q.is_empty()
+                    || e.input.to_lowercase().contains(&q)
+                    || e.output.to_lowercase().contains(&q)
+            })
+            .map(|(i, _)| i)
+            .collect();
+
         let mut col = Column::new().spacing(14).width(Length::Fill);
         if self.history.is_empty() {
             col = col.push(
@@ -1978,9 +2110,20 @@ impl State {
                 .padding([26, 8])
                 .center_x(Length::Fill),
             );
+        } else if shown.is_empty() {
+            // 有历史但没匹配上：说清楚"是过滤掉了"，否则用户会以为历史丢了
+            col = col.push(
+                container(
+                    theme::label(t("没有匹配的记录"))
+                        .size(14)
+                        .style(theme::hint),
+                )
+                .padding([26, 8])
+                .center_x(Length::Fill),
+            );
         } else {
-            for (i, e) in self.history.iter().enumerate() {
-                col = col.push(self.history_entry(i, e, math));
+            for i in shown {
+                col = col.push(self.history_entry(i, &self.history[i], math));
             }
         }
 
@@ -2058,8 +2201,40 @@ impl State {
             // 记住"用户是不是在底部"（见 `State::at_bottom`）
             .on_scroll(Message::HistoryScrolled);
 
+        // 搜索入口（用户 2026-10-27 定：默认收起，点按钮或 Ctrl+F 展开）
+        let search_row: Row<'_, Message> = if self.search_open {
+            row![
+                // ⚠️ `text_input` 的占位符要求 `&'a str`（与整个 Element 同生命周期），
+                // 而 `t()` 返回 `String` ⇒ 临时值活不到渲染。所以用**独立标签**代替
+                // 占位符（标签走 `theme::label`，收 String 没问题）。
+                theme::label(t("搜索")).size(12).style(theme::hint),
+                text_input("", &self.search)
+                    .on_input(Message::SearchChanged)
+                    .width(Length::Fill)
+                    .size(12)
+                    .padding([4, 8])
+                    .font(crate::fonts::font_cjk())
+                    .style(theme::field),
+                button(theme::label(t("关闭")).size(11))
+                    .padding([2, 8])
+                    .style(|t, s| theme::mode_chip(t, s, false))
+                    .on_press(Message::ToggleSearch),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+        } else {
+            row![
+                Space::new().width(Length::Fill),
+                button(theme::label(t("搜索")).size(11))
+                    .padding([2, 8])
+                    .style(|t, s| theme::mode_chip(t, s, false))
+                    .on_press(Message::ToggleSearch),
+            ]
+            .align_y(Alignment::Center)
+        };
+
         Self::glass_under(
-            container(inner)
+            container(column![search_row, inner].spacing(6))
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .padding(6)
@@ -2106,7 +2281,7 @@ impl State {
             .style(|t, s| theme::mode_chip(t, s, false))
             .on_press(Message::InsertHistory(idx));
 
-        let echo = row![
+        let mut echo = row![
             text("›")
                 .size(15)
                 .style(theme::accent_text)
@@ -2117,6 +2292,18 @@ impl State {
         ]
         .spacing(8)
         .align_y(Alignment::Center);
+
+        // **复制键**（用户 2026-10-27 定）：只在鼠标悬停这一条时出现。
+        // 常显会让每行都多一个按钮，历史一多就变成"一排按钮"（插件的同类设计
+        // 也是悬停才出）。放在"插入"右边，保持右对齐。
+        if self.hover_entry == Some(idx) {
+            echo = echo.push(
+                button(theme::label(t("复制")).size(11))
+                    .padding([2, 8])
+                    .style(|t, s| theme::mode_chip(t, s, false))
+                    .on_press(Message::CopyEntry(idx)),
+            );
+        }
 
         // 结果文本带 core 给的 `= ` / `≈ ` 前缀。**刻意保留**：
         // 它是区分"精确值"与"近似值"的唯一信号，比只看颜色可靠（色盲用户也能分辨）。
@@ -2182,10 +2369,15 @@ impl State {
         ]
         .align_y(Alignment::Center);
 
-        container(column![echo, result_line].spacing(5))
+        // 用 `mouse_area` 包一层来**知道鼠标在哪一条上**（iced 没有 :hover 选择器）。
+        // 进入/离开只改 `hover_entry`，代价是一次重绘 —— 历史条目本来就少，可接受。
+        let body = container(column![echo, result_line].spacing(5))
             .width(Length::Fill)
             .padding([7, 9])
-            .style(move |t| theme::history_row(t, e.error))
+            .style(move |t| theme::history_row(t, e.error));
+        iced::widget::mouse_area(body)
+            .on_enter(Message::HoverEntry(Some(idx)))
+            .on_exit(Message::HoverEntry(None))
             .into()
     }
 
@@ -3113,6 +3305,19 @@ fn is_precise(text: &str) -> bool {
 /// 一位小数会把输出挤得很吵；两边刻意不同，不要"顺手统一"。
 ///
 /// 文案过 `i18n`（`用时：{0}秒` / `用时：<0.1秒` 两条词条在词典里）。
+/// 复制到剪贴板时用的文本：去掉界面上的 `= ` / `≈ ` 前缀与首尾空白。
+///
+/// 前缀是"精确/近似"的视觉记号（见 `history_entry` 里结果行的说明），
+/// 粘到别处只会碍事 —— 用户复制的是**结果本身**。
+fn copy_payload(output: &str) -> String {
+    output
+        .trim()
+        .trim_start_matches("= ")
+        .trim_start_matches("≈ ")
+        .trim()
+        .to_string()
+}
+
 fn elapsed_text(d: std::time::Duration) -> String {
     // 直接用整数运算算 0.1 秒的个数，避免浮点格式化带来的舍入惊喜
     let tenths = d.as_millis() / 100;
@@ -3232,8 +3437,8 @@ pub fn subscription(state: &State) -> iced::Subscription<Message> {
         // 重抓一次（GDI 回读 40–95ms）造成的。
         // `WindowMoved` 唯一的作用就是触发一次重绘，让新偏移在下一帧生效
         //（iced 收到任意消息都会重建 view + 重绘 ⇒ 刷新率跟着事件的 60Hz 走）。
-        iced::window::Event::Moved(_) => Message::WindowMoved,
-        iced::window::Event::Resized(_) => Message::CaptureBg,
+        iced::window::Event::Moved(pos) => Message::WindowMoved(pos),
+        iced::window::Event::Resized(size) => Message::WindowResized(size),
         // 其余窗口事件本项目暂时不关心，映射成一个不会被处理的占位
         _ => Message::Noop,
     });

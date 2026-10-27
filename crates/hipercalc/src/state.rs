@@ -117,6 +117,17 @@ pub struct GuiPrefs {
     pub shadow: f32,
     /// 长结果的处理方式：`true` = 自动换行，`false` = 横向滚动
     pub wrap: bool,
+    /// 上次退出时的窗口位置与大小（**逻辑像素**，与 winit 口径一致）。
+    ///
+    /// `win_w == 0.0` 表示"没有记录"（首次启动）⇒ 由 `main.rs` 居中打开。
+    /// 只记**非最大化**时的几何：最大化状态下窗口铺满屏幕，记下来会让用户
+    /// 还原后得到一个全屏大小的普通窗口。
+    pub win_x: f32,
+    pub win_y: f32,
+    pub win_w: f32,
+    pub win_h: f32,
+    /// 上次退出时是否处于最大化（下次启动先还原成这个状态）
+    pub win_max: bool,
     /// **设置面板自己的浓度**（亚克力模式）：0 = 全透，1 = 与主面板同档
     pub acrylic_dialog_tint: f32,
     /// **设置面板自己的浓度**（玻璃模式）
@@ -145,6 +156,12 @@ impl Default for GuiPrefs {
             // 设置面板默认与主面板同档（不额外加实）
             acrylic_dialog_tint: 1.0,
             glass_dialog_tint: 1.0,
+            // 0 = 没有记录 ⇒ 首次启动居中
+            win_x: 0.0,
+            win_y: 0.0,
+            win_w: 0.0,
+            win_h: 0.0,
+            win_max: false,
         }
     }
 }
@@ -206,6 +223,24 @@ impl GuiPrefs {
                 p.glass_dialog_tint = f.clamp(0.0, 1.0);
             } else if let Some(v) = line.strip_prefix("wrap=") {
                 p.wrap = v.trim() != "off";
+            } else if let Some(v) = line.strip_prefix("win_x=")
+                && let Ok(f) = v.trim().parse::<f32>()
+            {
+                p.win_x = f;
+            } else if let Some(v) = line.strip_prefix("win_y=")
+                && let Ok(f) = v.trim().parse::<f32>()
+            {
+                p.win_y = f;
+            } else if let Some(v) = line.strip_prefix("win_w=")
+                && let Ok(f) = v.trim().parse::<f32>()
+            {
+                p.win_w = f.max(0.0);
+            } else if let Some(v) = line.strip_prefix("win_h=")
+                && let Ok(f) = v.trim().parse::<f32>()
+            {
+                p.win_h = f.max(0.0);
+            } else if let Some(v) = line.strip_prefix("win_max=") {
+                p.win_max = v.trim() != "off";
             }
         }
         p
@@ -234,6 +269,14 @@ impl GuiPrefs {
             ),
             ("glass2_dlg_tint", format!("{:.2}", self.glass_dialog_tint)),
             ("wrap", if self.wrap { "on" } else { "off" }.to_string()),
+            ("win_x", format!("{:.0}", self.win_x)),
+            ("win_y", format!("{:.0}", self.win_y)),
+            ("win_w", format!("{:.0}", self.win_w)),
+            ("win_h", format!("{:.0}", self.win_h)),
+            (
+                "win_max",
+                if self.win_max { "on" } else { "off" }.to_string(),
+            ),
         ]
     }
 }
