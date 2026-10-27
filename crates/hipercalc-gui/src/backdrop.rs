@@ -427,7 +427,9 @@ pub fn capture_blurred(x: i32, y: i32, w: u32, h: u32, factor: u32) -> Option<Ba
     let sample = if f == 1 { 2 } else { f };
     let dw = (w / sample).max(1);
     let dh = (h / sample).max(1);
+    let t_grab = std::time::Instant::now();
     let raw = platform::grab_scaled(x, y, w, h, dw, dh)?;
+    let dt_grab = t_grab.elapsed();
     if f == 1 {
         // 不模糊：`grab_scaled` 已经做完 BGRA→RGBA，直接当背景用
         let bd = Backdrop {
@@ -443,7 +445,9 @@ pub fn capture_blurred(x: i32, y: i32, w: u32, h: u32, factor: u32) -> Option<Ba
         return Some(bd);
     }
     // ⚠️ factor 传 **1**：图已经是目标尺寸，只需要 box blur，不再降采样
+    let t_blur = std::time::Instant::now();
     let mut bd = blur_downsample(&raw, dw as usize, dh as usize, 1);
+    prof::record(dt_grab, std::time::Duration::ZERO, t_blur.elapsed());
     bd.x = x;
     bd.y = y;
     bd.rw = w;
@@ -501,6 +505,56 @@ fn dump_if_requested(bd: &Backdrop) {
         window_rect(),
         path
     );
+}
+
+/// 抓屏三段的耗时统计（只有 `HIPERCALC_PROFILE=1` 时工作）。
+///
+/// 为什么要有：玻璃模式的每帧成本 = 抓屏 + 填充 + 模糊，三者量级接近，
+/// 但**猜不出谁是大头**（DXGI 读回受 GPU/分辨率影响、填充是纯 CPU、模糊看半径）。
+/// 下一轮要不要优化，得先看这张表 —— 用户的规矩是"性能声明必须实测"。
+///
+/// 每 60 次打印一次平均值（约 1 秒一次，60fps 下），不打满屏。
+mod prof {
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    static GRAB: AtomicU64 = AtomicU64::new(0);
+    static FILL: AtomicU64 = AtomicU64::new(0);
+    static BLUR: AtomicU64 = AtomicU64::new(0);
+    static N: AtomicU64 = AtomicU64::new(0);
+
+    /// 开关只读一次环境变量（每帧读一次 `env::var` 是白给的系统调用）
+    fn on() -> bool {
+        static ON: OnceLock<bool> = OnceLock::new();
+        *ON.get_or_init(|| std::env::var("HIPERCALC_PROFILE").ok().as_deref() == Some("1"))
+    }
+
+    /// 记一次三个分段的耗时；满 60 次打一行平均
+    pub fn record(grab: Duration, fill: Duration, blur: Duration) {
+        if !on() {
+            return;
+        }
+        let us = |d: Duration| d.as_micros() as u64;
+        GRAB.fetch_add(us(grab), Ordering::Relaxed);
+        FILL.fetch_add(us(fill), Ordering::Relaxed);
+        BLUR.fetch_add(us(blur), Ordering::Relaxed);
+        let n = N.fetch_add(1, Ordering::Relaxed) + 1;
+        if n.is_multiple_of(60) {
+            let (g, f, b) = (
+                GRAB.load(Ordering::Relaxed),
+                FILL.load(Ordering::Relaxed),
+                BLUR.load(Ordering::Relaxed),
+            );
+            eprintln!(
+                "[bg-prof] n={n} 抓屏={:.2}ms 填充={:.2}ms 模糊={:.2}ms 合计={:.2}ms",
+                g as f64 / n as f64 / 1000.0,
+                f as f64 / n as f64 / 1000.0,
+                b as f64 / n as f64 / 1000.0,
+                (g + f + b) as f64 / n as f64 / 1000.0
+            );
+        }
+    }
 }
 
 /// 把"自己窗口那一块"从抓到的桌面里**补掉**（四边平均色 + 双线性 + 抖动）。
@@ -619,33 +673,53 @@ fn inpaint_self_rect(rgba: &mut [u8], tw: usize, th: usize, rect: (i32, i32, i32
     // ⚠️ 这样**每条边上的颜色就等于那条边的平均色**，与外侧真实像素**连续**；
     // 内部自然过渡到四色平均。用"两组线性插值再平均"做不到这一点（实测接缝差 65 级）。
     const EDGE_EPS: f32 = 0.02;
-    for y in y0..y1 {
-        let v = (y - y0) as f32 / h;
+    // ⚠️ **按 8×8 分块算颜色**：实测逐像素算一次 940×900 的窗口要 **80ms**
+    //（`HIPERCALC_PROFILE=1` 实测），而分块只要 1/64 的次数。
+    // 补出来本来就是平滑渐变，块内色差 < 1 个量化级 ⇒ 看不出块。
+    // u/v 取**块左/上缘**（不是中心）：中心会让第一块就掺进对侧颜色，接缝出现台阶。
+    const STEP: usize = 8;
+    // 4×4 抖动表（±1 个量化级）：打断 8bit 平坦渐变的等值线。用固定图案而不是
+    // 逐像素哈希 —— 哈希那一步在 1.4M 像素上也要好几毫秒。
+    const DITHER: [[f32; 4]; 4] = [
+        [-0.8, 0.4, -0.4, 0.8],
+        [0.8, -0.4, 0.4, -0.8],
+        [-0.4, 0.8, -0.8, 0.4],
+        [0.4, -0.8, 0.8, -0.4],
+    ];
+    let mut by = y0;
+    while by < y1 {
+        let v = (by - y0) as f32 / h;
         let (dv_t, dv_b) = (v + EDGE_EPS, 1.0 - v + EDGE_EPS);
-        for x in x0..x1 {
-            let u = (x - x0) as f32 / w;
+        let (wt, wb) = (1.0 / (dv_t * dv_t), 1.0 / (dv_b * dv_b));
+        let ye = (by + STEP).min(y1);
+        let mut bx = x0;
+        while bx < x1 {
+            let u = (bx - x0) as f32 / w;
             let (du_l, du_r) = (u + EDGE_EPS, 1.0 - u + EDGE_EPS);
             let (wl, wr) = (1.0 / (du_l * du_l), 1.0 / (du_r * du_r));
-            let (wt, wb) = (1.0 / (dv_t * dv_t), 1.0 / (dv_b * dv_b));
             let sum = wl + wr + wt + wb;
-            let mut c = scale(
+            let c = scale(
                 add(
                     add(scale(l, wl), scale(r, wr)),
                     add(scale(t, wt), scale(b, wb)),
                 ),
                 1.0 / sum,
             );
-            // ±1 级抖动：打断 8bit 平坦渐变的等值线（用户看到的"横向条带"有一部分
-            // 就是量化条带）
-            let n = ((x.wrapping_mul(73_856_093) ^ y.wrapping_mul(19_349_663)) & 0xFF) as f32;
-            let d = (n / 255.0 - 0.5) * 1.6;
-            c = add(c, [d, d, d]);
-            let i = (y * tw + x) * 4;
-            rgba[i] = c[0].clamp(0.0, 255.0) as u8;
-            rgba[i + 1] = c[1].clamp(0.0, 255.0) as u8;
-            rgba[i + 2] = c[2].clamp(0.0, 255.0) as u8;
-            rgba[i + 3] = 255;
+            let xe = (bx + STEP).min(x1);
+            for y in by..ye {
+                let drow = &DITHER[y & 3];
+                for x in bx..xe {
+                    let d = drow[x & 3];
+                    let i = (y * tw + x) * 4;
+                    rgba[i] = (c[0] + d).clamp(0.0, 255.0) as u8;
+                    rgba[i + 1] = (c[1] + d).clamp(0.0, 255.0) as u8;
+                    rgba[i + 2] = (c[2] + d).clamp(0.0, 255.0) as u8;
+                    rgba[i + 3] = 255;
+                }
+            }
+            bx += STEP;
         }
+        by += STEP;
     }
 }
 
@@ -696,7 +770,9 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
         // 相当于放大 2 倍，文字必然发虚（实测 dump：抓屏 2160×1440、纹理 1080×720）。
         // 现在 sample=1 ⇒ 1 texel 对 1 像素，逐像素清晰。
         let sample = factor.max(1);
+        let t_grab = std::time::Instant::now();
         let polled = crate::dupl::poll(x0, y0, w, h, sample);
+        let dt_grab = t_grab.elapsed();
         if std::env::var("HIPERCALC_DUMP_BG").ok().as_deref() == Some("1") {
             eprintln!(
                 "[bg-dump] dupl = {}",
@@ -726,6 +802,8 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
                 //
                 // 坐标换算：纹理 `fw×fh` 覆盖屏幕区域 `(fx, fy, frw, frh)`。
                 let mut rgba = rgba;
+                let t_fill = std::time::Instant::now();
+                let mut dt_fill = std::time::Duration::ZERO;
                 if capture_ok() && frw > 0 && frh > 0 {
                     let sx = fw as f32 / frw as f32;
                     let sy = fh as f32 / frh as f32;
@@ -736,6 +814,7 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
                         (((wy + wh as i32 - fy) as f32) * sy).round() as i32,
                     );
                     inpaint_self_rect(&mut rgba, fw as usize, fh as usize, rect);
+                    dt_fill = t_fill.elapsed();
                     // 只报**一次**（排障用）：每帧都打会把 stderr 刷满
                     static ONCE: std::sync::atomic::AtomicBool =
                         std::sync::atomic::AtomicBool::new(true);
@@ -778,6 +857,7 @@ pub fn capture_window_blurred(factor: u32) -> Option<Backdrop> {
                 // ⚠️ 这里**不再**说"允许截图就得接受自己的倒影"：上一版是这么定的，
                 // 用户 2026-10-26 实测（截图里左侧那一列模糊文字就是自己）否掉了。
                 // 现在自己在 `inpaint_self_rect` 里被补掉，两种模式都看不到自己。
+                prof::record(dt_grab, dt_fill, std::time::Duration::ZERO);
                 dump_if_requested(&bd);
                 return Some(bd);
             }
@@ -1320,6 +1400,27 @@ mod tests {
                 "接缝不连续：{inside:?} vs {outside:?}"
             );
         }
+    }
+
+    /// **填充的实测成本**（`cargo test -p hipercalc-gui --lib -- --ignored --nocapture`）。
+    ///
+    /// 为什么要单独测：这段在抓屏线程里**每帧**跑一次，成本必须心里有数。
+    /// 2026-10-26 实测：逐像素版本 940×900 要 **80ms/次**（直接拖垮背景刷新），
+    /// 改回 8×8 分块后降到 1ms 量级 —— 这个数字就是那次回归的证据。
+    #[test]
+    #[ignore = "性能探针，按需手动跑（--ignored --nocapture）"]
+    fn inpaint_cost_scan() {
+        let (tw, th) = (940usize, 900usize);
+        let mut img = vec![128u8; tw * th * 4];
+        let rect = (100, 80, 840, 820); // 740×740 的窗口矩形
+        let n = 20;
+        let t0 = std::time::Instant::now();
+        for _ in 0..n {
+            inpaint_self_rect(&mut img, tw, th, rect);
+        }
+        let per = t0.elapsed().as_secs_f64() * 1000.0 / n as f64;
+        println!("[bench] inpaint {:?} 平均 {per:.3} ms/次", n);
+        assert!(per < 20.0, "填充单次超过 20ms（回归！）：{per:.3} ms");
     }
 
     /// 降采样 + 模糊这部分是**纯函数**，可以脱开抓屏单独验证。

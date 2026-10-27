@@ -1,8 +1,12 @@
 # AGENTS.md
 
-`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**已可用**：计算 / **后台求值（界面永不卡死）** / **耗时显示（对标 CLI）** / 历史 / Desmos 式双面板虚拟键盘 / 函数弹窗 / 数学排版与实时预览 / 内置字体 / **自绘窗口栏（无系统标题栏）** / 深浅双主题 / 全界面多语言）。**当前版本 2.0.0**，**含 373 项测试**（hipercalc 200 + core 22 + GUI 134 单测 + 16 快照 + 1 doctest，其中 2 项默认 ignore），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
+`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**已可用**：计算 / **后台求值（界面永不卡死）** / **耗时显示（对标 CLI）** / 历史 / Desmos 式双面板虚拟键盘 / 函数弹窗 / 数学排版与实时预览 / 内置字体 / **自绘窗口栏（无系统标题栏）** / 深浅双主题 / 全界面多语言）。**当前版本 2.0.0**，**含 391 项测试**（hipercalc 202 + core 22 + GUI 149 单测 + 17 快照 + 1 doctest，其中 3 项默认 ignore：2 张 README 素材 + 1 个填充性能探针），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
 
-**CI 分三块**：三平台 build + test（**只覆盖 default-members = core+cli**）、`Check GUI`（windows + `cargo check -p hipercalc-gui --all-targets`，2026-10-22 加，因为曾出现"CI 全绿但 GUI 编译不过"）、6 目标交叉编译。发布走 `release.yml`：tag 触发，**CLI 六目标 + GUI 三平台（Windows / macOS / Linux）**。Linux GUI 要 apt 装 libxkbcommon / wayland / x11 / fontconfig 开发包（见 workflow 里的 `Install Linux GUI deps`）。
+**CI 分三块**：三平台 build + test（**只覆盖 default-members = core+cli**）、`Check GUI`（2026-10-22 加，因为曾出现"CI 全绿但 GUI 编译不过"；2026-10-26 起这条 job 在 Windows 上**还跑 `cargo test -p hipercalc-gui --lib`（149 个）与 `cargo clippy -p hipercalc-gui -- -D warnings`**，macOS 仍只 `cargo check`）、6 目标交叉编译。
+
+**lint 是硬门槛**（2026-10-26）：core/cli/gui 三个 crate 的 clippy 存量 32 条已全部清零，CI 从"只拦 correctness"收紧成 `-D warnings`。新增告警会让 CI 变红 —— 误报请就地 `#[allow(…, reason="…")]`，别整体回退这条。
+
+**发布走 `release.yml`**：tag 触发，**CLI 六目标 + GUI 三平台（Windows / macOS / Linux）**。Linux GUI 要 apt 装 libxkbcommon / wayland / x11 / fontconfig 开发包（见 workflow 里的 `Install Linux GUI deps`）。
 
 **文档分工（用户明确要求）**：README 只放"简介 + 截图 + 特色 + 安装"，**手册内容一律进 `docs/DOC.zh-CN.md` / `DOC.en.md`**（27 章，第 27 章是图形界面）；`docs/liquid-glass-report.md` 玻璃算法笔记；`docs/windows7.md` Win7 兼容性调研。别再往 README 堆细节。
 
