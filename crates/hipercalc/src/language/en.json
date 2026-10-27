@@ -482,5 +482,7 @@
   "搜索": "Search",
   "搜索历史…": "Search history…",
   "复制": "Copy",
-  "没有匹配的记录": "No matching entries"
+  "没有匹配的记录": "No matching entries",
+  "复制结果": "Copy result",
+  "清空": "Clear"
 }

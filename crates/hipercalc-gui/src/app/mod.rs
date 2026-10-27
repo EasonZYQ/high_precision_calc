@@ -266,12 +266,8 @@ pub struct State {
     pending: Option<(String, Vec<String>)>,
     /// 求值历史，最新在末尾
     history: Vec<Entry>,
-    /// 历史搜索框是否展开（用户 2026-10-27 定：默认收起，点搜索按钮或 Ctrl+F 展开）
-    search_open: bool,
     /// 历史搜索关键词（**子串匹配**，大小写不敏感；空串 = 不过滤）
     search: String,
-    /// 鼠标悬在哪一条历史上（决定要不要显示"复制"按钮）
-    hover_entry: Option<usize>,
     /// 输入框内容（多行编辑器 —— 能读光标、能局部插入）
     /// 输入栏的**文本**。
     ///
@@ -523,12 +519,8 @@ pub enum Message {
     InsertHistory(usize),
     /// **复制历史第 n 条的结果**到剪贴板（行尾悬停出现的复制按钮）
     CopyEntry(usize),
-    /// 展开/收起历史搜索框（按钮或 Ctrl+F）
-    ToggleSearch,
     /// 搜索框内容变化
     SearchChanged(String),
-    /// 鼠标进入/离开某一条历史（`None` = 离开）
-    HoverEntry(Option<usize>),
     /// 几何节流的"末尾补写"（由 [`State::save_geom_throttled`] 的延迟任务发回）
     SaveGeomNow,
     /// 计算中的**秒表跳动**（订阅每 100ms 发一条，只为刷新"计算中 3.2s"）
@@ -708,9 +700,7 @@ impl State {
             input: expr::Doc::default(),
             input_hint: None,
             history: Vec::new(),
-            search_open: false,
             search: String::new(),
-            hover_entry: None,
             dark: prefs.dark,
             ui_scale: prefs.ui_scale.clamp(0.5, 1.0),
             allow_capture: prefs.capture,
@@ -826,19 +816,8 @@ impl State {
                     return iced::clipboard::write(text);
                 }
             }
-            Message::ToggleSearch => {
-                self.search_open = !self.search_open;
-                // 收起时清空关键词：下次展开应该是"全新一次搜索"，
-                // 而不是残留上次的条件（否则用户会以为历史少了）。
-                if !self.search_open {
-                    self.search.clear();
-                }
-            }
             Message::SearchChanged(q) => {
                 self.search = q;
-            }
-            Message::HoverEntry(i) => {
-                self.hover_entry = i;
             }
             Message::SaveGeomNow => {
                 self.geom_save_pending = false;
@@ -1619,14 +1598,6 @@ impl State {
                 K::Named(Named::Enter) => self.insert("\n"),
                 K::Character(c) if c.as_ref().eq_ignore_ascii_case("v") => {
                     return iced::clipboard::read().map(Message::Pasted);
-                }
-                // Ctrl+F：展开/收起历史搜索（用户 2026-10-27 定）
-                K::Character(c) if c.as_ref().eq_ignore_ascii_case("f") => {
-                    self.search_open = !self.search_open;
-                    if !self.search_open {
-                        self.search.clear();
-                    }
-                    return Task::none();
                 }
                 _ => {}
             }

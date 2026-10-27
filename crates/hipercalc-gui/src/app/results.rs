@@ -133,36 +133,27 @@ impl State {
             .on_scroll(Message::HistoryScrolled);
 
         // 搜索入口（用户 2026-10-27 定：默认收起，点按钮或 Ctrl+F 展开）
-        let search_row: Row<'_, Message> = if self.search_open {
-            row![
-                // ⚠️ `text_input` 的占位符要求 `&'a str`（与整个 Element 同生命周期），
-                // 而 `t()` 返回 `String` ⇒ 临时值活不到渲染。所以用**独立标签**代替
-                // 占位符（标签走 `theme::label`，收 String 没问题）。
-                theme::label(t("搜索")).size(12).style(theme::hint),
-                text_input("", &self.search)
-                    .on_input(Message::SearchChanged)
-                    .width(Length::Fill)
-                    .size(12)
-                    .padding([4, 8])
-                    .font(crate::fonts::font_cjk())
-                    .style(theme::field),
-                button(theme::label(t("关闭")).size(11))
-                    .padding([2, 8])
-                    .style(|t, s| theme::mode_chip(t, s, false))
-                    .on_press(Message::ToggleSearch),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center)
-        } else {
-            row![
-                Space::new().width(Length::Fill),
-                button(theme::label(t("搜索")).size(11))
-                    .padding([2, 8])
-                    .style(|t, s| theme::mode_chip(t, s, false))
-                    .on_press(Message::ToggleSearch),
-            ]
-            .align_y(Alignment::Center)
-        };
+        // **搜索栏常驻一行**（用户 2026-10-27："反正也没多大"）。原来要 Ctrl+F 展开，
+        // 实际用起来多一步；现在直接给输入框，右边一个"×"清空。
+        //
+        // ⚠️ `text_input` 的占位符要求 `&'a str`（与 Element 同生命周期），而 `t()`
+        // 返回 `String` ⇒ 临时值活不到渲染，所以用**独立标签**代替占位符。
+        let search_row: Row<'_, Message> = row![
+            theme::label(t("搜索")).size(12).style(theme::hint),
+            text_input("", &self.search)
+                .on_input(Message::SearchChanged)
+                .width(Length::Fill)
+                .size(12)
+                .padding([4, 8])
+                .font(crate::fonts::font_cjk())
+                .style(theme::field),
+            button(theme::label(t("清空")).size(11))
+                .padding([2, 8])
+                .style(|t, s| theme::mode_chip(t, s, false))
+                .on_press(Message::SearchChanged(String::new())),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
 
         Self::glass_under(
             container(column![search_row, inner].spacing(6))
@@ -229,17 +220,18 @@ impl State {
         .spacing(8)
         .align_y(Alignment::Center);
 
-        // **复制键**（用户 2026-10-27 定）：只在鼠标悬停这一条时出现。
-        // 常显会让每行都多一个按钮，历史一多就变成"一排按钮"（插件的同类设计
-        // 也是悬停才出）。放在"插入"右边，保持右对齐。
-        if self.hover_entry == Some(idx) {
-            echo = echo.push(
-                button(theme::label(t("复制")).size(11))
-                    .padding([2, 8])
-                    .style(|t, s| theme::mode_chip(t, s, false))
-                    .on_press(Message::CopyEntry(idx)),
-            );
-        }
+        // **复制键常驻**（用户 2026-10-27 改）：之前是"悬停才出现"，但那样鼠标一进
+        // 就会**挤出一个按钮**，右边的"插入"跟着跳位 —— 用户原话"鼠标一放上去就又
+        // 弹出一个复制"。常驻两个 chip、位置固定，不再抖。
+        //
+        // 文案叫「复制结果」而不是「复制」：旁边还有个「插入」，光写"复制"
+        // 分不清复制的是原式还是结果。
+        echo = echo.push(
+            button(theme::label(t("复制结果")).size(11))
+                .padding([2, 8])
+                .style(|t, s| theme::mode_chip(t, s, false))
+                .on_press(Message::CopyEntry(idx)),
+        );
 
         // 结果文本带 core 给的 `= ` / `≈ ` 前缀。**刻意保留**：
         // 它是区分"精确值"与"近似值"的唯一信号，比只看颜色可靠（色盲用户也能分辨）。
@@ -305,15 +297,12 @@ impl State {
         ]
         .align_y(Alignment::Center);
 
-        // 用 `mouse_area` 包一层来**知道鼠标在哪一条上**（iced 没有 :hover 选择器）。
-        // 进入/离开只改 `hover_entry`，代价是一次重绘 —— 历史条目本来就少，可接受。
-        let body = container(column![echo, result_line].spacing(5))
+        // 复制键常驻后不再需要悬停跟踪（`mouse_area` 那层已去掉）：
+        // 少一次"进/出各重绘一帧"，也少一个"按钮突然冒出来"的抖动源。
+        container(column![echo, result_line].spacing(5))
             .width(Length::Fill)
             .padding([7, 9])
-            .style(move |t| theme::history_row(t, e.error));
-        iced::widget::mouse_area(body)
-            .on_enter(Message::HoverEntry(Some(idx)))
-            .on_exit(Message::HoverEntry(None))
+            .style(move |t| theme::history_row(t, e.error))
             .into()
     }
 }

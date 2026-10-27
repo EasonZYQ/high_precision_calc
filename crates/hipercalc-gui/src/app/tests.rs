@@ -153,9 +153,11 @@ fn flatten_node(n: &mathrender::Node) -> String {
         // 位置包装：拍平后就是里面那棵子树
         Node::At { inner, .. } | Node::Hit { inner, .. } => flatten_node(inner),
         // 占位框 / 光标 / 参数逗号都不携带源文本，拍平后是空的
-        Node::Empty { .. } | Node::EmptyFocused { .. } | Node::Caret | Node::Comma { .. } => {
-            String::new()
-        }
+        Node::Empty { .. }
+        | Node::EmptyFocused { .. }
+        | Node::EmptyBare { .. }
+        | Node::Caret
+        | Node::Comma { .. } => String::new(),
         // 括号分组拍平成 `(内容)`
         Node::Paren { inner } => format!("({})", flatten_node(inner)),
         Node::BigOp {

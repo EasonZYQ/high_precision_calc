@@ -61,6 +61,12 @@ pub enum Node {
     Sub(Box<Node>, Box<Node>),
     /// 一行按顺序排列的若干节点（乘号、加减号都在这里显式出现）
     Seq(Vec<Node>),
+    /// **括号里的空参数**：不画方框，只留一个几像素宽的透明区（可点）。
+    ///
+    /// 用户 2026-10-27："括号里就不需要加方框了，空括号会报错"。
+    /// 括号本身已经把"这里可以填"表达清楚了，再套一个灰框反而喧宾夺主；
+    /// 但**点击目标不能省** —— 否则空括号里点不进去、只能用方向键。
+    EmptyBare { at: usize },
     /// **用户还没输入的空参数** —— 渲染成灰色方块（Desmos 风格）。
     ///
     /// `at` 是它在**源文本里的字符偏移**：点这个方块时要知道"光标该落在哪"。
@@ -480,6 +486,45 @@ impl Parser {
                 // 对齐到这个 token 的末尾 —— 见 `align_caret_to_boundary` 的说明
                 self.align_caret_to_boundary(at, name.chars().count());
                 match name.as_str() {
+                    // 反三角：`acos(0.5)` 要排成 `cos⁻¹(0.5)` —— 与**输入栏**一致。
+                    //
+                    // 为什么在这里做：输入框走 `expr` 树（自有映射），而历史回显、
+                    // 函数面板走的是**文本解析**。两边各认一套名字，就会出现
+                    // "输入栏 cos⁻¹、计算栏 acos"（用户 2026-10-27 实测）。
+                    "asin" | "acos" | "atan" | "acot" | "asec" | "acsc" | "arcsin" | "arccos"
+                    | "arctan" | "arccot" | "arcsec" | "arccsc" => {
+                        let base = match name.trim_start_matches("arc") {
+                            "asin" | "sin" => "sin",
+                            "acos" | "cos" => "cos",
+                            "atan" | "tan" => "tan",
+                            "acot" | "cot" => "cot",
+                            "asec" | "sec" => "sec",
+                            "acsc" | "csc" => "csc",
+                            _ => "sin",
+                        };
+                        let (inner, consumed) = self.parse_call_args();
+                        if !consumed {
+                            return Some(Node::Text(name));
+                        }
+                        let arg = if inner.len() == 1 {
+                            inner.into_iter().next().unwrap()
+                        } else if inner.is_empty() {
+                            Node::Empty {
+                                at: at + name.chars().count() + 1,
+                            }
+                        } else {
+                            Node::Seq(inner)
+                        };
+                        return Some(Node::Seq(vec![
+                            Node::Pow(
+                                Box::new(Node::Text(base.to_string())),
+                                Box::new(Node::Text("−1".to_string())),
+                            ),
+                            Node::Paren {
+                                inner: Box::new(arg),
+                            },
+                        ]));
+                    }
                     // `sqrt(x)` → 根号
                     "sqrt" => {
                         // `(` 的位置：`at` 是 `sqrt` 的起点，跳过 4 个字符就是括号
@@ -886,6 +931,17 @@ pub fn build<'a, M: Clone + 'a>(
             }
         }
         // 聚焦中的空框：框作底、光标叠在框内（贴左、垂直居中）
+        Node::EmptyBare { at } => {
+            // 3px 宽、一整行高：视觉上几乎不可见，但够点中
+            let el: Element<'a, M> = container(Space::new().width(Length::Fixed(3.0)))
+                .width(Length::Fixed(3.0))
+                .height(Length::Fixed(style.size * 1.35))
+                .into();
+            match on_placeholder {
+                Some(f) => iced::widget::mouse_area(el).on_press(f(*at)).into(),
+                None => el,
+            }
+        }
         Node::EmptyFocused { at } => {
             let (w, h) = empty_box_size(style.size);
             let c = style.color.unwrap_or_else(|| theme::colors().text);
@@ -1193,7 +1249,9 @@ pub fn build<'a, M: Clone + 'a>(
                 .align_x(Alignment::Start)
                 .align_y(Alignment::End);
 
-            let mut r = Row::new().align_y(Alignment::End).spacing(0.0);
+            // ⚠️ **顶对齐**：次数要骑在根号钩子上方（`∛` 的 3 在左上），
+            // 早先这里是 `End`，次数被压到了根号**下面**（用户实测截图）。
+            let mut r = Row::new().align_y(Alignment::Start).spacing(0.0);
             if let Some(d) = degree {
                 // n 次根：左上角小字（如 `∛`）
                 r = r.push(build(
@@ -1402,7 +1460,9 @@ impl<Message> iced::widget::canvas::Program<Message> for Delim {
 fn node_height(node: &Node, size: f32) -> f32 {
     match node {
         Node::Text(_) | Node::Caret => size * 1.25,
-        Node::Empty { .. } | Node::EmptyFocused { .. } => empty_box_size(size).1,
+        Node::Empty { .. } | Node::EmptyFocused { .. } | Node::EmptyBare { .. } => {
+            empty_box_size(size).1
+        }
         Node::Comma { .. } => 0.0,
         Node::At { inner, .. } | Node::Hit { inner, .. } => node_height(inner, size),
         Node::Paren { inner } => node_height(inner, size).max(size * 1.35),
@@ -1558,6 +1618,8 @@ fn node_width(node: &Node, size: f32) -> f32 {
         // 空占位框 / 光标：固定的小宽度
         // ⚠️ 必须与 `empty_box_size` 同源，否则分数横线/根号顶线按错的宽度画
         Node::Empty { .. } | Node::EmptyFocused { .. } => empty_box_size(size).0,
+        // 括号里的空参数：只有 3px（见 `EmptyBare`）
+        Node::EmptyBare { .. } => 3.0,
         Node::Caret => size * 0.12,
         Node::Comma { .. } => 0.0,
         // Σ/Π：宽度取"大符号"与"上下限里较宽的那组"之较大者
@@ -1712,9 +1774,11 @@ mod tests {
             // 位置包装：拍平后就是里面那棵子树（位置不属于"文本"）
             Node::At { inner, .. } | Node::Hit { inner, .. } => flatten(inner),
             // 不携带源文本的三种（占位框 / 光标 / 参数逗号）
-            Node::Empty { .. } | Node::EmptyFocused { .. } | Node::Caret | Node::Comma { .. } => {
-                String::new()
-            }
+            Node::Empty { .. }
+            | Node::EmptyFocused { .. }
+            | Node::EmptyBare { .. }
+            | Node::Caret
+            | Node::Comma { .. } => String::new(),
             // 括号分组：拍平成 `(内容)`（与历史区的显示一致）
             Node::Paren { inner } => format!("({})", flatten(inner)),
             Node::BigOp {

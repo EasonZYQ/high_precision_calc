@@ -49,12 +49,17 @@ pub fn spawn_cli() -> io::Result<u32> {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-        // `cmd /k` 的引号规则：整串以 `"` 开头且**多于两个**引号时才会剥掉最外层一对。
-        // 所以这里要写成 `""<exe>" --cli"` —— 少一层引号，带空格的路径就会被拆开。
+        // 引号规则：命令串里**引号多于两个**时，cmd 会剥掉最外层一对。
+        // 所以整串写成 `""<exe>" --cli"` —— 剥完剩下 `"<exe>" --cli`，带空格的路径也安全。
+        //
+        // ⚠️ **必须用 `raw_arg`**（用户 2026-10-27 实测报错
+        // `'"...\hipercalc-gui.exe" --cli"' 不是内部或外部命令）：
+        // `.arg()` 会按 MSVCRT 规则再给参数加一层引号、并把内部的 `"` 转义成 `\"`，
+        // 于是 cmd 收到的是带字面反斜杠的乱码。`raw_arg` 才是"原样拼进命令行"。
         let line = format!("\"\"{}\" --cli\"", exe.display());
         let spawned = std::process::Command::new("cmd.exe")
             .arg("/k")
-            .arg(line)
+            .raw_arg(line)
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn();
         if let Ok(child) = spawned {

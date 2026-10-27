@@ -120,8 +120,11 @@ impl Expr {
             Expr::BigOp { kind, .. } => match kind {
                 BigKind::Sum | BigKind::Prod => &[1, 2, 3, 0],
                 BigKind::Integral => &[2, 3, 0, 1],
-                BigKind::Limit => &[1, 2, 0, 3],
-                BigKind::Diff => &[1, 0, 2, 3],
+                // ⚠️ **只列看得见的槽**：`lim` 不用 `to`（上限），`diff` 只用
+                // 变量与主体。早先把不可见槽也列进来，于是光标从 `d/dx` 的框里
+                // 出来要按**三下**方向键（用户 2026-10-27 实测）。
+                BigKind::Limit => &[1, 2, 0],
+                BigKind::Diff => &[1, 0],
             },
         }
     }
@@ -231,6 +234,19 @@ impl Expr {
                 format!("log({},{})", row_source(base), row_source(arg))
             }
             Expr::Pow { base, exp } => {
+                // **`sin⁻¹` 写法 → core 认的 `asin`**（用户 2026-10-27 实测：
+                // 手输 `sin^-1(45)` 会报"未知标识符: sin"，因为 core 里没有 `sin`
+                // 这个标识符，反三角只叫 `asin`）。
+                //
+                // 只在指数**恰好是 -1** 且底数正好是某个三角名时改写；
+                // 其它幂次（`sin^2`）保持原样 —— 那是"正弦的平方"，不是函数。
+                let b = row_source(base);
+                let e = row_source(exp);
+                if e.trim() == "-1"
+                    && let Some(inv) = inverse_of(&b)
+                {
+                    return inv.to_string();
+                }
                 format!("{}^{}", wrap_row(base), wrap_row(exp))
             }
             Expr::BigOp {
@@ -514,6 +530,13 @@ impl Doc {
         if t.is_empty() {
             return;
         }
+        // ⓪ **反三角的 `(` 要跳出指数**（用户 2026-10-27 实测的 bug）：
+        // 手输 `sin` `^` `-1` `(` 时，光标还停在**指数槽**里，于是变成了
+        // `sin^(-1(45))` —— 括号进了指数、整个式子算不出来、回显里括号也没了。
+        // 这里先把光标挪到幂外面，后面照常插一个普通括号组。
+        if t == "(" {
+            self.leave_neg_one_exponent();
+        }
         // ① 上标：把前一项当底数
         if let Some(exp_src) = t.strip_prefix('^') {
             let exp = parse(exp_src);
@@ -559,6 +582,39 @@ impl Doc {
             path: base,
             at: at + n,
         });
+    }
+
+    /// 光标若停在 `sin^-1` 的**指数槽**末尾，就把它挪到幂外面（供 `(` 使用）。
+    ///
+    /// 判定三件事：路径最后一段是幂的指数槽（`slot == 1`）、指数正好是 `-1`、
+    /// 底数是三角名。三者都满足才动 —— 否则 `x^2` 后面的 `(` 不该被特殊对待。
+    fn leave_neg_one_exponent(&mut self) {
+        let Some(&(idx, slot)) = self.cursor.path.last() else {
+            return;
+        };
+        if slot != 1 {
+            return;
+        }
+        let exp = row_in(&self.root, &self.cursor.path);
+        if self.cursor.at != exp.len() || row_source(exp).trim() != "-1" {
+            return;
+        }
+        // 底数：父行里的 `idx` 那一项，必须是 Pow 且底数是单个三角名
+        let parent = self.cursor.path[..self.cursor.path.len() - 1].to_vec();
+        let base_ok = match row_in(&self.root, &parent).get(idx) {
+            Some(Expr::Pow { base, .. }) => {
+                let b = row_source(base);
+                inverse_of(b.trim()).is_some()
+            }
+            _ => false,
+        };
+        if !base_ok {
+            return;
+        }
+        self.cursor = Cursor {
+            path: parent,
+            at: idx + 1,
+        };
     }
 
     /// 插入 `/`：前一项当分子，光标进分母
@@ -649,9 +705,24 @@ impl Doc {
             return;
         }
         let at = self.cursor.at;
-        let row = self.here_mut();
-        if at > row.len() {
+        if at > self.here().len() {
             return;
+        }
+        let row = self.here_mut();
+        // **多字符记号按字符删**（用户 2026-10-27："按一下删除键应当一个一个字母删去，
+        // 但是现在会直接删去函数"）。
+        //
+        // 典型就是函数名：`sin` 是一个 token（这样它才不会被拆成 `s`+`i`+`n`），
+        // 但退格时用户期望的是"删掉最后一个字母"。反过来 `pi` / `theta` / `inf`
+        // 是**一个符号**（显示成 π / θ / ∞），它们必须整体删 —— 删成 `p` 就不是那个东西了。
+        if let Some(Expr::Text(text)) = row.get(at - 1) {
+            let chars: Vec<char> = text.chars().collect();
+            if chars.len() > 1 && !matches!(text.as_str(), "pi" | "theta" | "inf") {
+                row[at - 1] = Expr::Text(chars[..chars.len() - 1].iter().collect());
+                // 光标位置不变（这一项还在，只是短了一个字符）
+                self.cursor.at = at;
+                return;
+            }
         }
         row.remove(at - 1);
         self.cursor.at = at - 1;
@@ -695,6 +766,7 @@ impl Doc {
         let mut b = Builder {
             cur: &self.cursor,
             out: Vec::new(),
+            bare: false,
         };
         let node = b.row(&self.root, &[]);
         (node, b.out)
@@ -705,6 +777,8 @@ impl Doc {
 struct Builder<'a> {
     cur: &'a Cursor,
     out: Vec<Cursor>,
+    /// 当前这一行是不是**括号组内部**（用户 2026-10-27：括号里不画空框）
+    bare: bool,
 }
 
 impl Builder<'_> {
@@ -721,11 +795,20 @@ impl Builder<'_> {
                 at: 0,
             });
             if cursor_here {
+                // 括号内部：**只有光标、没有框**（用户 2026-10-27）
+                if self.bare {
+                    return Node::Caret;
+                }
                 // 聚焦中的空框：**框 + 框内光标**（`Node::EmptyFocused`）。
                 // 不用 `Seq[Caret, Empty]`：那样光标在框外面，用户要的是"框囊括光标"。
                 return Node::EmptyFocused { at: id };
             }
-            return Node::Empty { at: id };
+            // 括号内部：给一个极窄的**透明**点击区（不画框，但还点得进去）
+            return if self.bare {
+                Node::EmptyBare { at: id }
+            } else {
+                Node::Empty { at: id }
+            };
         }
 
         let mut items: Vec<Node> = Vec::new();
@@ -746,6 +829,25 @@ impl Builder<'_> {
             items.push(Node::Hit {
                 at: id,
                 inner: Box::new(inner),
+            });
+        }
+        // 行尾再补一个**透明点击区**（3px）：点"最后一个记号右边"就是"光标到末尾"。
+        //
+        // 为什么需要：`Hit` 只能表达"落在某一项之前"，最后一个位置没有目标可点 ——
+        // 用户实测"Σ 后面点不进去，只能用方向键"。`EmptyBare` 的拍平文本是空串，
+        // 所以不影响任何文本断言，只是多了 3px 宽度。
+        // 只在**最外层**加：槽内的"末尾点击"意义不大，加了反而让每行
+        // 多出一堆目标（`targets_let_you_click_each_bigop_slot` 就是按
+        // 精确数量断言的，多到无法维护）。
+        if base.is_empty() {
+            let id = self.out.len();
+            self.out.push(Cursor {
+                path: base.to_vec(),
+                at: row.len(),
+            });
+            items.push(Node::Hit {
+                at: id,
+                inner: Box::new(Node::EmptyBare { at: id }),
             });
         }
         match items.len() {
@@ -812,9 +914,19 @@ impl Builder<'_> {
                 to: Box::new(self.slot_node(to, base, idx, 3)),
             },
             // 括号用**可缩放定界符**（高度跟着内容走）—— 见 `Node::Paren`
-            Expr::Paren(inner) => Node::Paren {
-                inner: Box::new(self.slot_node(inner, base, idx, 0)),
-            },
+            //
+            // 槽内是 bare 的：括号里不放空框（用户 2026-10-27）
+            Expr::Paren(inner) => {
+                let mut p = base.to_vec();
+                p.push((idx, 0));
+                let old = self.bare;
+                self.bare = true;
+                let inner_node = self.row(inner, &p);
+                self.bare = old;
+                Node::Paren {
+                    inner: Box::new(inner_node),
+                }
+            }
         }
     }
 
@@ -1042,6 +1154,22 @@ fn inverse_trig_base(s: &str) -> Option<&'static str> {
         "acot" | "arccot" => "cot",
         "asec" | "arcsec" => "sec",
         "acsc" | "arccsc" => "csc",
+        _ => return None,
+    })
+}
+
+/// 三角名 → 对应的反三角名（`Pow` 序列化用：`sin^-1` → `asin`）。
+///
+/// 只认**纯三角名**（不含 `h`）：`sinh^-1` 在 core 里叫 `asinh`，
+/// 但写成 `sinh^-1` 的人极少，等真遇到再加，别凭猜。
+fn inverse_of(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "sin" => "asin",
+        "cos" => "acos",
+        "tan" => "atan",
+        "cot" => "acot",
+        "sec" => "asec",
+        "csc" => "acsc",
         _ => return None,
     })
 }
@@ -1321,6 +1449,23 @@ mod tests {
     }
 
     /// **用户拍板的规则**：空插槽里按退格什么都不做，绝不误删外层结构
+    /// 手输 `sin^-1(45)` 必须变成 `asin(45)`（用户 2026-10-27 反馈的真 bug）。
+    ///
+    /// 当时的症状：`(` 被插进了**指数槽**，式子成了 `sin^(-1(45))`，
+    /// core 报"未知标识符: sin"，回显里括号还凭空消失。
+    #[test]
+    fn manual_inverse_trig_keeps_parens() {
+        let mut d = Doc::default();
+        for step in ["sin", "^", "-", "1", "(", "4", "5"] {
+            if step == "^" || step == "(" {
+                d.insert_key(step);
+            } else {
+                d.insert_text(step);
+            }
+        }
+        assert_eq!(d.source(), "asin(45)");
+    }
+
     #[test]
     fn backspace_inside_empty_slot_does_nothing() {
         let mut d = Doc::default();
@@ -1437,8 +1582,13 @@ mod tests {
         let mut d = Doc::default();
         d.insert_key("∑()");
         let targets = d.targets();
-        // Σ 本体一个 + 四个槽各一个
-        assert_eq!(targets.len(), 5, "目标数量不对：{targets:?}");
+        // Σ 本体一个 + 四个槽各一个 + **行尾一个**（点最后一个记号右边 ⇒ 光标到末尾）
+        assert_eq!(targets.len(), 6, "目标数量不对：{targets:?}");
+        assert_eq!(
+            targets.last(),
+            Some(&Cursor::root(1)),
+            "最后一个目标应是行尾"
+        );
         // 四个槽必须是四个互不相同的位置（旧的文本模型在这里会塌成一个）
         let mut paths: Vec<_> = targets
             .iter()
@@ -1610,6 +1760,8 @@ mod tests {
             // 聚焦中的空框里画了光标
             Node::EmptyFocused { .. } => true,
             Node::Text(_) | Node::Empty { .. } | Node::Comma { .. } => false,
+            // 括号里的空参数：**不画框也不画光标**，所以不算"有光标"
+            Node::EmptyBare { .. } => false,
             Node::Paren { inner } => contains_caret(inner),
             Node::Seq(v) => v.iter().any(contains_caret),
             Node::At { inner, .. } | Node::Hit { inner, .. } => contains_caret(inner),

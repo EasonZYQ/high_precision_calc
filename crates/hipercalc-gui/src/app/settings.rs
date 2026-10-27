@@ -422,7 +422,9 @@ impl State {
                 scrollable(container(body).padding(iced::Padding {
                     top: 0.0,
                     right: 8.0,
-                    bottom: 0.0,
+                    // 底部留 10px：最后一行不要贴着卡片下沿被"切一半"
+                    //（用户 2026-10-27："函数面板下面疑似被虚拟键盘遮住了"）
+                    bottom: 10.0,
                     left: 0.0,
                 }))
                 .width(Length::Fill)
@@ -463,30 +465,43 @@ impl State {
         // 微积分五函数直接画大运算符（Σ/Π/∫/lim/d/dx）——
         // 槽位填占位字母（f/k/a/b），与 tooltip 里的参数说明对应
         let sig: Element<'static, Message> = match it.bigop {
-            Some(kind) => mathrender::build(
-                &mathrender::Node::BigOp {
-                    kind,
-                    body: Box::new(mathrender::Node::Text("f".into())),
-                    var: Box::new(mathrender::Node::Text(
-                        match kind {
-                            mathrender::BigKind::Sum | mathrender::BigKind::Prod => "k",
-                            _ => "x",
-                        }
-                        .into(),
-                    )),
-                    from: Box::new(mathrender::Node::Text("a".into())),
-                    to: Box::new(mathrender::Node::Text(match kind {
-                        mathrender::BigKind::Limit => "".into(),
-                        _ => "b".into(),
-                    })),
-                },
-                sig_style,
-                None,
-            ),
+            // ⚠️ **卡片里不画上下限**（用户 2026-10-27："这个函数面板的微积分渲染是
+            // 个啥玩意"）。原因是卡片只有 90px 高：`∫`/`∑` 的字形按 1.6 倍放大，
+            // 而上下限按 0.62 倍缩小，两者挤在一起就变成"大字 + 几粒小字飘在旁边"。
+            //
+            // 卡片的作用是**让人认出这是哪个函数**，不是展示完整排版 —— 完整形状
+            // 插进输入框后自然就有（`BigOp` 的排版没动）。所以这里排成**单行紧凑式**：
+            // 符号 + 主体（积分再补个 `dx`），字号统一，不再有三级大小。
+            Some(kind) => {
+                let t = |s: &str| mathrender::Node::Text(s.to_string());
+                let nodes: Vec<mathrender::Node> = match kind {
+                    mathrender::BigKind::Sum => vec![t("∑"), t(" "), t("f")],
+                    mathrender::BigKind::Prod => vec![t("∏"), t(" "), t("f")],
+                    mathrender::BigKind::Integral => {
+                        vec![t("∫"), t(" "), t("f"), t(" "), t("d"), t("x")]
+                    }
+                    mathrender::BigKind::Limit => vec![t("lim"), t(" "), t("f")],
+                    mathrender::BigKind::Diff => vec![
+                        mathrender::Node::Frac(
+                            Box::new(t("d")),
+                            Box::new(mathrender::Node::Seq(vec![t("d"), t("x")])),
+                        ),
+                        t(" "),
+                        t("f"),
+                    ],
+                };
+                mathrender::build(
+                    &mathrender::Node::Seq(nodes),
+                    sig_style,
+                    None::<&dyn Fn(usize) -> Message>,
+                )
+            }
+            // 普通函数：签名按数学排版（`sin(x)` → 斜体函数名 + 括号）。
+            //
+            // ⚠️ **含逗号的签名要退回纯文本**：mathrender 把逗号当参数分隔符、
+            // 渲染成空（`Node::Comma`），直排会让 `gcd(a, b)` 丢掉逗号。
+            // 走结构排版的只有那几个特判函数（sum/prod/int/lim/diff/nroot）。
             None => {
-                // 含逗号的签名**必须退回纯文本**，除非函数被 mathrender 特判
-                //（sum/prod/int/lim/diff/nroot 会把逗号切参数、画成结构）——
-                // 普通函数直排会让 `gcd(a, b)` 丢掉逗号（Comma 渲染成空）。
                 let structural = !it.sig.contains(',')
                     || ["sum(", "prod(", "int(", "lim(", "diff(", "nroot("]
                         .iter()
