@@ -334,10 +334,12 @@ pub fn format_periodic_roots_min(
     }
 
     // 结构判定：单一等差 或 两组交替差
-    let d: BigFloat;
+    //
+    // ⚠️ 直接 `let d = if … { … } else { … };`：先声明后赋值会被
+    // clippy 的 `needless_late_init` 拦下（CI 的 stable 比本地 toolchain 新）。
     let ref0 = diffs[0].clone();
-    if diffs.iter().all(|x| same(x, &ref0)) {
-        d = ref0.clone(); // 单族
+    let d: BigFloat = if diffs.iter().all(|x| same(x, &ref0)) {
+        ref0.clone() // 单族
     } else {
         // 检查交替（a, b, a, b, ...）：相邻差恰好两类轮流出现
         let a = ref0.clone();
@@ -366,8 +368,8 @@ pub fn format_periodic_roots_min(
             return None;
         }
         // 公周期 = a + b（两族交错的堆叠周期）
-        d = BigFloat::add(&a, &bb, bigfloat::precision());
-    }
+        BigFloat::add(&a, &bb, bigfloat::precision())
+    };
 
     // 计算残基集合：每根归一到 [0, d)，按容差去重
     let zero = BigFloat::from_u64(0);

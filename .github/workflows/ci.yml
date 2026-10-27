@@ -28,7 +28,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          # ⚠️ 与 `rust-toolchain.toml` 保持同一个版本
+          toolchain: "1.97.1"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -68,7 +71,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          # ⚠️ 与 `rust-toolchain.toml` 保持同一个版本
+          toolchain: "1.97.1"
 
       - uses: Swatinem/rust-cache@v2
 
@@ -97,8 +103,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          # ⚠️ 必须与 `rust-toolchain.toml` 的 channel 一致（lint 是硬门槛，
+          # 编译器版本漂移会让"本地绿、CI 红"反复发生）
+          toolchain: "1.97.1"
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
@@ -145,7 +154,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          # ⚠️ 与 `rust-toolchain.toml` 保持同一个版本
+          toolchain: "1.97.1"
         with:
           targets: ${{ matrix.target }}
 

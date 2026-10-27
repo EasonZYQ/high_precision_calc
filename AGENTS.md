@@ -4,6 +4,12 @@
 
 **CI 分三块**：三平台 build + test（**只覆盖 default-members = core+cli**）、`Check GUI`（2026-10-22 加，因为曾出现"CI 全绿但 GUI 编译不过"；2026-10-26 起这条 job 在 Windows 上**还跑 `cargo test -p hipercalc-gui --lib`（149 个）与 `cargo clippy -p hipercalc-gui -- -D warnings`**，macOS 仍只 `cargo check`）、6 目标交叉编译。
 
+**工具链版本钉死在 CI**（2026-10-27）：`.github/workflows/*.yml` 里用
+`dtolnay/rust-toolchain@master` + `toolchain: "1.97.1"`（与本机 `rustc` 同版本）。
+**不要在仓库里放 `rust-toolchain.toml`** —— 实测它会让 `cargo` 每次先联网同步
+channel，这网络下直接失败、本地整个编不了。CI 钉版本是为了让
+"本地 `-D warnings` 绿 = CI 绿"，避免新版 clippy 的新 lint 反复把 CI 打红。
+
 **lint 是硬门槛**（2026-10-26）：core/cli/gui 三个 crate 的 clippy 存量 32 条已全部清零，CI 从"只拦 correctness"收紧成 `-D warnings`。新增告警会让 CI 变红 —— 误报请就地 `#[allow(…, reason="…")]`，别整体回退这条。
 
 **发布走 `release.yml`**：tag 触发，**CLI 六目标 + GUI 三平台（Windows / macOS / Linux）**。Linux GUI 要 apt 装 libxkbcommon / wayland / x11 / fontconfig 开发包（见 workflow 里的 `Install Linux GUI deps`）。

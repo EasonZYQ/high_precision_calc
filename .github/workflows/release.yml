@@ -46,7 +46,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          # ⚠️ 与 `rust-toolchain.toml` 保持同一个版本
+          toolchain: "1.97.1"
         with:
           targets: ${{ matrix.target }}
 
@@ -111,7 +114,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          # ⚠️ 与 `rust-toolchain.toml` 保持同一个版本
+          toolchain: "1.97.1"
         with:
           targets: ${{ matrix.target }}
 
