@@ -306,6 +306,14 @@ pub struct State {
     /// 退出时是否最大化（与 [`State::maximized`] 分开记：后者是"现在"的状态，
     /// 这个是要写进设置的那一份；两者只在关闭那一刻同步）。
     win_max_pref: bool,
+    /// 上次把窗口几何写盘的时刻（**节流**用）。
+    ///
+    /// 拖动/缩放窗口每秒几十个事件，逐个写盘是不能接受的；而只靠"关闭按钮"落盘
+    /// 又不保险 —— Alt+F4、任务栏关闭、任务管理器结束都不会走自绘按钮。
+    /// 折中：几何变化后**最多每 2 秒写一次**，代价可忽略、丢失窗口最多 2 秒。
+    geom_saved_at: Option<std::time::Instant>,
+    /// 是否有一次"延迟补写"已排在队里（保证最多只有一个）
+    geom_save_pending: bool,
     /// 玻璃（liquid glass）强度：`0.0` = 关闭（不透明纯色），`1.0` = 最强。
     ///
     /// ⚠️ 与 [`theme::set_glass`] **双写**：样式函数的签名是 `Fn(&Theme) -> Style`、
@@ -521,6 +529,8 @@ pub enum Message {
     SearchChanged(String),
     /// 鼠标进入/离开某一条历史（`None` = 离开）
     HoverEntry(Option<usize>),
+    /// 几何节流的"末尾补写"（由 [`State::save_geom_throttled`] 的延迟任务发回）
+    SaveGeomNow,
     /// 计算中的**秒表跳动**（订阅每 100ms 发一条，只为刷新"计算中 3.2s"）
     Tick,
     /// 点了排版层里的**空参数框**：把光标挪到源文本的第 n 个字符处
@@ -734,6 +744,8 @@ impl State {
             maximized: prefs.win_max,
             win_geom: (prefs.win_x, prefs.win_y, prefs.win_w, prefs.win_h),
             win_max_pref: prefs.win_max,
+            geom_saved_at: None,
+            geom_save_pending: false,
             last_input: String::new(),
             panel: Panel::default(),
             ctrl_held: false,
@@ -828,6 +840,11 @@ impl State {
             Message::HoverEntry(i) => {
                 self.hover_entry = i;
             }
+            Message::SaveGeomNow => {
+                self.geom_save_pending = false;
+                self.geom_saved_at = Some(std::time::Instant::now());
+                self.persist_prefs();
+            }
             Message::InsertHistory(i) => {
                 // 用户 2026-10-24："计算完的式子旁边增加插入键，插入输入栏里光标前面"。
                 //
@@ -864,7 +881,7 @@ impl State {
                 self.persist_prefs();
                 // 立刻改窗口物理尺寸：像素量按 k² 下降（帧时间近似线性）
                 return iced::window::latest().and_then(move |id| {
-                    iced::window::resize(id, iced::Size::new(940.0 * k, 860.0 * k))
+                    iced::window::resize(id, iced::Size::new(WINDOW_W * k, WINDOW_H * k))
                 });
             }
             Message::SetCaptureOk(ok) => {
@@ -1104,14 +1121,17 @@ impl State {
                 if !self.maximized {
                     self.win_geom.0 = pos.x;
                     self.win_geom.1 = pos.y;
+                    return self.save_geom_throttled();
                 }
             }
             Message::WindowResized(size) => {
                 if !self.maximized {
                     self.win_geom.2 = size.width;
                     self.win_geom.3 = size.height;
+                    let save = self.save_geom_throttled();
+                    return Task::batch([save, self.bg_request()]);
                 }
-                // 尺寸变了，抓屏区域也要跟着变（原来这条是 `CaptureBg` 的职责）
+                // 尺寸变了，抓屏区域也要跟着变（最大化时不记几何，但仍要重抓）
                 return self.bg_request();
             }
             // ── 自绘窗口栏 ────────────────────────────────────────────────
@@ -1217,6 +1237,32 @@ impl State {
     /// 否则 GUI 每存一次设置就会把命令行那边的变量全清掉。
     ///
     /// 失败只 `eprintln!`：设置存不下来（只读目录、磁盘满）不该让计算器不可用。
+    /// 几何变化的**节流写盘**：立即写一次，若 2 秒内还有变化则挂一个"补写"任务。
+    ///
+    /// ⚠️ 只做"丢弃式节流"是不够的：一次拖动的**位置和尺寸是两个事件**，
+    /// 位置那个先到、立刻写盘，尺寸那个紧随其后却被节流丢掉 —— 实测就是
+    /// "位置记住了、大小没记住"。所以必须有**末尾补写**。
+    fn save_geom_throttled(&mut self) -> Task<Message> {
+        let now = std::time::Instant::now();
+        let wait = match self.geom_saved_at {
+            Some(t) => 2.0 - now.duration_since(t).as_secs_f32(),
+            None => 0.0,
+        };
+        if wait <= 0.0 {
+            self.geom_saved_at = Some(now);
+            self.persist_prefs();
+            return Task::none();
+        }
+        // 已经排了一个补写就不再排（否则一次拖动会排几十个）
+        if self.geom_save_pending {
+            return Task::none();
+        }
+        // 真正的"延时补写"交给订阅里的定时器（见 `subscription`）：
+        // 这里只置标志，定时器到点发 [`Message::SaveGeomNow`]。
+        self.geom_save_pending = true;
+        Task::none()
+    }
+
     fn persist_prefs(&self) {
         // 测试构造的 State 一律不写盘（否则跑一次测试就改掉用户的真实配置）
         if !self.persist {
@@ -1875,6 +1921,13 @@ pub fn subscription(state: &State) -> iced::Subscription<Message> {
     // ⚠️ iced 0.14 没有 `keyboard::on_key_press`（那是别的版本的 API），
     // 只有 `keyboard::listen()` 这个"原始事件流"。拆成两个订阅也能跑，
     // 但每个事件会被广播两遍，不如合并成一处。
+    // 几何"末尾补写"：只有在有待写内容时才启动定时器（否则纯属空转）
+    let geom_save = if state.geom_save_pending {
+        iced::time::every(std::time::Duration::from_millis(700)).map(|_| Message::SaveGeomNow)
+    } else {
+        iced::Subscription::none()
+    };
+
     let ctrl = iced::keyboard::listen().map(|ev| match ev {
         iced::keyboard::Event::ModifiersChanged(m) => Message::CtrlChanged(m.control()),
         // 按键：自己处理（不再交给 `text_editor`）
@@ -1924,7 +1977,7 @@ pub fn subscription(state: &State) -> iced::Subscription<Message> {
         iced::Subscription::none()
     };
 
-    iced::Subscription::batch([window_events, ctrl, fps, tick])
+    iced::Subscription::batch([window_events, ctrl, fps, tick, geom_save])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
