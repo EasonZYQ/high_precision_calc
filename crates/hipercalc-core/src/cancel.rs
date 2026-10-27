@@ -153,7 +153,8 @@ pub fn install_handler() {
         // clippy 的 `function_casts_as_integer` 拦下（CI 的 stable 比本地新，
         // 这条就是 `-D warnings` 之后才暴露的）。
         unsafe {
-            let handler: extern "C" fn(i32) = on_sigint;
+            // `on_sigint` 是 `unsafe extern "C" fn`，指针类型必须带 `unsafe`
+            let handler: unsafe extern "C" fn(i32) = on_sigint;
             signal(SIGINT, handler as usize);
         }
     });
