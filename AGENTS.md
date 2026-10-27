@@ -113,8 +113,8 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
   | `fonts.rs` | **内置字体**（`assets/fonts/`，见下节）+ 数学字体选择（进程级）+ `font_for` / `label` 的自适应分派 |
   | `theme.rs` | 色板令牌 + 全部样式函数 + 圆角定额。深/浅两套 WinUI3 令牌 |
   | `backdrop.rs` | Windows DWM 亚克力 + **抓屏调度**（DXGI 优先 / GDI 兜底）+ `capture_ok` 截图开关。⚠️ 「允许截图」时 DXGI 帧里**有自己**，窗口那块用 `inpaint_self_rect`（四边插值）补掉 —— 不是填平色块 |
-  | `refraction.rs` | **窗口边缘折射**：整窗一次 pass，离边 15% 的环带内按**镜像折叠**位移背景（见 `glass_wgsl.rs` 的 `glass_fold`） |
-  | `glass_wgsl.rs` | **玻璃着色器的共用 WGSL**：背景多 tap 模糊 / 圆角矩形 SDF / **折痕 `glass_fold`**（直边镜像折叠 + 角部同心圆弧折痕 + 越靠角越强）/ 窗口环带 `window_refract`。窗口折射与按键折射**逐字共用**这一份，避免两处公式漂移 |
+  | `refraction.rs` | **窗口边缘折射**：整窗一次 pass，离边 10% 的环带内按**单调拉扯**位移背景（见 `glass_wgsl.rs` 的 `glass_fold`） |
+  | `glass_wgsl.rs` | **玻璃着色器的共用 WGSL**：背景多 tap 模糊 / 圆角矩形 SDF / **折痕 `glass_fold`**（直边 10% 环带内单调拉扯 + 角部方向转向角心）/ 窗口环带 `window_refract`。窗口折射与按键折射**逐字共用**这一份，避免两处公式漂移 |
   | `liquid.rs` | **液态玻璃**：每个面板/按键一次 pass（面板中间走"零位移快路径"）；uniform 按外观分槽缓存 |
   | `cli.rs` | **命令行版的两种入口**：`spawn_cli()` 起独立进程（`CREATE_NEW_CONSOLE` + `--cli` 标记，GUI 关掉不影响它）；`wants_cli()`/`run_cli_here()` 实现"GUI 带参数 ⇒ 直接当 CLI 跑"（Windows 上先接管/新开控制台，**已重定向时不动句柄**） |
   | `dupl.rs` | **DXGI 桌面复制**：`AcquireNextFrame` → mip 纹理 → 只回读需要的层；`Unchanged` 时零成本 |

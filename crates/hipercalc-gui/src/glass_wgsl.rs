@@ -22,10 +22,10 @@
 //! 角部再乘 [`corner_gain`]：法线越"斜"（越靠角）位移越强，于是角上的
 //! 内容被更狠地拽向角落 —— 与实拍一致。
 
-/// 窗口环带宽度 = **短边的比例**（用户 2026-10-27 定为 15%）。
+/// 窗口环带宽度 = **短边的比例**（用户 2026-10-27 定为 10%）。
 ///
-/// 折痕落在离边 `band` 处：940×900 的窗口 ⇒ 折痕在离边 135px（≈15%）的地方。
-pub const WIN_BAND_FRAC: f32 = 0.15;
+/// 环带从"离边 10%"开始：外面这一段才会被拉扯/压扁，内部完全不动。
+pub const WIN_BAND_FRAC: f32 = 0.10;
 
 /// 窗口的"圆角半径"——**只用于折射**，不用于裁剪。
 ///
@@ -34,17 +34,23 @@ pub const WIN_BAND_FRAC: f32 = 0.15;
 /// 但折射必须按圆角来算，否则角上会出现尖点（见 `glass_fold` 的注释）。
 pub const WIN_CORNER_R: f32 = 26.0;
 
-/// 镜面系数：位移 = `WIN_MIRROR × 环带`（贴边处）。
+/// **拉扯深度**：贴边处的位移 = `WIN_PULL × 环带`。
 ///
-/// `2.0` = **精确镜像**：采样点与屏幕点关于折痕等距对称 ⇒ 折痕外侧画的是
-/// 倒影（用户要的"以边为镜面反射"）。`1.0` 会退化成"糊到折痕那一条线"，
-/// `< 1` 只是压缩、`> 2` 是放大的倒影。
-pub const WIN_MIRROR: f32 = 2.0;
+/// ⚠️ **必须 < 0.5**：位移曲线是 `A·t²`（t 从折痕处的 0 长到贴边的 1），
+/// 映射斜率 = `1 - 2·A·t`；只有 `A < 0.5` 才**处处为正**，也就是
+/// 屏幕→采样始终单调、图案只会被压弯**不会折返**。
+///
+/// 用户 2026-10-28 对着 iOS 参考图指出："线条在边缘是不会断开的" ——
+/// 之前 `WIN_MIRROR = 2.0` 是**镜像**，斜率反号，必然在环带里折出一道 V 形
+/// 折痕（他说的"明显割裂"）。0.45 是"压得很扁但仍然连续"的量级。
+pub const WIN_PULL: f32 = 0.45;
 
 /// 角部加成：`幅度 × (1 + WIN_CORNER_BOOST · 角权)`。
 ///
-/// 用户 2026-10-27："越靠近角扭曲越大"（而不是越靠边越大）。
-pub const WIN_CORNER_BOOST: f32 = 0.6;
+/// ⚠️ **必须是 0**（2026-10-28 改）：加成会把角部的 `A` 推到 0.5 以上，
+/// 映射在那里**又重新非单调**了 —— 表现就是角上冒出一道折痕。
+/// 现在边缘本身的拉扯已经够强（A=0.45·band），角部靠"方向转向角心"就够了。
+pub const WIN_CORNER_BOOST: f32 = 0.0;
 
 /// 窗口折射强度（与 `app.rs` 传给 `Refraction` 的值同源）。
 ///
@@ -62,13 +68,13 @@ pub fn shader(tail: &str) -> String {
     format!(
         "const WIN_BAND_FRAC: f32 = {band:?};\n\
          const WIN_CORNER_R: f32 = {corner:?};\n\
-         const WIN_MIRROR: f32 = {mirror:?};\n\
+         const WIN_PULL: f32 = {pull:?};\n\
          const WIN_CORNER_BOOST: f32 = {boost:?};\n\
          const WIN_STRENGTH: f32 = {strength:?};\n\
          {body}{tail}",
         band = WIN_BAND_FRAC,
         corner = WIN_CORNER_R,
-        mirror = WIN_MIRROR,
+        pull = WIN_PULL,
         boost = WIN_CORNER_BOOST,
         strength = WIN_STRENGTH,
         body = COMMON_BODY,
@@ -195,7 +201,7 @@ fn window_refract(s: vec2<f32>, win: vec2<f32>, strength: f32) -> vec2<f32> {
     let half = win * 0.5;
     let p = (s - vec2<f32>(0.5)) * win;
     let band = WIN_BAND_FRAC * min(win.x, win.y);
-    let off = glass_fold(p, half, WIN_CORNER_R, band, WIN_MIRROR * band * strength,
+    let off = glass_fold(p, half, WIN_CORNER_R, band, WIN_PULL * band * strength,
                          WIN_CORNER_BOOST);
     return off / win;
 }
@@ -233,7 +239,7 @@ mod tests {
         let s = shader("");
         assert!(s.contains(&format!("const WIN_BAND_FRAC: f32 = {WIN_BAND_FRAC:?};")));
         assert!(s.contains(&format!("const WIN_CORNER_R: f32 = {WIN_CORNER_R:?};")));
-        assert!(s.contains(&format!("const WIN_MIRROR: f32 = {WIN_MIRROR:?};")));
+        assert!(s.contains(&format!("const WIN_PULL: f32 = {WIN_PULL:?};")));
         assert!(s.contains(&format!(
             "const WIN_CORNER_BOOST: f32 = {WIN_CORNER_BOOST:?};"
         )));
