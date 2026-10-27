@@ -148,8 +148,13 @@ pub fn install_handler() {
             }
         }
         // SAFETY: 传入的是本模块内 'static 的函数指针，进程生命周期内一直有效。
+        //
+        // ⚠️ 先转成**函数指针类型**再转 usize：直接 `on_sigint as usize` 会被
+        // clippy 的 `function_casts_as_integer` 拦下（CI 的 stable 比本地新，
+        // 这条就是 `-D warnings` 之后才暴露的）。
         unsafe {
-            signal(SIGINT, on_sigint as usize);
+            let handler: extern "C" fn(i32) = on_sigint;
+            signal(SIGINT, handler as usize);
         }
     });
 }
