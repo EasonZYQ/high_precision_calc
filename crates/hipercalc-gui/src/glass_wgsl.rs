@@ -49,13 +49,13 @@ pub const WIN_CORNER_R: f32 = 26.0;
 ///
 /// 这是**独立于边缘**的一条规则：离角点 8% 以内，位移方向改为"朝角点"，
 /// 并且越靠角越强 —— 它**凌驾**于边缘的拉扯/翻折之上（见 `glass_fold`）。
-pub const WIN_CORNER_BAND_FRAC: f32 = 0.08;
+pub const WIN_CORNER_BAND_FRAC: f32 = 0.12;
 
 /// 角部拉扯深度：贴角处的位移 = `WIN_CORNER_PULL × 角部带宽`。
 ///
 /// 上限被 `0.7·到角点距离` 夹住 —— 越过角点就会采到窗口外面（那是当初
 /// "角上黑洞"的成因）。
-pub const WIN_CORNER_PULL: f32 = 0.7;
+pub const WIN_CORNER_PULL: f32 = 0.55;
 
 /// 角部加成：`幅度 × (1 + WIN_CORNER_BOOST · 角权)`。
 ///
@@ -248,17 +248,24 @@ fn glass_fold(p: vec2<f32>, half: vec2<f32>, radius: f32, band: f32,
     let cpt = vec2<f32>((half.x - radius) * sx, (half.y - radius) * sy);
     let relc = p - cpt;                          // 弧心 → 像素（朝外）
     let rho_c = max(length(relc), 1e-4);
-    let dc = max(rho_c - radius, 0.0);           // 到**圆弧**的距离
+    // ⚠️ 距离用 **p-范数（p=4）**，不是欧氏距离：欧氏的等值线是**正圆**，
+    // 用户 2026-10-28："角上的扭曲完全是一个圆，非常奇怪"。
+    // 4-范数的等值线是"圆角方形"，会顺着窗口轮廓往两条边上延伸。
+    let qx = abs(relc.x);
+    let qy = abs(relc.y);
+    let pn = pow(pow(qx, 4.0) + pow(qy, 4.0), 0.25);
+    let dc = max(pn - radius, 0.0);
+    // 带宽**跟边缘同一个**，两套规则在带上叠加而不是各画各的圆
     let cband = max(WIN_CORNER_BAND_FRAC * 2.0 * min(half.x, half.y), 1.0);
+    // ⚠️ 一次方而不是平方：平方衰减在 8% 处骤停，边界看得见（那个"圆"）
     let wq = smooth01(1.0 - dc / cband);
-    let wq2 = wq * wq;
-    // 采样朝内（远离角点）⇒ 内容被**拽向角**；朝内不会采到形状外面，
-    // 所以这里不需要"不许越过角点"的限幅（那是朝外采样才要的）。
-    let pull_c = WIN_CORNER_PULL * cband * wq2;
-    let corner_off = -(relc / rho_c) * pull_c;
+    // 方向也要混：靠近直边时退回边法线，只有真在角上才是纯径向
+    let cdir = normalize(mix(n, relc / rho_c, wq) + vec2<f32>(0.0, 1e-5));
+    let pull_c = WIN_CORNER_PULL * cband * wq;
+    let corner_off = -cdir * pull_c;
 
     // 权重为 1 时完全接管（凌驾），为 0 时是纯粹边缘效果
-    return mix(edge_off, corner_off, wq2);
+    return mix(edge_off, corner_off, wq);
 }
 
 // 到窗口边缘的**向内**距离（px，负 = 在窗口外）
