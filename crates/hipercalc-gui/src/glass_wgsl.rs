@@ -109,7 +109,7 @@ fn sample_blur(uv: vec2<f32>, rad: vec2<f32>, seed: vec2<f32>) -> vec3<f32> {
     let lo = vec2<f32>(0.001);
     let hi = vec2<f32>(0.999);
     if (rad.x < 1e-4 && rad.y < 1e-4) {
-        return textureSampleLevel(bg, samp, clamp(uv, lo, hi), 0.0).rgb;
+        return textureSampleLevel(bg, samp, mirror_uv(uv, lo, hi), 0.0).rgb;
     }
     let h = fract(sin(dot(seed, vec2<f32>(12.9898, 78.233))) * 43758.5453);
     let a0 = h * 6.2831853;
@@ -127,12 +127,12 @@ fn sample_blur(uv: vec2<f32>, rad: vec2<f32>, seed: vec2<f32>) -> vec3<f32> {
         vec2<f32>(0.72, -0.69),
         vec2<f32>(-0.72, -0.69),
     );
-    var acc = textureSampleLevel(bg, samp, clamp(uv, lo, hi), 0.0).rgb * 2.0;
+    var acc = textureSampleLevel(bg, samp, mirror_uv(uv, lo, hi), 0.0).rgb * 2.0;
     var wsum = 2.0;
     for (var i: i32 = 0; i < 8; i = i + 1) {
         let o = ring[i];
         let r = vec2<f32>(o.x * ca - o.y * sa, o.x * sa + o.y * ca);
-        acc = acc + textureSampleLevel(bg, samp, clamp(uv + r * rad, lo, hi), 0.0).rgb;
+        acc = acc + textureSampleLevel(bg, samp, mirror_uv(uv + r * rad, lo, hi), 0.0).rgb;
         wsum = wsum + 1.0;
     }
     return acc / wsum;
@@ -169,6 +169,32 @@ fn smooth01(x: f32) -> f32 {
 //
 // ⚠️ 不能写成"取最近边的法线 + 角上加权"：`min(dx,dy)` 在直边中部也≈0，
 // 会把整圈都当成角区；必须用**到角弧的距离**（这里的 `ρ`）。
+// 越界时的**镜像折返**采样坐标（0..1）。
+//
+// 用户 2026-10-28："快速横向拖动窗口时，会导致出现横线，造成背景割裂"。
+// 原因是窗口被拖出抓屏区域之后，uv 落到 [0,1] 之外，被 `clamp` 压到边缘 ——
+// 于是最外一行/一列像素被**拉成一条横线**。镜像则让背景"折回去"，
+// 至少不会再出现一条突兀的直线（观感是"像反射"，而不是"画面断了"）。
+fn mirror01(x: f32) -> f32 {
+    let a = abs(x);
+    let m = a % 2.0;
+    // ⚠️ WGSL **没有 `if` 表达式**（那是 Rust 的写法）：写成 `return if .. {} else {}`
+    // 会报 `expected ;, found ...`，而且只有运行时创建 shader 时才暴露。
+    var r = m;
+    if (m > 1.0) {
+        r = 2.0 - m;
+    }
+    return r;
+}
+
+// 双通道的镜像采样点：xy 分别折返，再夹到纹理安全区
+fn mirror_uv(uv: vec2<f32>, lo: vec2<f32>, hi: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(
+        clamp(mirror01(uv.x), lo.x, hi.x),
+        clamp(mirror01(uv.y), lo.y, hi.y),
+    );
+}
+
 fn glass_fold(p: vec2<f32>, half: vec2<f32>, radius: f32, band: f32,
               amp: f32, boost: f32) -> vec2<f32> {
     let d = -sd_rr(p, half, radius);

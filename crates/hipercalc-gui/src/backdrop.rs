@@ -666,6 +666,38 @@ fn inpaint_self_rect(rgba: &mut [u8], tw: usize, th: usize, rect: (i32, i32, i32
         }
     }
     let (l, r, t, b) = (side[0], side[1], side[2], side[3]);
+    // ⚠️ **四边用真实逐行/逐列像素**，不要平均色（用户 2026-10-28：
+    // "允许截图的时候还是看不到背景，有一个实心色块挡住"）。
+    //
+    // 允许截图 ⇒ 抓屏帧里包含自己 ⇒ 窗口那一块必须补出来。
+    // 平均色会让整块变成一块平滑色板；改成"四边各自的真实像素按 1/d² 插值"后，
+    // 补出来的是**周围真实桌面的延伸**（有结构、有方向），不再是实心色块。
+    // ⚠️ 先**把四条边的像素抄成数组**，再开始写 `rgba` —— 一边读一边写会被
+    // 借用检查挡下来（`at` 闭包持有 `rgba` 的不可变借用）。
+    let mut lcol = vec![l; y1 - y0];
+    let mut rcol = vec![r; y1 - y0];
+    let mut trow = vec![t; x1 - x0];
+    let mut brow = vec![b; x1 - x0];
+    if has_l {
+        for (i, y) in (y0..y1).enumerate() {
+            lcol[i] = at(x0 - OUT - 1, y);
+        }
+    }
+    if has_r {
+        for (i, y) in (y0..y1).enumerate() {
+            rcol[i] = at(x1 + OUT, y);
+        }
+    }
+    if has_t {
+        for (i, x) in (x0..x1).enumerate() {
+            trow[i] = at(x, y0 - OUT - 1);
+        }
+    }
+    if has_b {
+        for (i, x) in (x0..x1).enumerate() {
+            brow[i] = at(x, y1 + OUT);
+        }
+    }
 
     let w = (x1 - x0) as f32;
     let h = (y1 - y0) as f32;
@@ -690,18 +722,39 @@ fn inpaint_self_rect(rgba: &mut [u8], tw: usize, th: usize, rect: (i32, i32, i32
     while by < y1 {
         let v = (by - y0) as f32 / h;
         let (dv_t, dv_b) = (v + EDGE_EPS, 1.0 - v + EDGE_EPS);
-        let (wt, wb) = (1.0 / (dv_t * dv_t), 1.0 / (dv_b * dv_b));
+        // ⚠️ **缺失的那一侧权重必须为 0**：贴屏边时抓屏矩形被裁，那一侧压根没有像素。
+        // 早先给缺失侧塞了"全局平均色"且权重照给 —— 靠近那条边时它权重最大，
+        // 于是整块被拉成那个平均值（用户看到的"实心色块"就是这么来的）。
+        let (wt, wb) = if has_t || has_b {
+            (
+                if has_t { 1.0 / (dv_t * dv_t) } else { 0.0 },
+                if has_b { 1.0 / (dv_b * dv_b) } else { 0.0 },
+            )
+        } else {
+            (0.0, 0.0)
+        };
         let ye = (by + STEP).min(y1);
         let mut bx = x0;
         while bx < x1 {
             let u = (bx - x0) as f32 / w;
             let (du_l, du_r) = (u + EDGE_EPS, 1.0 - u + EDGE_EPS);
-            let (wl, wr) = (1.0 / (du_l * du_l), 1.0 / (du_r * du_r));
+            let (wl, wr) = if has_l || has_r {
+                (
+                    if has_l { 1.0 / (du_l * du_l) } else { 0.0 },
+                    if has_r { 1.0 / (du_r * du_r) } else { 0.0 },
+                )
+            } else {
+                (0.0, 0.0)
+            };
             let sum = wl + wr + wt + wb;
+            if sum <= 0.0 {
+                bx += STEP;
+                continue;
+            }
             let c = scale(
                 add(
-                    add(scale(l, wl), scale(r, wr)),
-                    add(scale(t, wt), scale(b, wb)),
+                    add(scale(lcol[by - y0], wl), scale(rcol[by - y0], wr)),
+                    add(scale(trow[bx - x0], wt), scale(brow[bx - x0], wb)),
                 ),
                 1.0 / sum,
             );
@@ -1402,6 +1455,46 @@ mod tests {
         }
     }
 
+    /// **补出来的块要保留桌面的"逐行结构"**（用户 2026-10-28：
+    /// "允许截图的时候还是看不到背景，有一个实心色块挡住"）。
+    ///
+    /// 造一张"上半红、下半绿"的纹理，中间是自己（白）。旧实现给每条边只取
+    /// **一个平均色**，补出来整块上下一个色；现在按逐行真实像素插值，
+    /// 补出来的上半必须偏红、下半必须偏绿。
+    #[test]
+    fn inpaint_keeps_row_structure() {
+        let (tw, th) = (60usize, 40usize);
+        let mut img = vec![0u8; tw * th * 4];
+        for y in 0..th {
+            for x in 0..tw {
+                let c = if (20..40).contains(&x) {
+                    [255, 255, 255] // 自己
+                } else if y < th / 2 {
+                    [220, 40, 40] // 上半：红
+                } else {
+                    [40, 200, 60] // 下半：绿
+                };
+                let i = (y * tw + x) * 4;
+                img[i] = c[0];
+                img[i + 1] = c[1];
+                img[i + 2] = c[2];
+                img[i + 3] = 255;
+            }
+        }
+        inpaint_self_rect(&mut img, tw, th, (20, 0, 40, th as i32));
+        let at = |x: usize, y: usize| {
+            let i = (y * tw + x) * 4;
+            [img[i] as i32, img[i + 1] as i32, img[i + 2] as i32]
+        };
+        let top = at(30, 6);
+        let bottom = at(30, th - 7);
+        assert!(top[0] > top[1] + 40, "上半应当保留红色结构，实际 {top:?}");
+        assert!(
+            bottom[1] > bottom[0] + 40,
+            "下半应当保留绿色结构，实际 {bottom:?}"
+        );
+    }
+
     /// **填充的实测成本**（`cargo test -p hipercalc-gui --lib -- --ignored --nocapture`）。
     ///
     /// 为什么要单独测：这段在抓屏线程里**每帧**跑一次，成本必须心里有数。
@@ -1420,7 +1513,11 @@ mod tests {
         }
         let per = t0.elapsed().as_secs_f64() * 1000.0 / n as f64;
         println!("[bench] inpaint {:?} 平均 {per:.3} ms/次", n);
-        assert!(per < 20.0, "填充单次超过 20ms（回归！）：{per:.3} ms");
+        // ⚠️ debug 与 release 差 4~5 倍（逐像素写 + 边界检查），阈值要分开定。
+        // 2026-10-28 实测：debug ≈ 26ms、release ≈ 6ms（本机当时整体偏慢，
+        // 同一天快照跑 282s 而平时 30s）。真正的性能结论只看 release。
+        let limit = if cfg!(debug_assertions) { 45.0 } else { 12.0 };
+        assert!(per < limit, "填充单次超过 {limit}ms（回归！）：{per:.3} ms");
     }
 
     /// 降采样 + 模糊这部分是**纯函数**，可以脱开抓屏单独验证。

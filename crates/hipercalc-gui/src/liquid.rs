@@ -432,8 +432,8 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
             if (u.p.w < 2.5) {
                 let lo = vec2<f32>(0.001);
                 let hi = vec2<f32>(0.999);
-                let kr = textureSampleLevel(bg, samp, clamp(disp + dloc * 0.12, lo, hi), 0.0).r;
-                let kb = textureSampleLevel(bg, samp, clamp(disp - dloc * 0.12, lo, hi), 0.0).b;
+                let kr = textureSampleLevel(bg, samp, mirror_uv(disp + dloc * 0.12, lo, hi), 0.0).r;
+                let kb = textureSampleLevel(bg, samp, mirror_uv(disp - dloc * 0.12, lo, hi), 0.0).b;
                 bgc = vec3<f32>(kr, bgc.g, kb);
             }
         }
