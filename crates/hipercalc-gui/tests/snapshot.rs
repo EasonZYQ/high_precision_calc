@@ -553,6 +553,43 @@ fn keypad_is_clickable_through_simulator() {
 ///
 /// 这里造的是：竖向渐变（深靛 → 暖紫）+ 三个大光斑（蓝绿 / 品红 / 琥珀）
 /// + 两块"虚化窗口"矩形。**没有真实内容**，但足够让折射、色散、边缘高光都有东西可看。
+/// **产品图专用背景：粗斜线**（用户 2026-10-28 要求）。
+///
+/// 为什么换成斜线：渐变/光斑看不出"折射把线弯成什么角度"，而 45° 粗条
+/// 一眼就能判断折痕在哪、方向有没有反过来。颜色刻意压得比 `desktop_like`
+/// 稳重一些，免得把玻璃上的字冲淡。
+fn stripes_like(w: u32, h: u32) -> Vec<u8> {
+    let mut out = vec![0u8; (w * h * 4) as usize];
+    // 两组斜线（45° 与 -45°），间距按"短边"算，缩放窗口时看起来一致
+    let short = w.min(h) as f32;
+    let period = short * 0.22;
+    let width = period * 0.42;
+    for y in 0..h {
+        let fy = y as f32;
+        for x in 0..w {
+            let fx = x as f32;
+            // 主族：↗ 深蓝；副族：↘ 暖橙
+            let a = ((fx + fy) / period).fract();
+            let b = ((fx - fy + 10.0 * period) / (period * 1.7)).fract();
+            // ⚠️ 别调亮：试过 52/100/176，玻璃一叠加整屏发灰、白字对比度掉得很厉害。
+            // 现在这组是"能看出斜线、又不抢界面"的档位。
+            let mut c = [20.0f32, 27.0, 44.0];
+            if a * period < width {
+                c = [34.0, 70.0, 132.0];
+            }
+            if b * (period * 1.7) < width * 0.45 {
+                c = [c[0] * 0.55 + 190.0 * 0.45, c[1] * 0.55 + 120.0 * 0.45, c[2] * 0.55 + 60.0 * 0.45];
+            }
+            let i = ((y * w + x) * 4) as usize;
+            out[i] = c[0].clamp(0.0, 255.0) as u8;
+            out[i + 1] = c[1].clamp(0.0, 255.0) as u8;
+            out[i + 2] = c[2].clamp(0.0, 255.0) as u8;
+            out[i + 3] = 255;
+        }
+    }
+    out
+}
+
 fn desktop_like(w: u32, h: u32) -> Vec<u8> {
     fn lerp(a: f32, b: f32, t: f32) -> f32 {
         a + (b - a) * t
@@ -643,8 +680,9 @@ fn readme_shots() {
         if dark {
             // ✅ 顺序不能反：先建 State 再切玻璃
             let _ = state.update(Message::SetTexture(hipercalc_gui::theme::Texture::Glass));
-            // 产品图想要"看得出是玻璃、但内容还看得清"的模糊量
-            let _ = state.update(Message::SetGlassBlur(0.32));
+            // 产品图想要"看得出是玻璃、但斜线还认得出"的模糊量：
+            // 0.32 会把 45° 粗条糊成色块（试过），0.12 还能看出线的走向
+            let _ = state.update(Message::SetGlassBlur(0.12));
             let _ = state.update(Message::BgCaptured(Some(
                 hipercalc_gui::backdrop::Backdrop {
                     x: 0,
@@ -653,7 +691,7 @@ fn readme_shots() {
                     height: h,
                     rw: VIEWPORT.0 as u32,
                     rh: VIEWPORT.1 as u32,
-                    rgba: desktop_like(w, h),
+                    rgba: stripes_like(w, h),
                 },
             )));
         }

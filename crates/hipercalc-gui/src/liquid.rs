@@ -385,9 +385,9 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
             u.origin.y + (1.0 - uv.y) * u.size.y,
         ) / u.win;
         let short = min(u.size.x, u.size.y);
-        // 局部环带：`thick`（随圆角走）是下限，同时不小于短边的 15%
-        //（与窗口同一个 `WIN_BAND_FRAC`：折痕落在离边 15% 处）
-        let lens_band = max(max(u.edge.x, 1.0), 0.15 * short);
+        // 局部环带：`thick`（随圆角走）是下限，同时不小于短边的 12%
+        //（与窗口同一个 `WIN_BAND_FRAC`：从离边 12% 开始拉扯、8% 处翻折）
+        let lens_band = max(max(u.edge.x, 1.0), WIN_BAND_FRAC * short);
 
         // 未经任何位移的采样点（窗口 uv → 图像 uv）
         let base = s * u.map.xy + u.map.zw;
@@ -419,9 +419,9 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
             // 折的是同一个形状，边界处不会露馅。
             //
             // `p` 是 y 向上的局部坐标，采样空间 y 向下 ⇒ 位移的 y 要取反。
-            let amp_px = u.edge.y * 4.5 * lens_band;
-            let fo = glass_fold(p, half, max(u.radius, 0.0), lens_band, amp_px,
-                                WIN_CORNER_BOOST);
+            // 与窗口同一个比例（WIN_PULL），只是尺度按部件短边
+            let fo = glass_fold(p, half, max(u.radius, 0.0), lens_band,
+                                WIN_PULL * lens_band, WIN_CORNER_BOOST);
             let dloc = vec2<f32>(fo.x, -fo.y) * (u.map.xy / u.win);
 
             let disp = base + ring_off + dloc;
