@@ -2891,6 +2891,8 @@ fn parse_triangle_items(body: &str) -> Result<crate::solver_triangle::TriangleIn
                 TriRole::Side => TriPart::Side(i),
                 TriRole::Angle => TriPart::Angle(i),
                 TriRole::Height => TriPart::Height(i),
+                TriRole::Median => TriPart::Median(i),
+                TriRole::Bisector => TriPart::Bisector(i),
             };
             (part, expr)
         })

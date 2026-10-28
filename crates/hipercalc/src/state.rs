@@ -638,6 +638,11 @@ mod tests {
             glass_tint2: 0.45,
             acrylic_dialog_tint: 0.8,
             glass_dialog_tint: 0.9,
+            win_x: 0.0,
+            win_y: 0.0,
+            win_w: 0.0,
+            win_h: 0.0,
+            win_max: false,
         };
         update_keys_at(&path, &prefs.to_keys()).unwrap();
 

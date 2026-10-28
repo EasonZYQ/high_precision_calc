@@ -271,8 +271,9 @@ pub struct State {
     search: String,
     /// 结果区是否切成**三角形求解页**（用户 2026-10-27：解三角形要独立界面）
     triangle_open: bool,
-    /// 三角形页的六个输入（顺序见 [`triangle::TRI_KEYS`]：a b c A B C）
-    tri_vals: [String; 6],
+    /// 三角形页的十二个输入（顺序见 [`triangle::TRI_KEYS`]：
+    /// a b c / A B C / mA mB mC / tA tB tC）
+    tri_vals: [String; 12],
     /// 输入框内容（多行编辑器 —— 能读光标、能局部插入）
     /// 输入栏的**文本**。
     ///

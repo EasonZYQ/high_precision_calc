@@ -486,9 +486,11 @@
   "复制结果": "Copy result",
   "清空": "Clear",
   "三角形求解": "Triangle solver",
-  "填任意三个已知量（至少一条边），点求解": "Fill any three knowns (at least one side), then Solve",
   "边": "Side",
   "角": "Angle",
   "求解": "Solve",
-  "至少填一个已知量": "Enter at least one known value"
+  "至少填一个已知量": "Enter at least one known value",
+  "中线": "Median",
+  "角平分线": "Angle bisector",
+  "填任意三个已知量（至少要有一个长度），点求解": "Fill any three knowns (at least one length), then Solve"
 }

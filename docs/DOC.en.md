@@ -345,10 +345,11 @@ parameter relations when under-determined.
 ## 19. Triangle solving
 
 `triangle(a=3 b=4 c=5)` (or comma separated) returns everything else: three sides, three angles, three altitudes,
-area, perimeter, circumradius and inradius.
+**three medians**, **three angle bisectors**, area, perimeter, circumradius and inradius.
 
-**Notation**: a lowercase letter is a side, an uppercase letter is an angle, and `h` plus the uppercase letter is the
-altitude on that side (`hA` is the altitude on side `a`). `a` and `A` denote the same vertex, so `triangle(a=3 b=4 c=5)`,
+**Notation**: a lowercase letter is a side, an uppercase letter is an angle, `h` plus the letter is the altitude on
+that side (`hA` = altitude on side `a`), `m` plus the letter is the median from that vertex (`mA`), and `t` plus the
+letter is the internal angle bisector from that vertex (`tA`). `a` and `A` denote the same vertex, so `triangle(a=3 b=4 c=5)`,
 `triangle(A=pi/6 b=5 C=pi/3)` and `triangle(hA=4 a=3 b=4)` are all valid. Angles follow the current `/mode deg|rad`:
 radians by default, so write radian values — switch with `/mode deg` if you want to write `30` for 30° (`triangle(A=30 b=5 C=60)` reports "angle must be in (0, 180°)" under the default radian mode).
 

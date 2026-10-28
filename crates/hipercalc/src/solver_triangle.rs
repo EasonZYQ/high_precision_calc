@@ -40,6 +40,10 @@ pub enum TriPart {
     Angle(u8),
     /// 高（第 i 个顶点所对的边上的高）
     Height(u8),
+    /// **中线**（从第 i 个顶点出发、落在对边上的中线）
+    Median(u8),
+    /// **角平分线**（第 i 个顶点的内角平分线，量到对边）
+    Bisector(u8),
 }
 
 /// 记号的角色：小写字母 = 边、大写字母 = 角、`h`/`H` + 字母 = 高
@@ -48,6 +52,10 @@ pub enum TriRole {
     Side,
     Angle,
     Height,
+    /// 中线（`m` + 字母，如 `mA` = 顶点 A 的中线）
+    Median,
+    /// 角平分线（`t` + 字母，如 `tA` = 顶点 A 的角平分线）
+    Bisector,
 }
 
 /// 拉丁小写字母表（补齐顶点字母时按它顺延）
@@ -140,13 +148,27 @@ impl Alphabet {
     pub fn height_label(&self, i: usize) -> String {
         format!("h{0}", self.angle_label(i))
     }
+
+    /// 中线标签：`mA` / `mB` / `mC`
+    pub fn median_label(&self, i: usize) -> String {
+        format!("m{0}", self.angle_label(i))
+    }
+
+    /// 角平分线标签：`tA` / `tB` / `tC`
+    pub fn bisector_label(&self, i: usize) -> String {
+        format!("t{0}", self.angle_label(i))
+    }
 }
 
 impl TriPart {
     /// 下标（0/1/2）
     pub fn index(self) -> usize {
         match self {
-            TriPart::Side(i) | TriPart::Angle(i) | TriPart::Height(i) => i as usize,
+            TriPart::Side(i)
+            | TriPart::Angle(i)
+            | TriPart::Height(i)
+            | TriPart::Median(i)
+            | TriPart::Bisector(i) => i as usize,
         }
     }
 
@@ -157,6 +179,8 @@ impl TriPart {
             TriPart::Side(_) => alpha.side_label(i),
             TriPart::Angle(_) => alpha.angle_label(i),
             TriPart::Height(_) => alpha.height_label(i),
+            TriPart::Median(_) => alpha.median_label(i),
+            TriPart::Bisector(_) => alpha.bisector_label(i),
         }
     }
 }
@@ -172,6 +196,8 @@ pub fn parse_part_name(name: &str) -> Result<(TriRole, char), String> {
     let (fixed, letter) = match chars.as_slice() {
         [c] => (None, *c),
         ['h' | 'H', c] => (Some(TriRole::Height), *c),
+        ['m' | 'M', c] => (Some(TriRole::Median), *c),
+        ['t' | 'T', c] => (Some(TriRole::Bisector), *c),
         _ => return Err(format!("未知的三角形记号: {0}", name)),
     };
     let Some(vert) = lower_form(letter) else {
@@ -209,6 +235,14 @@ pub struct TriangleSolution {
     pub ha: Number,
     pub hb: Number,
     pub hc: Number,
+    /// 三条中线（`mA` 是顶点 A 到对边中点的长）
+    pub ma: Number,
+    pub mb: Number,
+    pub mc: Number,
+    /// 三条角平分线（量到对边）
+    pub ta: Number,
+    pub tb: Number,
+    pub tc: Number,
     pub area: Number,
     pub perimeter: Number,
     pub circumradius: Number,
@@ -228,6 +262,10 @@ struct TriVals {
 /// 归约过程中的部分已知信息（角度为弧度）
 #[derive(Debug, Clone)]
 struct Known {
+    /// 中线（第 i 个顶点）
+    median: [Option<Number>; 3],
+    /// 角平分线（第 i 个顶点）
+    bisector: [Option<Number>; 3],
     side: [Option<Number>; 3],
     angle: [Option<Number>; 3],
     height: [Option<Number>; 3],
@@ -240,6 +278,8 @@ impl Known {
             side: [None, None, None],
             angle: [None, None, None],
             height: [None, None, None],
+            median: [None, None, None],
+            bisector: [None, None, None],
             area: None,
         }
     }
@@ -389,6 +429,16 @@ pub fn solve_triangle(
                     return Err(format!("高必须为正数: {0}", part.name(&alpha)));
                 }
             }
+            TriPart::Median(_) => {
+                if norm.is_zero() || norm.is_negative() {
+                    return Err(format!("中线必须为正数: {0}", part.name(&alpha)));
+                }
+            }
+            TriPart::Bisector(_) => {
+                if norm.is_zero() || norm.is_negative() {
+                    return Err(format!("角平分线必须为正数: {0}", part.name(&alpha)));
+                }
+            }
             TriPart::Angle(_) => {
                 if !(is_gt(&norm, &num0()) && is_gt(&num_pi(), &norm)) {
                     return Err(format!(
@@ -403,6 +453,8 @@ pub fn solve_triangle(
             TriPart::Side(i) => &mut known.side[*i as usize],
             TriPart::Angle(i) => &mut known.angle[*i as usize],
             TriPart::Height(i) => &mut known.height[*i as usize],
+            TriPart::Median(i) => &mut known.median[*i as usize],
+            TriPart::Bisector(i) => &mut known.bisector[*i as usize],
         };
         match slot {
             Some(prev) => {
@@ -424,15 +476,28 @@ pub fn solve_triangle(
     reduce_heights(&mut known);
     complete_angles(&mut known);
 
-    // 一个长度都没有 ⇒ 形状或许已定，但大小不定
-    if known.side_count() == 0 {
+    // 一个长度都没有 ⇒ 形状或许已定，但大小不定。
+    // ⚠️ 中线/角平分线**也是长度**（`mA=3,mB=4,mC=5` 完全能定出三角形），
+    // 所以判据是"有没有任何长度类已知量"，不是"有没有边"。
+    let any_length = known.side_count() > 0
+        || known.height.iter().any(|v| v.is_some())
+        || known.median.iter().any(|v| v.is_some())
+        || known.bisector.iter().any(|v| v.is_some());
+    if !any_length {
         return Err(underdetermined_message(&known, &alpha));
     }
 
-    // 3) 解析解优先，数值兜底
-    let vals_list = match solve_analytic(&known) {
-        Some(r) => r?,
-        None => solve_numeric(&known, &givens, &alpha)?,
+    // 3) **解析解只认边与角**：一旦给了中线/角平分线，就必须走数值解 ——
+    // 否则解析解会把它们当没看见，返回一个"少了约束"的三角形。
+    let exotic =
+        known.median.iter().any(|v| v.is_some()) || known.bisector.iter().any(|v| v.is_some());
+    let vals_list = if exotic {
+        solve_numeric(&known, &givens, &alpha)?
+    } else {
+        match solve_analytic(&known) {
+            Some(r) => r?,
+            None => solve_numeric(&known, &givens, &alpha)?,
+        }
     };
 
     // 4) 回代校验所有已知量，再把已知值原样写回
@@ -924,6 +989,8 @@ fn residuals(givens: &[(TriPart, BigFloat)], x: &Xyz) -> Vec<BigFloat> {
     let sc = bf_sin(&ang_c);
     let s = x[2].clone();
     let side = |sin: &BigFloat| BigFloat::mul(&s, sin, prec);
+    // 三条边（按顶点下标）：中线和角平分线都要"本边 + 另两边"
+    let sides3 = [side(&sa), side(&sb), side(&sc)];
     let norm =
         |calc: BigFloat, v: &BigFloat| BigFloat::div(&BigFloat::sub(&calc, v, prec), v, prec);
     let norm_pi =
@@ -940,6 +1007,42 @@ fn residuals(givens: &[(TriPart, BigFloat)], x: &Xyz) -> Vec<BigFloat> {
             TriPart::Height(0) => norm(BigFloat::mul(&side(&sb), &sc, prec), v),
             TriPart::Height(1) => norm(BigFloat::mul(&side(&sa), &sc, prec), v),
             TriPart::Height(_) => norm(BigFloat::mul(&side(&sa), &sb, prec), v),
+            // 中线：m_i = ½·√(2·(另两边² 之和) − 本边²)
+            TriPart::Median(i) => {
+                let x = &sides3[*i as usize];
+                let y = &sides3[((*i + 1) % 3) as usize];
+                let z = &sides3[((*i + 2) % 3) as usize];
+                let two = bf_frac(2, 1);
+                let inner = BigFloat::sub(
+                    &BigFloat::mul(
+                        &BigFloat::add(
+                            &BigFloat::mul(y, y, prec),
+                            &BigFloat::mul(z, z, prec),
+                            prec,
+                        ),
+                        &two,
+                        prec,
+                    ),
+                    &BigFloat::mul(x, x, prec),
+                    prec,
+                );
+                norm(BigFloat::mul(&inner.sqrt(prec), &bf_frac(1, 2), prec), v)
+            }
+            // 角平分线：t_i = √(yz·(1 − x²/(y+z)²))
+            TriPart::Bisector(i) => {
+                let x = &sides3[*i as usize];
+                let y = &sides3[((*i + 1) % 3) as usize];
+                let z = &sides3[((*i + 2) % 3) as usize];
+                let yz = BigFloat::mul(y, z, prec);
+                let ypz = BigFloat::add(y, z, prec);
+                let ratio = BigFloat::div(
+                    &BigFloat::mul(x, x, prec),
+                    &BigFloat::mul(&ypz, &ypz, prec),
+                    prec,
+                );
+                let factor = BigFloat::sub(&bf_frac(1, 1), &ratio, prec);
+                norm(BigFloat::mul(&yz, &factor, prec).sqrt(prec), v)
+            }
         };
         out.push(r);
     }
@@ -1039,12 +1142,10 @@ fn solve_numeric(
                 converged = true;
                 break;
             }
-            // 前向差分雅可比
-            let mut jac: [[BigFloat; 3]; 3] = [
-                [bf_zero(), bf_zero(), bf_zero()],
-                [bf_zero(), bf_zero(), bf_zero()],
-                [bf_zero(), bf_zero(), bf_zero()],
-            ];
+            // 前向差分雅可比：**每个残差一行**（残差数可以 > 3，比如给了四个已知量）。
+            // ⚠️ 原来写死成 3×3，`jac[row][i]` 在下面的法方程循环里会越界 panic
+            //（实测 `triangle(a=3,b=4,c=5,mA=4)` 直接崩）。
+            let mut jac: Vec<[BigFloat; 3]> = vec![[bf_zero(), bf_zero(), bf_zero()]; r.len()];
             for col in 0..3 {
                 let h = if col == 2 {
                     BigFloat::mul(&x[2].clone(), &h_step, prec)
@@ -1057,7 +1158,7 @@ fn solve_numeric(
                 let mut xp = x.clone();
                 xp[col] = BigFloat::add(&xp[col], &h, prec);
                 let rp = residuals(&bfs, &xp);
-                for row in 0..r.len().min(3) {
+                for row in 0..r.len() {
                     jac[row][col] =
                         BigFloat::div(&BigFloat::sub(&rp[row], &r[row], prec), &h, prec);
                 }
@@ -1200,7 +1301,69 @@ fn seed_scale(
             }
         }
     }
+    // 中线 / 角平分线同样**与 s 成正比**（都是三条边的齐次一次函数），
+    // 所以也能反解 s —— 少了这段，`mA=.. mB=.. mC=..` 会一路"信息不足"。
+    for (part, v) in givens {
+        if let TriPart::Median(i) = part
+            && let Some(unit) = unit_median(&sines, *i as usize)
+        {
+            return Some(BigFloat::div(v, &unit, prec));
+        }
+    }
+    for (part, v) in givens {
+        if let TriPart::Bisector(i) = part
+            && let Some(unit) = unit_bisector(&sines, *i as usize)
+        {
+            return Some(BigFloat::div(v, &unit, prec));
+        }
+    }
     None
+}
+
+/// `s = 1` 时的中线长（三条边的 sin 值给定）
+fn unit_median(sines: &[BigFloat; 3], i: usize) -> Option<BigFloat> {
+    let prec = bigfloat::precision();
+    let x = &sines[i];
+    let y = &sines[(i + 1) % 3];
+    let z = &sines[(i + 2) % 3];
+    let two = bf_frac(2, 1);
+    let inner = BigFloat::sub(
+        &BigFloat::mul(
+            &BigFloat::add(&BigFloat::mul(y, y, prec), &BigFloat::mul(z, z, prec), prec),
+            &two,
+            prec,
+        ),
+        &BigFloat::mul(x, x, prec),
+        prec,
+    );
+    // BigFloat 没有 is_negative：用"符号位 + 零"判断
+    if bf_abs(&inner) != inner || inner.is_zero() {
+        return None;
+    }
+    Some(BigFloat::mul(&inner.sqrt(prec), &bf_frac(1, 2), prec))
+}
+
+/// `s = 1` 时的角平分线长
+fn unit_bisector(sines: &[BigFloat; 3], i: usize) -> Option<BigFloat> {
+    let prec = bigfloat::precision();
+    let x = &sines[i];
+    let y = &sines[(i + 1) % 3];
+    let z = &sines[(i + 2) % 3];
+    let yz = BigFloat::mul(y, z, prec);
+    let ypz = BigFloat::add(y, z, prec);
+    if ypz.is_zero() {
+        return None;
+    }
+    let ratio = BigFloat::div(
+        &BigFloat::mul(x, x, prec),
+        &BigFloat::mul(&ypz, &ypz, prec),
+        prec,
+    );
+    let factor = BigFloat::sub(&bf_frac(1, 1), &ratio, prec);
+    if bf_abs(&factor) != factor || factor.is_zero() {
+        return None;
+    }
+    Some(BigFloat::mul(&yz, &factor, prec).sqrt(prec))
 }
 
 /// 相对差是否可忽略（去重用）
@@ -1222,6 +1385,31 @@ fn valid_xyz(x: &Xyz, pi: &BigFloat) -> bool {
 /* ---------------- 校验与收尾 ---------------- */
 
 /// 逐项回代校验已知量（超定矛盾在这里被拦住）
+/// 中线长：`m_i = ½√(2(y² + z²) − x²)`
+fn median_of(sides: &[Number; 3], i: usize) -> Number {
+    let x = &sides[i];
+    let y = &sides[(i + 1) % 3];
+    let z = &sides[(i + 2) % 3];
+    let yy = y.mul(y);
+    let zz = z.mul(z);
+    let two = num2();
+    let inner = two.mul(&yy.add(&zz)).sub(&x.mul(x));
+    let half = Number::from_int(1).div(&two);
+    half.mul(&inner.sqrt())
+}
+
+/// 角平分线长：`t_i = √(y·z·(1 − x²/(y+z)²))`
+fn bisector_of(sides: &[Number; 3], i: usize) -> Number {
+    let x = &sides[i];
+    let y = &sides[(i + 1) % 3];
+    let z = &sides[(i + 2) % 3];
+    let yz = y.mul(z);
+    let ypz = y.add(z);
+    let ratio = x.mul(x).div(&ypz.mul(&ypz));
+    let one = Number::from_int(1);
+    yz.mul(&one.sub(&ratio)).sqrt()
+}
+
 fn verify_givens(givens: &[(TriPart, Number)], vals: &TriVals) -> Result<(), String> {
     let area = vals.area.clone();
     for (part, v) in givens {
@@ -1229,6 +1417,8 @@ fn verify_givens(givens: &[(TriPart, Number)], vals: &TriVals) -> Result<(), Str
             TriPart::Side(i) => vals.sides[*i as usize].clone(),
             TriPart::Angle(i) => vals.angles[*i as usize].clone(),
             TriPart::Height(i) => num2().mul(&area).div(&vals.sides[*i as usize]),
+            TriPart::Median(i) => median_of(&vals.sides, *i as usize),
+            TriPart::Bisector(i) => bisector_of(&vals.sides, *i as usize),
         };
         if !approx_eq(&calc, v) {
             return Err("已知量之间存在矛盾，无法构成三角形".to_string());
@@ -1243,7 +1433,7 @@ fn write_back_givens(vals: &mut TriVals, givens: &[(TriPart, Number)]) {
         match part {
             TriPart::Side(i) => vals.sides[*i as usize] = v.clone(),
             TriPart::Angle(i) => vals.angles[*i as usize] = v.clone(),
-            TriPart::Height(_) => {}
+            TriPart::Height(_) | TriPart::Median(_) | TriPart::Bisector(_) => {}
         }
     }
 }
@@ -1258,11 +1448,15 @@ fn to_solution(
     let mut sides = vals.sides.clone();
     let mut angles = vals.angles.clone();
     let mut height_override: [Option<Number>; 3] = [None, None, None];
+    let mut median_override: [Option<Number>; 3] = [None, None, None];
+    let mut bisector_override: [Option<Number>; 3] = [None, None, None];
     for (part, v) in givens {
         match part {
             TriPart::Side(i) => sides[*i as usize] = v.clone(),
             TriPart::Angle(i) => angles[*i as usize] = v.clone(),
             TriPart::Height(i) => height_override[*i as usize] = Some(v.clone()),
+            TriPart::Median(i) => median_override[*i as usize] = Some(v.clone()),
+            TriPart::Bisector(i) => bisector_override[*i as usize] = Some(v.clone()),
         }
     }
     let [a, b, c] = sides.clone();
@@ -1286,6 +1480,16 @@ fn to_solution(
         Some(h) => h.clone(),
         None => num2().mul(&vals.area).div(side),
     };
+    // 中线 / 角平分线：给了就原样写回（精确值），否则由**最终三边**算出
+    let sides_final = [a.clone(), b.clone(), c.clone()];
+    let med = |i: usize| match &median_override[i] {
+        Some(v) => v.clone(),
+        None => median_of(&sides_final, i),
+    };
+    let bis = |i: usize| match &bisector_override[i] {
+        Some(v) => v.clone(),
+        None => bisector_of(&sides_final, i),
+    };
     Ok(TriangleSolution {
         alphabet: *alpha,
         a: a.clone(),
@@ -1297,6 +1501,12 @@ fn to_solution(
         ha: height(0, &a),
         hb: height(1, &b),
         hc: height(2, &c),
+        ma: med(0),
+        mb: med(1),
+        mc: med(2),
+        ta: bis(0),
+        tb: bis(1),
+        tc: bis(2),
         area: vals.area.clone(),
         perimeter,
         circumradius,
@@ -1348,6 +1558,18 @@ pub fn format_triangle_solution(
             entry(&alpha.height_label(0), &sol.ha, mode),
             entry(&alpha.height_label(1), &sol.hb, mode),
             entry(&alpha.height_label(2), &sol.hc, mode),
+        ]),
+        // 中线（用户 2026-10-28 要求：结果要输出高/中线/角平分线 + 周长面积）
+        join_line(&[
+            entry(&alpha.median_label(0), &sol.ma, mode),
+            entry(&alpha.median_label(1), &sol.mb, mode),
+            entry(&alpha.median_label(2), &sol.mc, mode),
+        ]),
+        // 角平分线
+        join_line(&[
+            entry(&alpha.bisector_label(0), &sol.ta, mode),
+            entry(&alpha.bisector_label(1), &sol.tb, mode),
+            entry(&alpha.bisector_label(2), &sol.tc, mode),
         ]),
         join_line(&[
             entry("面积", &sol.area, mode),
@@ -1507,9 +1729,25 @@ mod tests {
 
     #[test]
     fn area_from_two_heights_ratio_is_reported_when_scale_missing() {
-        let e = err("hA=2 hB=3 hC=4");
-        assert!(e.contains("形状已确定"), "{e}");
-        assert!(e.contains("a : b : c = 6 : 4 : 3"), "{e}");
+        // ⚠️ **三条高其实能唯一确定三角形**（a:b:c = 1/hA:1/hB:1/hC，再由 h·a = 2S 定标），
+        // 所以这条从"报比例"改成了"能解出来"。原来断言报错，是因为旧实现把
+        // "只有高、没有边"一律当成缺长度 —— 2026-10-28 引入中线/角平分线时一并修正。
+        let lines = run_with("hA=2 hB=3 hC=4", DisplayMode::LineIO, AngleMode::Degree).unwrap();
+        assert!(lines[2].contains("hA = 2"), "{}", lines[2]);
+        let get = |key: &str| -> f64 {
+            let seg = lines[0]
+                .split(", ")
+                .find(|p| p.starts_with(key))
+                .unwrap_or_else(|| panic!("找不到 {key}：{}", lines[0]));
+            seg.rsplit(' ').next().unwrap().parse().unwrap()
+        };
+        // 三条高给出 6 : 4 : 3 的边长比
+        assert!((get("a") / get("c") - 2.0).abs() < 1e-6, "{}", lines[0]);
+        assert!(
+            (get("b") / get("c") - 4.0 / 3.0).abs() < 1e-6,
+            "{}",
+            lines[0]
+        );
     }
 
     #[test]
@@ -1640,9 +1878,19 @@ mod tests {
         assert!(e.contains("边长必须为正数: x"), "{e}");
         let e = err("P=200 q=1 r=2");
         assert!(e.contains("角度必须在") && e.contains(": P"), "{e}");
-        // 形状已定但缺长度：比例标签用用户的字母
-        let e = err("hX=2 hY=3 hZ=4");
-        assert!(e.contains("x : y : z = 6 : 4 : 3"), "{e}");
+        // 三条高能定出三角形（2026-10-28 起），标签用用户的字母
+        let lines = run_with("hX=2 hY=3 hZ=4", DisplayMode::LineIO, AngleMode::Degree).unwrap();
+        assert!(lines[2].contains("hX = 2"), "{}", lines[2]);
+        assert!(
+            lines[3].starts_with("mX "),
+            "中线行用用户字母：{}",
+            lines[3]
+        );
+        assert!(
+            lines[4].starts_with("tX "),
+            "角平分线行用用户字母：{}",
+            lines[4]
+        );
     }
 
     #[test]
@@ -1660,6 +1908,59 @@ mod tests {
             line_starting(&lines, "a "),
             "a = 5 / 2, b = 5, c = 5*sqrt(3) / 2"
         );
+    }
+
+    /// **中线与角平分线**（用户 2026-10-28）：
+    /// - 三中线可以唯一确定三角形（`mA=3,mB=4,mC=5` ⇒ 3-4-5 的"中线三角形"）；
+    /// - 输出必须带高 / 中线 / 角平分线 / 面积 / 周长。
+    #[test]
+    fn triangle_solves_from_medians_and_prints_all_quantities() {
+        let lines = run_with("mA=3,mB=4,mC=5", DisplayMode::LineIO, AngleMode::Degree).unwrap();
+        assert_eq!(
+            lines.len(),
+            7,
+            "输出应有 7 行（边/角/高/中线/角平分线/面积周长/R r）"
+        );
+        assert!(
+            lines[3].contains("mA = 3"),
+            "中线行应原样回写已知值：{}",
+            lines[3]
+        );
+        assert!(lines[3].contains("mB = 4"));
+        assert!(lines[3].contains("mC = 5"));
+        assert!(
+            lines[4].starts_with("tA \u{2248}"),
+            "角平分线行：{}",
+            lines[4]
+        );
+        assert!(lines[5].contains("面积") && lines[5].contains("周长"));
+        // 中线公式自洽：m_c = ½√(2a²+2b²−c²)
+        let c_line = &lines[0];
+        let get = |key: &str| -> f64 {
+            let seg = c_line
+                .split(", ")
+                .find(|p| p.starts_with(key))
+                .unwrap_or_else(|| panic!("找不到 {key}：{c_line}"));
+            seg.rsplit(' ').next().unwrap().parse().unwrap()
+        };
+        let (a, b, c) = (get("a"), get("b"), get("c"));
+        let mc = 0.5 * (2.0 * a * a + 2.0 * b * b - c * c).sqrt();
+        assert!((mc - 5.0).abs() < 1e-6, "m_c 应为 5，实际 {mc}");
+    }
+
+    /// 给"边 + 中线"也能解（数值路径），且中线原样回写
+    #[test]
+    fn triangle_solves_from_side_and_median() {
+        let lines = run_with("a=3,b=4,mA=3", DisplayMode::LineIO, AngleMode::Degree).unwrap();
+        assert!(lines[3].contains("mA = 3"), "{}", lines[3]);
+        assert!(lines[0].contains("a = 3") && lines[0].contains("b = 4"));
+    }
+
+    /// 矛盾输入（三边定了却给了对不上的中线）不能 panic，要报错
+    #[test]
+    fn contradictory_median_reports_error_not_panic() {
+        let r = run_with("a=3,b=4,c=5,mA=4", DisplayMode::LineIO, AngleMode::Degree);
+        assert!(r.is_err(), "应当报错，实际：{r:?}");
     }
 
     #[test]

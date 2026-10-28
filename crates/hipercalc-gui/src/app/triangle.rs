@@ -11,8 +11,14 @@ use iced::widget::column;
 
 use super::*;
 
-/// 六个字段的键：小写 = 边、大写 = 角（与 `triangle(a=3, A=30)` 的约定一致）
-pub(super) const TRI_KEYS: [&str; 6] = ["a", "b", "c", "A", "B", "C"];
+/// 十二个字段的键（与 `triangle(...)` 的记号一致）：
+/// 小写 = 边、大写 = 角、`m`+字母 = 中线、`t`+字母 = 角平分线。
+pub(super) const TRI_KEYS: [&str; 12] = [
+    "a", "b", "c", // 边
+    "A", "B", "C", // 角
+    "mA", "mB", "mC", // 中线
+    "tA", "tB", "tC", // 角平分线
+];
 
 impl State {
     /// 结果区里的「三角形求解」页
@@ -20,13 +26,16 @@ impl State {
         let mut body = Column::new().spacing(10).width(Length::Fill);
 
         body = body.push(
-            theme::label(t("填任意三个已知量（至少一条边），点求解"))
+            theme::label(t("填任意三个已知量（至少要有一个长度），点求解"))
                 .size(13)
                 .style(theme::hint),
         );
 
-        // 两行三列：第一行三条边、第二行三个角
-        for (row_i, title) in [t("边"), t("角")].iter().enumerate() {
+        // 四行三列：边 / 角 / 中线 / 角平分线
+        for (row_i, title) in [t("边"), t("角"), t("中线"), t("角平分线")]
+            .iter()
+            .enumerate()
+        {
             let mut r = Row::new().spacing(10).align_y(Alignment::Center);
             for col in 0..3 {
                 let i = row_i * 3 + col;
