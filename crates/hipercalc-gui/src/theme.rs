@@ -955,14 +955,16 @@ pub fn glass_spec() -> f32 {
 pub fn key_glass(kind: KeyKind, radius: f32) -> crate::liquid::Glass {
     let c = colors();
     let (rgb, a) = match kind {
-        // 数字与括号是最多的键，越淡越好 —— 玻璃感全靠高光撑
-        KeyKind::Digit => (c.surface_alt, 0.20),
-        KeyKind::Structural => (c.surface_alt, 0.14),
-        KeyKind::Operator => (c.accent, 0.18),
-        KeyKind::Function => (c.accent, 0.13),
-        KeyKind::Control => (c.danger, 0.14),
+        // 数字与括号是最多的键，越淡越好 —— 玻璃感全靠高光撑。
+        // ⚠️ 2026-10-28 整体再调淡一档：用户要求"键帽也用现在的玻璃效果"，
+        // 底色越实、背后的桌面越透不上来，看着就越像"塑料按键"。
+        KeyKind::Digit => (c.surface_alt, 0.12),
+        KeyKind::Structural => (c.surface_alt, 0.09),
+        KeyKind::Operator => (c.accent, 0.13),
+        KeyKind::Function => (c.accent, 0.09),
+        KeyKind::Control => (c.danger, 0.10),
         // 等号是唯一的主操作键，留最实（否则看不出它是"主按钮"）
-        KeyKind::Equals => (c.accent, 0.34),
+        KeyKind::Equals => (c.accent, 0.24),
     };
     crate::liquid::Glass {
         radius,

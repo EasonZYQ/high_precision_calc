@@ -45,6 +45,18 @@ pub const WIN_PULL: f32 = 0.49;
 /// 但折射必须按圆角来算，否则角上会出现尖点（见 `glass_fold` 的注释）。
 pub const WIN_CORNER_R: f32 = 26.0;
 
+/// **角部拉扯的起点** = 短边的比例（用户 2026-10-28："靠近角 8% 的地方开始"）。
+///
+/// 这是**独立于边缘**的一条规则：离角点 8% 以内，位移方向改为"朝角点"，
+/// 并且越靠角越强 —— 它**凌驾**于边缘的拉扯/翻折之上（见 `glass_fold`）。
+pub const WIN_CORNER_BAND_FRAC: f32 = 0.08;
+
+/// 角部拉扯深度：贴角处的位移 = `WIN_CORNER_PULL × 角部带宽`。
+///
+/// 上限被 `0.7·到角点距离` 夹住 —— 越过角点就会采到窗口外面（那是当初
+/// "角上黑洞"的成因）。
+pub const WIN_CORNER_PULL: f32 = 0.7;
+
 /// 角部加成：`幅度 × (1 + WIN_CORNER_BOOST · 角权)`。
 ///
 /// ⚠️ **保持 0**：翻折本身已经把角部拉得很狠，再乘一个 >1 的系数会
@@ -69,12 +81,16 @@ pub fn shader(tail: &str) -> String {
         "const WIN_BAND_FRAC: f32 = {band:?};\n\
          const WIN_CORNER_R: f32 = {corner:?};\n\
          const WIN_PULL: f32 = {pull:?};\n\
+         const WIN_CORNER_BAND_FRAC: f32 = {cband:?};\n\
+         const WIN_CORNER_PULL: f32 = {cpull:?};\n\
          const WIN_CORNER_BOOST: f32 = {boost:?};\n\
          const WIN_STRENGTH: f32 = {strength:?};\n\
          {body}{tail}",
         band = WIN_BAND_FRAC,
         corner = WIN_CORNER_R,
         pull = WIN_PULL,
+        cband = WIN_CORNER_BAND_FRAC,
+        cpull = WIN_CORNER_PULL,
         boost = WIN_CORNER_BOOST,
         strength = WIN_STRENGTH,
         body = COMMON_BODY,
@@ -189,7 +205,34 @@ fn glass_fold(p: vec2<f32>, half: vec2<f32>, radius: f32, band: f32,
     let t = max(0.0, 1.0 - dm / b);
     let mag = amp * t * t * (1.0 + boost * wc);
     // `n` 朝外 ⇒ 采样朝内用负号
-    return -n * mag;
+    let edge_off = -n * mag;
+
+    // ── 角部拉扯：**凌驾**于上面的边缘规则 ─────────────────────────────────
+    //
+    // 用户 2026-10-28："靠近角 8% 的地方开始，越靠近就越向角拉扯，这条规则
+    // 凌驾于边缘拉扯和翻折之上。"
+    //
+    // 做法：以**角点**（圆角矩形的那个尖角，不是弧心）为极点，
+    //   · 权重 wq 从 8% 处 0 → 角点处 1；
+    //   · 方向：朝角点采样 ⇒ 内容看起来被**拽向角**；
+    //   · 幅度：`WIN_CORNER_PULL·带子`，并且**不许越过角点**（越过就采到窗口外，
+    //     那是当初"角上黑洞"的成因）⇒ 上限 `0.7·dc`。
+    // ⚠️ 极点是**圆角弧的圆心**，不是包围盒尖角：细长面板上两者差 20+ 像素，
+    // 用尖角算 `dc` 会让权重永远是 0（第一版就是这样，怎么调都看不到效果）。
+    let cpt = vec2<f32>((half.x - radius) * sx, (half.y - radius) * sy);
+    let relc = p - cpt;                          // 弧心 → 像素（朝外）
+    let rho_c = max(length(relc), 1e-4);
+    let dc = max(rho_c - radius, 0.0);           // 到**圆弧**的距离
+    let cband = max(WIN_CORNER_BAND_FRAC * 2.0 * min(half.x, half.y), 1.0);
+    let wq = smooth01(1.0 - dc / cband);
+    let wq2 = wq * wq;
+    // 采样朝内（远离角点）⇒ 内容被**拽向角**；朝内不会采到形状外面，
+    // 所以这里不需要"不许越过角点"的限幅（那是朝外采样才要的）。
+    let pull_c = WIN_CORNER_PULL * cband * wq2;
+    let corner_off = -(relc / rho_c) * pull_c;
+
+    // 权重为 1 时完全接管（凌驾），为 0 时是纯粹边缘效果
+    return mix(edge_off, corner_off, wq2);
 }
 
 // 到窗口边缘的**向内**距离（px，负 = 在窗口外）
