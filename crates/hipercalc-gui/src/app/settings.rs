@@ -8,7 +8,47 @@ use iced::widget::{column, row};
 
 use super::*;
 
+/// 一行的**排版预算**（像素）：窗口 940 − 外层 padding 44 − 卡片 padding 24 ≈ 872，
+/// 留一点余量取 860。超了就把后面的小件换到下一行。
+///
+/// ⚠️ iced **没有 flex-wrap**（`Row` 不会自动折行），所以只能自己按估算宽度装行。
+/// 估算用的是"字数 × 12.5 + 余量"—— 对中文 12–13px 的标签足够准，
+/// 宁可早换一行，也不要横向溢出被裁掉。
+const SETTINGS_ROW_BUDGET: f32 = 860.0;
+
+/// 设置面板的**最大高度**：窗口高 900 − 上下各 56 的留白（见 `view.rs` 的
+/// `.padding([56.0, 22.0])`）再留一点余量，超出就由内部 `scrollable` 滚动。
+const SETTINGS_MAX_H: f32 = 900.0 - 2.0 * 56.0 - 8.0;
+
+/// 估算一段文字占多宽（12–13px 字号）
+fn w_text(s: &str) -> f32 {
+    s.chars().count() as f32 * 12.5 + 8.0
+}
+
 impl State {
+    /// 把一串"宽度已知的小件"按预算装行：装不下就换行。
+    ///
+    /// 返回 `Column`（可能有多行），可以直接塞进设置面板的纵向序列里。
+    fn pack_rows<'a>(
+        items: Vec<(f32, Element<'a, Message>)>,
+        budget: f32,
+        spacing: f32,
+    ) -> Column<'a, Message> {
+        let mut col = Column::new().spacing(4).width(Length::Fill);
+        let mut cur = Row::new().spacing(spacing).align_y(Alignment::Center);
+        let mut used = 0.0f32;
+        for (w, el) in items {
+            if used > 0.0 && used + w > budget {
+                col = col.push(cur);
+                cur = Row::new().spacing(spacing).align_y(Alignment::Center);
+                used = 0.0;
+            }
+            cur = cur.push(el);
+            used += w + spacing;
+        }
+        col.push(cur)
+    }
+
     pub(super) fn settings_panel(&self) -> Element<'_, Message> {
         // ① 工作精度
         let precision_row = row![
@@ -52,32 +92,40 @@ impl State {
         // 每个按钮**用它自己的字体渲染自己的名字** —— 这样选之前就能看到效果，
         // 比单看名字直观得多（这也是字体选单的常见做法）。
         let cur_font = theme::math_font();
-        let mut font_row = Row::new().spacing(6).align_y(Alignment::Center);
-        font_row = font_row.push(self.setting_label(t("数学字体"), SETTING_LABEL_W));
+        let mut font_items: Vec<(f32, Element<'_, Message>)> = vec![(
+            SETTING_LABEL_W,
+            self.setting_label(t("数学字体"), SETTING_LABEL_W),
+        )];
         for (i, f) in MathFont::ALL.iter().enumerate() {
             let selected = *f == cur_font;
-            font_row = font_row.push(
+            font_items.push((
+                w_text(f.display_name()) + 24.0,
                 button(text(f.display_name()).size(13).font(f.font()))
                     .padding([5, 12])
                     .style(move |t, s| theme::mode_chip(t, s, selected))
-                    .on_press(Message::SetMathFont(i)),
-            );
+                    .on_press(Message::SetMathFont(i))
+                    .into(),
+            ));
         }
 
         // ③' **字体大小**（用户 2026-10-29："添加调节字体大小的滑块，和字体选择在同一行"）。
         // 只缩放字号（`theme::text_size`），不动布局 —— 调大不会把键盘挤爆。
-        font_row = font_row.push(Space::new().width(Length::Fixed(10.0)));
-        font_row = font_row.push(theme::label(t("字体大小")).size(12));
-        font_row = font_row.push(
+        let size_label = t("字体大小");
+        let size_group: Element<'_, Message> = row![
+            theme::label(size_label.clone()).size(12).style(theme::hint),
             slider(0.7..=1.6, self.font_scale, Message::SetFontScale)
                 .step(0.05_f32)
                 .width(Length::Fixed(110.0)),
-        );
-        font_row = font_row.push(
             theme::label(format!("{:.0}%", self.font_scale * 100.0))
                 .size(12)
                 .style(theme::hint),
-        );
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .into();
+        font_items.push((w_text(&size_label) + 110.0 + 44.0 + 16.0, size_group));
+        let font_row: Element<'_, Message> =
+            Self::pack_rows(font_items, SETTINGS_ROW_BUDGET, 6.0).into();
 
         // ④ 主题（用户要求："深色浅色的按钮放到设置里" —— 原来在工具条上）。
         let theme_row = row![
@@ -96,100 +144,102 @@ impl State {
         let tex = self.texture;
         let pct = |v: f32| t_fmt("{0}%", &[&(v * 100.0).round().to_string()]);
 
-        let tex_acrylic_row = row![
-            self.setting_label(t("亚克力质感"), SETTING_LABEL_W),
-            // 只有**选中**的那一行写"已开启"，其余写"未启用" ——
-            // 否则三行都写"已开启"（只靠底色区分），一眼看去像三个都开着。
-            self.chip(
-                if tex == theme::Texture::Acrylic {
-                    t("已开启")
-                } else {
-                    t("未启用")
-                },
-                tex == theme::Texture::Acrylic,
-                Message::SetTexture(theme::Texture::Acrylic),
-            ),
-            theme::label(t("模糊强度")).size(12).style(theme::hint),
-            slider(0.0..=1.0, self.acrylic_blur, Message::SetAcrylicBlur)
-                .step(0.01_f32)
-                .on_release(Message::CommitGlass)
-                .width(Length::Fixed(104.0)),
-            theme::label(pct(self.acrylic_blur))
-                .size(13)
-                .style(theme::hint),
-            Space::new().width(Pixels(8.0)),
-            theme::label(t("底色浓度")).size(12).style(theme::hint),
-            slider(0.0..=1.0, self.acrylic_tint, Message::SetAcrylicTint)
-                .step(0.01_f32)
-                .on_release(Message::CommitGlass)
-                .width(Length::Fixed(104.0)),
-            theme::label(pct(self.acrylic_tint))
-                .size(13)
-                .style(theme::hint),
-            Space::new().width(Pixels(8.0)),
-            // 设置页自己的浓度（用户要求：两种质感各配一个）
-            theme::label(t("设置页浓度")).size(12).style(theme::hint),
-            slider(
-                0.0..=1.0,
-                self.acrylic_dialog_tint,
-                Message::SetAcrylicDialogTint
-            )
-            .step(0.01_f32)
-            .on_release(Message::CommitGlass)
-            .width(Length::Fixed(96.0)),
-            theme::label(pct(self.acrylic_dialog_tint))
-                .size(13)
-                .style(theme::hint),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center);
+        // 一行里的小件按预算装行：窗口变窄时**自动换到下一行**（iced 没有 flex-wrap）
+        // "已开启 / 未启用"两种文案的宽度差很多，按实际文案估算
+        let st_on = if tex == theme::Texture::Acrylic {
+            t("已开启")
+        } else {
+            t("未启用")
+        };
+        let sgroup = |label: String, val: f32, msg: fn(f32) -> Message, w: f32| {
+            let e: Element<'_, Message> = row![
+                theme::label(label.clone()).size(12).style(theme::hint),
+                slider(0.0..=1.0, val, msg)
+                    .step(0.01_f32)
+                    .on_release(Message::CommitGlass)
+                    .width(Length::Fixed(w - 40.0)),
+                theme::label(pct(val)).size(13).style(theme::hint),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .into();
+            (w_text(&label) + w + 24.0, e)
+        };
+        let tex_acrylic_row: Element<'_, Message> = Self::pack_rows(
+            vec![
+                (
+                    SETTING_LABEL_W,
+                    self.setting_label(t("亚克力质感"), SETTING_LABEL_W),
+                ),
+                (
+                    w_text(&st_on) + 24.0,
+                    self.chip(
+                        st_on.clone(),
+                        tex == theme::Texture::Acrylic,
+                        Message::SetTexture(theme::Texture::Acrylic),
+                    ),
+                ),
+                sgroup(
+                    t("模糊强度"),
+                    self.acrylic_blur,
+                    Message::SetAcrylicBlur,
+                    140.0,
+                ),
+                sgroup(
+                    t("底色浓度"),
+                    self.acrylic_tint,
+                    Message::SetAcrylicTint,
+                    140.0,
+                ),
+                sgroup(
+                    t("设置页浓度"),
+                    self.acrylic_dialog_tint,
+                    Message::SetAcrylicDialogTint,
+                    132.0,
+                ),
+            ],
+            SETTINGS_ROW_BUDGET,
+            10.0,
+        )
+        .into();
 
-        let tex_glass_row = row![
-            self.setting_label(t("玻璃质感"), SETTING_LABEL_W),
-            // 只有**选中**的那一行写"已开启"，其余写"未启用" ——
-            // 否则三行都写"已开启"（只靠底色区分），一眼看去像三个都开着。
-            self.chip(
-                if tex == theme::Texture::Glass {
-                    t("已开启")
-                } else {
-                    t("未启用")
-                },
-                tex == theme::Texture::Glass,
-                Message::SetTexture(theme::Texture::Glass),
-            ),
-            theme::label(t("模糊强度")).size(12).style(theme::hint),
-            slider(0.0..=1.0, self.glass_blur, Message::SetGlassBlur)
-                .step(0.01_f32)
-                .on_release(Message::CommitGlass)
-                .width(Length::Fixed(104.0)),
-            theme::label(pct(self.glass_blur))
-                .size(13)
-                .style(theme::hint),
-            Space::new().width(Pixels(8.0)),
-            theme::label(t("底色浓度")).size(12).style(theme::hint),
-            slider(0.0..=1.0, self.glass_tint2, Message::SetGlassTint2)
-                .step(0.01_f32)
-                .on_release(Message::CommitGlass)
-                .width(Length::Fixed(104.0)),
-            theme::label(pct(self.glass_tint2))
-                .size(13)
-                .style(theme::hint),
-            Space::new().width(Pixels(8.0)),
-            theme::label(t("设置页浓度")).size(12).style(theme::hint),
-            slider(
-                0.0..=1.0,
-                self.glass_dialog_tint,
-                Message::SetGlassDialogTint
-            )
-            .step(0.01_f32)
-            .on_release(Message::CommitGlass)
-            .width(Length::Fixed(96.0)),
-            theme::label(pct(self.glass_dialog_tint))
-                .size(13)
-                .style(theme::hint),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center);
+        let st_g = if tex == theme::Texture::Glass {
+            t("已开启")
+        } else {
+            t("未启用")
+        };
+        let tex_glass_row: Element<'_, Message> = Self::pack_rows(
+            vec![
+                (
+                    SETTING_LABEL_W,
+                    self.setting_label(t("玻璃质感"), SETTING_LABEL_W),
+                ),
+                (
+                    w_text(&st_g) + 24.0,
+                    self.chip(
+                        st_g.clone(),
+                        tex == theme::Texture::Glass,
+                        Message::SetTexture(theme::Texture::Glass),
+                    ),
+                ),
+                sgroup(t("模糊强度"), self.glass_blur, Message::SetGlassBlur, 140.0),
+                sgroup(
+                    t("底色浓度"),
+                    self.glass_tint2,
+                    Message::SetGlassTint2,
+                    140.0,
+                ),
+                sgroup(
+                    t("设置页浓度"),
+                    self.glass_dialog_tint,
+                    Message::SetGlassDialogTint,
+                    132.0,
+                ),
+            ],
+            SETTINGS_ROW_BUDGET,
+            10.0,
+        )
+        .into();
 
         let tex_off_row = row![
             self.setting_label(t("关闭"), SETTING_LABEL_W),
@@ -318,29 +368,50 @@ impl State {
                 ]
                 .align_y(Alignment::Center),
                 rule::horizontal(1.0).style(theme::divider),
-                precision_row,
-                rule::horizontal(1.0).style(theme::divider),
-                lang_row,
-                rule::horizontal(1.0).style(theme::divider),
-                font_row,
-                rule::horizontal(1.0).style(theme::divider),
-                theme_row,
-                rule::horizontal(1.0).style(theme::divider),
-                texture_block,
-                rule::horizontal(1.0).style(theme::divider),
-                shadow_row,
-                rule::horizontal(1.0).style(theme::divider),
-                acrylic_row,
-                rule::horizontal(1.0).style(theme::divider),
-                scale_row,
-                rule::horizontal(1.0).style(theme::divider),
-                capture_row,
-                rule::horizontal(1.0).style(theme::divider),
-                wrap_row,
+                // ⚠️ **下面这一整块要能上下拉**（用户 2026-10-29："把设置界面做成
+                // 可以上下拉动"）。标题与分割线留在外面固定，只有内容滚动 ——
+                // 否则滚到下面时标题一起滚走，用户会不知道自己在哪。
+                scrollable(
+                    // 右侧留 8px：滚动条会压在内容上（与函数面板同款处理）
+                    container(
+                        column![
+                            precision_row,
+                            rule::horizontal(1.0).style(theme::divider),
+                            lang_row,
+                            rule::horizontal(1.0).style(theme::divider),
+                            font_row,
+                            rule::horizontal(1.0).style(theme::divider),
+                            theme_row,
+                            rule::horizontal(1.0).style(theme::divider),
+                            texture_block,
+                            rule::horizontal(1.0).style(theme::divider),
+                            shadow_row,
+                            rule::horizontal(1.0).style(theme::divider),
+                            acrylic_row,
+                            rule::horizontal(1.0).style(theme::divider),
+                            scale_row,
+                            rule::horizontal(1.0).style(theme::divider),
+                            capture_row,
+                            rule::horizontal(1.0).style(theme::divider),
+                            wrap_row,
+                        ]
+                        .spacing(8)
+                    )
+                    .padding(iced::Padding {
+                        top: 0.0,
+                        right: 8.0,
+                        bottom: 0.0,
+                        left: 0.0,
+                    }),
+                )
+                .height(Length::Fill)
+                .width(Length::Fill),
             ]
             .spacing(8),
         )
         .width(Length::Fill)
+        // 面板最高不超过"窗口高度 − 上下留白"（56×2），超出就滚动
+        .max_height(SETTINGS_MAX_H)
         .padding([12, 14])
         // ⚠️ 用 `dialog`（**接近不透明**的浮层样式）而不是 `panel`：
         // 玻璃面板的 alpha 只有 0.5 上下，下面的历史文字会透上来，
