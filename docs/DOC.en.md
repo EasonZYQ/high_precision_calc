@@ -88,6 +88,7 @@ For scripts and batch checking:
 | `hipercalc --stdin` | read expressions from stdin |
 | `hipercalc --lang en` | force the UI language (`zh-CN` / `zh-TW` / `en`) |
 | `hipercalc -q` | hide the "time" line |
+| `hipercalc -V` | Print the version (`hipercalc 2.1.0`) and exit; does not touch the config file |
 
 > **Timing**: shown to **0.1 s**, truncated. For example `用时：1.9秒`
 > (below 0.1 s it prints `用时：<0.1秒`).

@@ -1,8 +1,8 @@
 # AGENTS.md
 
-`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**已可用**：计算 / **后台求值（界面永不卡死）** / **耗时显示（对标 CLI）** / 历史 / Desmos 式双面板虚拟键盘 / 函数弹窗 / 数学排版与实时预览 / 内置字体 / **自绘窗口栏（无系统标题栏）** / 深浅双主题 / 全界面多语言）。**当前版本 2.0.0**，**含 391 项测试**（hipercalc 202 + core 22 + GUI 149 单测 + 17 快照 + 1 doctest，其中 3 项默认 ignore：2 张 README 素材 + 1 个填充性能探针），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
+`hipercalc`：中文超高精度命令行计算器。Rust workspace（edition 2024）：数值底座 `hipercalc-core` + 应用与二进制 `hipercalc` + 图形界面 `hipercalc-gui`（Iced，**已可用**：计算 / **后台求值（界面永不卡死）** / **耗时显示（对标 CLI）** / 历史 / Desmos 式双面板虚拟键盘 / 函数弹窗 / 数学排版与实时预览 / 内置字体 / **自绘窗口栏（无系统标题栏）** / 深浅双主题 / 全界面多语言）。**当前版本 2.1.0**，**含 401 项测试**（hipercalc 206 + core 22 + GUI 153 单测 + 19 快照 + 1 doctest，其中 4 项默认 ignore：2 张 README 素材 + 1 个填充性能探针 + 1 个三角形数值探针），**CI 已是常态**（`.github/workflows/ci.yml`：三平台 build + test + 冒烟，以及 6 目标交叉编译），已发布到 GitHub（SSH 远端 `git@github.com:EasonZYQ/high_precision_calc.git`，默认分支 main）。
 
-**CI 分三块**：三平台 build + test（**只覆盖 default-members = core+cli**）、`Check GUI`（2026-10-22 加，因为曾出现"CI 全绿但 GUI 编译不过"；2026-10-26 起这条 job 在 Windows 上**还跑 `cargo test -p hipercalc-gui --lib`（149 个）与 `cargo clippy -p hipercalc-gui -- -D warnings`**，macOS 仍只 `cargo check`）、6 目标交叉编译。
+**CI 分三块**：三平台 build + test（**只覆盖 default-members = core+cli**）、`Check GUI`（2026-10-22 加，因为曾出现"CI 全绿但 GUI 编译不过"；2026-10-26 起这条 job 在 Windows 上**还跑 `cargo test -p hipercalc-gui --lib`（153 个）与 `cargo clippy -p hipercalc-gui -- -D warnings`**，macOS 仍只 `cargo check`）、6 目标交叉编译。
 
 **工具链版本钉死在 CI**（2026-10-27）：`.github/workflows/*.yml` 里用
 `dtolnay/rust-toolchain@master` + `toolchain: "1.97.1"`（与本机 `rustc` 同版本）。

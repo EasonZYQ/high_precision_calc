@@ -1830,6 +1830,8 @@ struct Options {
     lang: Option<i18n::Lang>,
     /// `-q/--no-timing`：不输出耗时行
     no_timing: bool,
+    /// `-V/--version`：只打印版本号然后退出（发版后用户要能自查版本）
+    version_only: bool,
 }
 
 /// 解析命令行参数（纯函数，便于单元测试）
@@ -1837,6 +1839,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut cli = Cli::Interactive;
     let mut lang = None;
     let mut no_timing = false;
+    let mut version_only = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -1872,6 +1875,10 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
                 no_timing = true;
                 i += 1;
             }
+            "-V" | "--version" => {
+                version_only = true;
+                i += 1;
+            }
             // 图形界面用 `>_` 按钮拉起自己时加的内部标记（见 `hipercalc-gui/src/cli.rs`）：
             // 它唯一的作用是让那个子进程走"带参数 ⇒ 当 CLI 跑"的分支。
             // **静默忽略**，不进 `--help`（它不是给用户用的开关）。
@@ -1885,6 +1892,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         cli,
         lang,
         no_timing,
+        version_only,
     })
 }
 
@@ -1972,11 +1980,20 @@ pub fn run() -> i32 {
             println!("{}", i18n::t(&e));
             println!(
                 "{}",
-                i18n::t("用法: hipercalc [-e <表达式>] [-f <文件>] [--stdin] [--lang <代码>] [-q]")
+                i18n::t(
+                    "用法: hipercalc [-e <表达式>] [-f <文件>] [--stdin] [--lang <代码>] [-q] [-V]"
+                )
             );
             return 2;
         }
     };
+
+    // `-V/--version`：只打版本号就退出。**放在加载状态之前** —— 用户查版本
+    // 不该顺带改动自己的配置文件。
+    if opts.version_only {
+        println!("hipercalc {}", env!("CARGO_PKG_VERSION"));
+        return 0;
+    }
 
     let mut evaluator = Evaluator::new();
     let mut colors = ColorConfig::default();
@@ -4430,6 +4447,17 @@ mod cli_tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// `-V` / `--version` 要能被认出来（发版后用户自查版本）
+    #[test]
+    fn parse_args_recognizes_version_flag() {
+        for f in ["-V", "--version"] {
+            let o = parse_args(&args(&[f])).unwrap();
+            assert!(o.version_only, "{f} 应当只打印版本号");
+        }
+        let o = parse_args(&args(&[])).unwrap();
+        assert!(!o.version_only);
     }
 
     #[test]
