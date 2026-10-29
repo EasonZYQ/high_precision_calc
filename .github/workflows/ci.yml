@@ -158,7 +158,8 @@ jobs:
         with:
           # ⚠️ 与 `rust-toolchain.toml` 保持同一个版本
           toolchain: "1.97.1"
-        with:
+          # ⚠️ 必须和 toolchain **写在同一个 `with` 里**：YAML 不允许重复键，
+          # 写成两个 `with:` 会让整个 workflow 被 GitHub 拒收（0 job、瞬间失败）。
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
