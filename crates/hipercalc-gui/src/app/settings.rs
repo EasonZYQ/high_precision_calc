@@ -64,6 +64,21 @@ impl State {
             );
         }
 
+        // ③' **字体大小**（用户 2026-10-29："添加调节字体大小的滑块，和字体选择在同一行"）。
+        // 只缩放字号（`theme::text_size`），不动布局 —— 调大不会把键盘挤爆。
+        font_row = font_row.push(Space::new().width(Length::Fixed(10.0)));
+        font_row = font_row.push(theme::label(t("字体大小")).size(12));
+        font_row = font_row.push(
+            slider(0.7..=1.6, self.font_scale, Message::SetFontScale)
+                .step(0.05_f32)
+                .width(Length::Fixed(110.0)),
+        );
+        font_row = font_row.push(
+            theme::label(format!("{:.0}%", self.font_scale * 100.0))
+                .size(12)
+                .style(theme::hint),
+        );
+
         // ④ 主题（用户要求："深色浅色的按钮放到设置里" —— 原来在工具条上）。
         let theme_row = row![
             self.setting_label(t("主题"), SETTING_LABEL_W),

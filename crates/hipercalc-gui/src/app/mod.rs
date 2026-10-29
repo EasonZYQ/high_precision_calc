@@ -274,6 +274,13 @@ pub struct State {
     /// 三角形页的十二个输入（顺序见 [`triangle::TRI_KEYS`]：
     /// a b c / A B C / mA mB mC / tA tB tC）
     tri_vals: [String; 12],
+    /// 三角形页的**求解结果**（就地显示，不跳回历史页）。
+    ///
+    /// 用户 2026-10-29："结果也在求解界面显示，不要跳回来"。
+    /// 结果仍照常进历史（那份记录不变），这里多一份就地展示。
+    tri_result: Option<String>,
+    /// 界面文字缩放（跟随设置滑块；持久化在 `font_scale` 键里）
+    font_scale: f32,
     /// 输入框内容（多行编辑器 —— 能读光标、能局部插入）
     /// 输入栏的**文本**。
     ///
@@ -535,8 +542,10 @@ pub enum Message {
     TriChanged(usize, String),
     /// 三角形页：求解
     TriSolve,
-    /// 三角形页：清空六个输入
+    /// 三角形页：清空十二个输入
     TriClear,
+    /// 设置：界面文字大小（0.7–1.6）
+    SetFontScale(f32),
     /// 计算中的**秒表跳动**（订阅每 100ms 发一条，只为刷新"计算中 3.2s"）
     Tick,
     /// 点了排版层里的**空参数框**：把光标挪到源文本的第 n 个字符处
@@ -700,6 +709,8 @@ impl State {
         // `theme::GLASS_PERCENT` 的静态初值只是"能跑"，不一定是用户的选择 ——
         // 若等第一次 `update` 再同步，首帧就会用错颜色（一闪而过，但快照会拍到）。
         theme::set_dark(prefs.dark);
+        // 启动即按设置里的字号走（否则第一次开窗口字号是默认值，要等用户拖滑块）
+        theme::set_font_scale(prefs.font_scale);
         theme::set_glass(prefs.glass);
         theme::set_glass_tint(prefs.glass_tint);
         theme::set_texture(theme::Texture::from_key(&prefs.texture));
@@ -717,6 +728,8 @@ impl State {
             search: String::new(),
             triangle_open: false,
             tri_vals: Default::default(),
+            tri_result: None,
+            font_scale: prefs.font_scale,
             dark: prefs.dark,
             ui_scale: prefs.ui_scale.clamp(0.5, 1.0),
             allow_capture: prefs.capture,
@@ -845,6 +858,13 @@ impl State {
             }
             Message::TriClear => {
                 self.tri_vals = Default::default();
+                self.tri_result = None;
+            }
+            Message::SetFontScale(k) => {
+                let k = k.clamp(0.7, 1.6);
+                self.font_scale = k;
+                theme::set_font_scale(k);
+                self.persist_prefs();
             }
             Message::TriSolve => {
                 // 拼成 core 认的 `triangle(a=3, A=30)`：**只带填了的字段**，
@@ -862,7 +882,8 @@ impl State {
                     // 走**正式求值通道**（后台 worker），结果照常进历史 ——
                     // 这一页只是"帮我把参数填对"，不另开一套计算路径。
                     self.input = expr::Doc::from_text(&src);
-                    self.triangle_open = false;
+                    // ⚠️ **不要跳回历史页**（用户 2026-10-29）：结果就地显示在
+                    // 这一页下方（`tri_result`），历史里那份记录照常保留。
                     self.input_hint = None;
                     return self.evaluate();
                 }
@@ -1089,6 +1110,10 @@ impl State {
                 // 「计算已中断」是**用户自己按的取消**，不是失败：按提示样式显示，
                 // 不算 error（否则整行染红、还带错误底色）。
                 let cancelled = out.text.contains(hipercalc_core::cancel::ERROR_CANCELLED);
+                // 三角页开着 ⇒ 结果同时就地显示（不跳页）
+                if self.triangle_open {
+                    self.tri_result = Some(out.text.clone());
+                }
                 self.history.push(Entry {
                     input: out.input,
                     output: out.text,
@@ -1330,6 +1355,7 @@ impl State {
                 if self.allow_capture { "on" } else { "off" }.to_string(),
             ),
             ("ui_scale", format!("{:.2}", self.ui_scale)),
+            ("font_scale", format!("{:.2}", self.font_scale)),
             // 窗口几何：没拿到过事件（w == 0）就不写，免得首启把"居中"覆盖成 (0,0)
             ("win_x", format!("{:.0}", self.win_geom.0)),
             ("win_y", format!("{:.0}", self.win_geom.1)),
@@ -2086,6 +2112,7 @@ impl State {
     pub fn set_dark_for_test(&mut self, dark: bool) {
         self.dark = dark;
         theme::set_dark(dark);
+        theme::set_font_scale(self.font_scale);
     }
 
     /// 设置显示模式（测试用）

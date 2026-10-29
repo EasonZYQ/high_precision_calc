@@ -90,6 +90,11 @@ pub struct GuiPrefs {
     /// 所以这里能调的只有**窗口的物理像素量** —— 帧时间与像素数近似线性，
     /// 这是唯一确定能压低帧时间的旋钮（见 `docs/liquid-glass-report.md` 第 10 节）。
     pub ui_scale: f32,
+    /// **界面文字大小**（1.0 = 默认；0.7–1.6）。
+    ///
+    /// 只缩放字号、不缩放布局（按钮/面板尺寸不变），所以调大不会挤爆键盘。
+    /// 与 `ui_scale`（改窗口物理尺寸）是两件事，别混。
+    pub font_scale: f32,
     /// **允许被截图 / 录屏**（`true` = 允许）。
     ///
     /// ⚠️ 这两个目标在 Windows 上**不能同时满足**：
@@ -144,6 +149,7 @@ impl Default for GuiPrefs {
             capture: true,
             // 默认 100%：缩放在设置里可调
             ui_scale: 1.0,
+            font_scale: 1.0,
             glass_blur: 0.6,
             glass_tint2: 0.55,
             // 0.6 是"看得出玻璃、又不至于糊成一片"的中间值（滑条默认落在这里）
@@ -189,6 +195,10 @@ impl GuiPrefs {
                 && let Ok(f) = v.trim().parse::<f32>()
             {
                 p.glass = f.clamp(0.0, 1.0);
+            } else if let Some(v) = line.strip_prefix("font_scale=")
+                && let Ok(f) = v.trim().parse::<f32>()
+            {
+                p.font_scale = f.clamp(0.7, 1.6);
             } else if let Some(v) = line.strip_prefix("ui_scale=")
                 && let Ok(f) = v.trim().parse::<f32>()
             {
@@ -257,6 +267,7 @@ impl GuiPrefs {
                 if self.capture { "on" } else { "off" }.to_string(),
             ),
             ("ui_scale", format!("{:.2}", self.ui_scale)),
+            ("font_scale", format!("{:.2}", self.font_scale)),
             ("glass", format!("{:.2}", self.glass)),
             ("glass_tint", format!("{:.2}", self.glass_tint)),
             ("texture", self.texture.clone()),
@@ -629,6 +640,7 @@ mod tests {
             // 漏了只会在 CI 的 `--all-targets` 里炸（本项目已踩过三次）。
             capture: false,
             ui_scale: 0.9,
+            font_scale: 1.0,
             glass: 0.25,
             glass_tint: 0.55,
             shadow: 0.4,

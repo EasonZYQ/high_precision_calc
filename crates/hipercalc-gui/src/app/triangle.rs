@@ -78,6 +78,26 @@ impl State {
                 ),
         );
 
+        // ── 求解结果（就地显示，不跳回历史页）──────────────────────────────
+        // 用户 2026-10-29："结果也在求解界面显示，不要跳回来"。
+        if let Some(res) = &self.tri_result {
+            let mut col = Column::new().spacing(2);
+            for line in res.lines() {
+                col = col.push(
+                    text(line.to_string())
+                        .size(theme::text_size(15.0))
+                        .font(theme::font_math()),
+                );
+            }
+            body = body.push(Space::new().height(Length::Fixed(6.0)));
+            body = body.push(
+                container(col)
+                    .width(Length::Fill)
+                    .padding([8, 10])
+                    .style(theme::panel_card),
+            );
+        }
+
         let inner = scrollable(container(body).padding([12, 12]))
             .height(Length::Fill)
             .width(Length::Fill);

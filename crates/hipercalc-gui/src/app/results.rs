@@ -194,7 +194,7 @@ impl State {
             &e.input,
             true,
             mathrender::Style2 {
-                size: 15.0,
+                size: theme::text_size(16.0),
                 color: Some(theme::colors().text_dim),
                 wrap: self.wrap,
                 // 回显与输入栏是同一串式子，函数名的斜体规则也保持一致
@@ -256,12 +256,15 @@ impl State {
             mathrender::Style2 {
                 // 提示行（「计算已中断」）用小字号 + hint 色：它是**用户的动作回执**，
                 // 不是失败，别用错误的红与大字号去刺激人（用户 2026-10-24 要求）。
+                // ⚠️ 结果**不能**比输入式子还大：原来结果 24px、输入 19px，
+                // 用户 2026-10-29 反馈"算式非常小，输出很大"。
+                // 现在基准统一成 18（跟随设置的字体大小滑块）。
                 size: if e.error {
-                    18.0
+                    theme::text_size(18.0)
                 } else if e.notice {
-                    15.0
+                    theme::text_size(15.0)
                 } else {
-                    24.0
+                    theme::text_size(18.0)
                 },
                 color: Some(if e.error {
                     theme::colors().danger

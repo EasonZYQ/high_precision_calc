@@ -432,7 +432,7 @@ impl State {
             // 光标"）。以前空着只画提示语，光标是 `Node` 树的一部分、树是空的，
             // 于是"看不见光标"—— 用户根本不知道可以开始打字。
             row![
-                mathrender::caret(19.0),
+                mathrender::caret(theme::text_size(18.0)),
                 theme::label(t("输入表达式，例如 sqrt(2)/3、x^2-4=0、int(x^2,x,0,1)"))
                     .size(17)
                     .style(theme::hint),
@@ -450,7 +450,7 @@ impl State {
             mathrender::build(
                 &node,
                 mathrender::Style2 {
-                    size: 19.0,
+                    size: theme::text_size(18.0),
                     color: Some(theme::colors().text),
                     wrap: true,
                     // 输入栏的函数名用斜体（用户 2026-10-24："函数都用黑色斜体字，
@@ -627,7 +627,7 @@ impl State {
         // 所以键面上的 `x` / `e` / `a` 也必须斜体，否则同一个字母在两处是两种样子。
         // 多字母（`ABC`）与数字仍然直立。
         let _ = kind;
-        let face = text(label.to_string()).size(KEY_FACE_SIZE);
+        let face = text(label.to_string()).size(theme::text_size(KEY_FACE_SIZE));
         let face = if UI_ICON_KEYS.contains(&label) {
             face
         } else if mathrender::looks_like_variable(label) {

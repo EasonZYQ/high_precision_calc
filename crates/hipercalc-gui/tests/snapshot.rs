@@ -151,8 +151,12 @@ fn triangle_page_snapshot() {
     state.set_dark_for_test(true);
     let _ = state.update(Message::ToggleTriangle);
     // 填两个已知量，顺便看输入框/按钮排布
+    // 填 a=3 b=4 mA=4 并**真的求解一次**：快照要覆盖"结果就地显示"这一块
     let _ = state.update(Message::TriChanged(0, "3".into()));
     let _ = state.update(Message::TriChanged(1, "4".into()));
+    let _ = state.update(Message::TriChanged(6, "4".into()));
+    let _ = state.update(Message::TriSolve);
+    state.await_pending_for_test();
 
     let snapshot = snap(&state);
     let path = format!("{SNAP_DIR}/triangle.png");

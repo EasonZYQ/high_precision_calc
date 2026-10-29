@@ -9,6 +9,29 @@
 #[allow(unused_imports)]
 use super::*;
 
+/// **字体大小滑块**（用户 2026-10-29）：改设置后全局字号跟着变，且会被持久化。
+#[test]
+fn font_scale_applies_globally_and_persists() {
+    // 复位，避免和别的用例互相影响（全局原子）
+    let mut st = State::default();
+    let _ = st.update(Message::SetFontScale(1.0));
+    assert!((theme::text_size(18.0) - 18.0).abs() < 0.01);
+
+    let _ = st.update(Message::SetFontScale(1.5));
+    assert!((theme::font_scale() - 1.5).abs() < 0.01);
+    assert!(
+        (theme::text_size(18.0) - 27.0).abs() < 0.01,
+        "字号应整体放大 1.5 倍"
+    );
+
+    // 越界要被夹住（滑块范围 0.7–1.6）
+    let _ = st.update(Message::SetFontScale(9.0));
+    assert!((theme::font_scale() - 1.6).abs() < 0.01, "上限 1.6");
+
+    // 复位，别影响其它快照/用例
+    let _ = st.update(Message::SetFontScale(1.0));
+}
+
 #[test]
 fn is_precise_reads_core_prefix() {
     assert!(is_precise("= 1 / 2"));

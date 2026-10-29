@@ -952,6 +952,33 @@ pub fn glass_spec() -> f32 {
 /// 那会盖住 `liquid` 的高光 —— 看上去就是一块实色，不像玻璃。
 /// 现在压到 0.12~0.34：仍一眼分得出"这是运算符 / 这是等号"，
 /// 但主导观感的是玻璃的通透与高光。
+// ── 全局文字缩放（设置里的"字体大小"滑块）────────────────────────────────
+//
+// 只乘**字号**，不乘布局：窗口、按钮、面板的大小都不变，避免"放大字号把
+// 键盘挤爆"。基准值散落在各视图里，统一由 `text_size()` 这一处乘。
+static FONT_SCALE: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(1.0f32.to_bits());
+
+/// 设置文字缩放（0.7–1.6）
+pub fn set_font_scale(k: f32) {
+    FONT_SCALE.store(
+        k.clamp(0.7, 1.6).to_bits(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// 当前文字缩放
+pub fn font_scale() -> f32 {
+    f32::from_bits(FONT_SCALE.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// 统一入口：把"基准字号"换算成实际字号。
+///
+/// 视图里凡是需要跟随设置的字号都走这里（否则滑块对那处不起作用）。
+pub fn text_size(base: f32) -> f32 {
+    base * font_scale()
+}
+
 pub fn key_glass(kind: KeyKind, radius: f32) -> crate::liquid::Glass {
     let c = colors();
     let (rgb, a) = match kind {
