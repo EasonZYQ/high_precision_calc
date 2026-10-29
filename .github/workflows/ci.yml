@@ -32,6 +32,10 @@ jobs:
         with:
           # ⚠️ 与 `rust-toolchain.toml` 保持同一个版本
           toolchain: "1.97.1"
+          # ⚠️ **这个 job 也要 clippy**：`@master` 只装你显式列出的 components，
+          # 漏了它 CI 会报 `cargo-clippy.exe is not installed for the toolchain`
+          #（2026-10-29 发版时实测，本地有 clippy 所以看不出来）。
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
