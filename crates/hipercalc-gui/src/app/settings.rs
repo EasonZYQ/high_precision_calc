@@ -8,17 +8,23 @@ use iced::widget::{column, row};
 
 use super::*;
 
-/// 一行的**排版预算**（像素）：窗口 940 − 外层 padding 44 − 卡片 padding 24 ≈ 872，
-/// 留一点余量取 860。超了就把后面的小件换到下一行。
+/// 设置面板在一行里能用的**水平预算**：视口宽 − 外层 padding 44 − 卡片 padding 28
+/// − 滚动条 8。
 ///
 /// ⚠️ iced **没有 flex-wrap**（`Row` 不会自动折行），所以只能自己按估算宽度装行。
 /// 估算用的是"字数 × 12.5 + 余量"—— 对中文 12–13px 的标签足够准，
 /// 宁可早换一行，也不要横向溢出被裁掉。
-const SETTINGS_ROW_BUDGET: f32 = 860.0;
+///
+/// 用**视口宽**而不是常量：窗口拉宽时那一行要能**合并回一行**（用户 2026-10-29）。
+pub(super) fn row_budget(viewport_w: f32) -> f32 {
+    (viewport_w - 44.0 - 28.0 - 8.0).max(280.0)
+}
 
-/// 设置面板的**最大高度**：窗口高 900 − 上下各 56 的留白（见 `view.rs` 的
+/// 设置面板的**最大高度**：视口高 − 上下各 56 的留白（见 `view.rs` 的
 /// `.padding([56.0, 22.0])`）再留一点余量，超出就由内部 `scrollable` 滚动。
-const SETTINGS_MAX_H: f32 = 900.0 - 2.0 * 56.0 - 8.0;
+pub(super) fn panel_max_h(viewport_h: f32) -> f32 {
+    (viewport_h - 2.0 * 56.0 - 8.0).max(200.0)
+}
 
 /// 估算一段文字占多宽（12–13px 字号）
 fn w_text(s: &str) -> f32 {
@@ -50,6 +56,9 @@ impl State {
     }
 
     pub(super) fn settings_panel(&self) -> Element<'_, Message> {
+        // 每次重建视图都按**当前视口**算一次：窗口拉宽 ⇒ 那一行合并、面板变高
+        let budget = row_budget(self.viewport.0);
+        let max_h = panel_max_h(self.viewport.1);
         // ① 工作精度
         let precision_row = row![
             self.setting_label(t("工作精度"), SETTING_LABEL_W),
@@ -124,8 +133,7 @@ impl State {
         .align_y(Alignment::Center)
         .into();
         font_items.push((w_text(&size_label) + 110.0 + 44.0 + 16.0, size_group));
-        let font_row: Element<'_, Message> =
-            Self::pack_rows(font_items, SETTINGS_ROW_BUDGET, 6.0).into();
+        let font_row: Element<'_, Message> = Self::pack_rows(font_items, budget, 6.0).into();
 
         // ④ 主题（用户要求："深色浅色的按钮放到设置里" —— 原来在工具条上）。
         let theme_row = row![
@@ -198,7 +206,7 @@ impl State {
                     132.0,
                 ),
             ],
-            SETTINGS_ROW_BUDGET,
+            budget,
             10.0,
         )
         .into();
@@ -236,7 +244,7 @@ impl State {
                     132.0,
                 ),
             ],
-            SETTINGS_ROW_BUDGET,
+            budget,
             10.0,
         )
         .into();
@@ -411,7 +419,7 @@ impl State {
         )
         .width(Length::Fill)
         // 面板最高不超过"窗口高度 − 上下留白"（56×2），超出就滚动
-        .max_height(SETTINGS_MAX_H)
+        .max_height(max_h)
         .padding([12, 14])
         // ⚠️ 用 `dialog`（**接近不透明**的浮层样式）而不是 `panel`：
         // 玻璃面板的 alpha 只有 0.5 上下，下面的历史文字会透上来，

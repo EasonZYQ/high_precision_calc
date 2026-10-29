@@ -281,6 +281,12 @@ pub struct State {
     tri_result: Option<String>,
     /// 界面文字缩放（跟随设置滑块；持久化在 `font_scale` 键里）
     font_scale: f32,
+    /// 当前窗口的**逻辑尺寸**。
+    ///
+    /// 只服务于"需要按宽度决定布局"的地方 —— 目前是设置面板的换行预算与
+    /// 最大高度（用户 2026-10-29："加上拖动窗口重建 UI"：窗口变宽时那一行要
+    /// **合并回一行**，而不是永远按 940 的固定预算折行）。
+    viewport: (f32, f32),
     /// 输入框内容（多行编辑器 —— 能读光标、能局部插入）
     /// 输入栏的**文本**。
     ///
@@ -730,6 +736,7 @@ impl State {
             tri_vals: Default::default(),
             tri_result: None,
             font_scale: prefs.font_scale,
+            viewport: (WINDOW_W, WINDOW_H),
             dark: prefs.dark,
             ui_scale: prefs.ui_scale.clamp(0.5, 1.0),
             allow_capture: prefs.capture,
@@ -1177,6 +1184,9 @@ impl State {
                 }
             }
             Message::WindowResized(size) => {
+                // 布局用的视口尺寸：**每次 resize 都更新**，设置面板据此重排
+                //（最大化也更新 —— 最大化时窗口更大，那一行本该合并回一行）
+                self.viewport = (size.width, size.height);
                 if !self.maximized {
                     self.win_geom.2 = size.width;
                     self.win_geom.3 = size.height;
@@ -2091,6 +2101,16 @@ impl State {
         };
         let out = self.evaluator.eval_blocking(src, lines);
         let _ = self.update(Message::Evaluated(out));
+    }
+
+    /// 设置"视口尺寸"（测试用：模拟窗口被拉宽/收窄）
+    pub fn set_viewport_for_test(&mut self, w: f32, h: f32) {
+        self.viewport = (w, h);
+    }
+
+    /// 设置面板一行的水平预算（测试用：验证它随窗口宽度变化）
+    pub fn settings_row_budget_for_test(&self) -> f32 {
+        settings::row_budget(self.viewport.0)
     }
 
     /// 渲染视图（测试用）

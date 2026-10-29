@@ -32,6 +32,29 @@ fn font_scale_applies_globally_and_persists() {
     let _ = st.update(Message::SetFontScale(1.0));
 }
 
+/// **窗口尺寸变化 ⇒ 设置面板按新宽度重排**（用户 2026-10-29："加上拖动窗口重建 UI"）。
+///
+/// 之前换行预算是个常量（按 940 窗口写死），窗口拉宽后那一行也不会合并回来。
+#[test]
+fn settings_budget_follows_window_width() {
+    let mut st = State::default();
+    let narrow = st.settings_row_budget_for_test();
+    let _ = st.update(Message::WindowResized(iced::Size::new(1400.0, 900.0)));
+    let wide = st.settings_row_budget_for_test();
+    assert!(
+        wide > narrow + 300.0,
+        "视口拉宽后预算应变大：{narrow} → {wide}"
+    );
+    let _ = st.update(Message::WindowResized(iced::Size::new(600.0, 700.0)));
+    assert!(
+        st.settings_row_budget_for_test() < narrow,
+        "视口变窄后预算应变小"
+    );
+    // 窄到极限也要留一个能排版的最小值（不能变成 0 或负数）
+    let _ = st.update(Message::WindowResized(iced::Size::new(80.0, 80.0)));
+    assert!(st.settings_row_budget_for_test() >= 280.0);
+}
+
 #[test]
 fn is_precise_reads_core_prefix() {
     assert!(is_precise("= 1 / 2"));

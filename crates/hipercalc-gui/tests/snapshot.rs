@@ -166,6 +166,27 @@ fn triangle_page_snapshot() {
     );
 }
 
+/// **窗口拉宽后设置面板要重排**（用户 2026-10-29："加上拖动窗口重建 UI"）。
+///
+/// 940 宽时"数学字体"那一行装不下、折成两行；拉到 1400 宽应当**合并回一行**，
+/// 面板的最大高度也跟着视口变高。
+#[test]
+fn settings_wide_snapshot() {
+    let _guard = lock();
+    let (w, h) = (1400.0f32, 900.0f32);
+    let mut state = populated_state();
+    state.set_dark_for_test(true);
+    state.set_viewport_for_test(w, h);
+    let _ = state.update(Message::ToggleSettings);
+
+    let snapshot = snap_sized(&state, w, h);
+    let path = format!("{SNAP_DIR}/settings-wide.png");
+    assert!(
+        snapshot.matches_image(&path).expect("快照比对/写入失败"),
+        "宽窗口下的设置面板与基线不一致：{path}"
+    );
+}
+
 /// **自绘标题栏（最大化态）**：第三个按钮要画成"还原"（两个错开的小方块）。
 ///
 /// 标题栏是窗口装饰之外的唯一"窗口级 UI"，它的三种图标（最小化 / 最大化 /
@@ -478,11 +499,16 @@ fn liquid_glass_refraction_snapshot() {
 /// `iced_core::Settings`，管默认字体/字体列表），要从 `iced_test::core` 拿；
 /// `Snapshot` 则只存在于 `iced_test::simulator` 模块里。
 fn snap(state: &State) -> iced_test::simulator::Snapshot {
+    snap_sized(state, VIEWPORT.0, VIEWPORT.1)
+}
+
+/// 指定尺寸渲染（窗口被拉宽/收窄时用）
+fn snap_sized(state: &State, w: f32, h: f32) -> iced_test::simulator::Snapshot {
     use iced_test::Simulator;
 
     let mut ui = Simulator::with_size(
         iced_test::core::Settings::default(),
-        iced::Size::new(VIEWPORT.0, VIEWPORT.1),
+        iced::Size::new(w, h),
         state.view_for_test(),
     );
     ui.snapshot(&state.theme_for_test()).expect("离屏渲染失败")
