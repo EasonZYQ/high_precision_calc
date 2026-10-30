@@ -201,11 +201,15 @@ impl W {
                 k += 1;
             }
         }
-        // 四舍五入：先加上 2^(FRAC-1)
+        // 四舍五入：被丢掉的最高位（第 FRAC-1 位）是 1 时，在**第 FRAC 位**加 1。
+        //
+        // ⚠️ 这里原来写的是 `carry = 1`（即在 limb FRAC/64 的**最低位**加 1 = 2^256），
+        // 折回后相当于每次都注入 2^(256-268) = 2^-12 的偏差 —— 比目标精度 2^-268 大了 200 多个数量级，
+        // 求根迭代永远收敛不了（这就是"W 版 DK 不发散但不收敛"的真正原因）。
         let (rb, rw) = ((FRAC - 1) / 64, (FRAC - 1) % 64);
         if prod[rb] & (1u64 << rw) != 0 {
-            let mut i = (FRAC) / 64;
-            let mut carry = 1u128;
+            let mut i = FRAC / 64;
+            let mut carry = 1u128 << (FRAC % 64);
             while i < 2 * LIMBS && carry != 0 {
                 let t = prod[i] as u128 + carry;
                 prod[i] = t as u64;
@@ -290,6 +294,30 @@ impl W {
             value: q,
             precision: prec,
         }
+    }
+
+    /// 近似成 f64（**仅供调试/诊断**：量级对了就够用，别拿它做运算）
+    pub fn to_f64_approx(&self) -> f64 {
+        let hi = self.w[LIMBS - 1] as f64;
+        let lo = if LIMBS >= 2 { self.w[LIMBS - 2] as f64 } else { 0.0 };
+        let mag = hi * 2f64.powi((LIMBS as i32 - 1) * 64) + lo * 2f64.powi((LIMBS as i32 - 2) * 64);
+        let v = mag * 2f64.powi(-(FRAC as i32));
+        if self.neg { -v } else { v }
+    }
+
+    /// 量级的十进制对数（**仅诊断用**，例：`-20.0` 表示约 1e-20）
+    pub fn mag_log10(&self) -> f64 {
+        let mut n = 0usize;
+        for i in (0..LIMBS).rev() {
+            if self.w[i] != 0 {
+                n = i * 64 + (64 - self.w[i].leading_zeros() as usize);
+                break;
+            }
+        }
+        if n == 0 {
+            return f64::NEG_INFINITY;
+        }
+        n as f64 * std::f64::consts::LOG10_2 - FRAC as f64 * std::f64::consts::LOG10_2
     }
 
     /// 取绝对值
