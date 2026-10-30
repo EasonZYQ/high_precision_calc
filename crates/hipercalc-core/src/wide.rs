@@ -402,6 +402,27 @@ mod tests {
         }
     }
 
+    /// **最小复现**：三次数值求值的每一步有没有溢出
+    #[test]
+    fn wide_horner_no_overflow() {
+        // 系数 c = [1, -6, 11, -6] ⇒ p(z) = c0 + c1·z + c2·z² + c3·z³
+        // （Horner 从最高项起，实现在 `poly_eval_*` 里）
+        let z = W::from_i64(2);
+        let cf = [W::from_i64(1), W::from_i64(-6), W::from_i64(11), W::from_i64(-6)];
+        let mut acc = W::zero();
+        for c in cf.iter().rev() {
+            let m = acc.mul(&z);
+            assert!(!acc.over && !m.over, "乘法溢出：acc={acc:?}");
+            acc = m.add(c);
+            assert!(!acc.over, "加法溢出：acc={acc:?}");
+        }
+        // 系数顺序是 [c0..c3] ⇒ Horner 从 c3 起：p(z) = -6z³ + 11z² - 6z + 1
+        // p(2) = -48 + 44 - 12 + 1 = -15
+        let want = W::from_i64(15).neg();
+        assert_eq!(acc.w, want.w, "p(2) 应为 -15，实际 {acc:?}");
+        assert_eq!(acc.neg, want.neg, "符号不对：{acc:?}");
+    }
+
     /// 单运算成本：`W` 的乘/加 vs `BigInt` 的对应运算（min-of-5，各 20000 次）
     #[test]
     #[ignore]
