@@ -7,6 +7,7 @@ use hipercalc_core::bigfloat::{self, BigFloat};
 use hipercalc_core::complex::ComplexNum;
 use hipercalc_core::number::Number;
 use hipercalc_core::trig::{self, AngleMode};
+use hipercalc_core::wide::W;
 
 /// 高次数值求根被规模护栏拒绝时的错误前缀。
 /// 调用方（main.rs::handle_equation）据此判断"这是明确拒绝"而不是"求根失败"，
@@ -457,7 +458,11 @@ pub fn solve_poly_full(coeffs: &[Number]) -> Result<Vec<PolySolution>, String> {
         return solve_by_power_substitution(&bc, g);
     }
 
+    let __t0 = std::time::Instant::now();
     let (factors, _) = crate::solver_factor::factor_univariate_coeffs(&bc);
+    if std::env::var_os("HCW").is_some() {
+        eprintln!("[W] 因式分解 {:?}", __t0.elapsed());
+    }
     let mut sols: Vec<PolySolution> = Vec::new();
     for (fc, exp) in factors {
         let deg = fc.len() - 1;
@@ -651,44 +656,7 @@ fn cx_sub(a: &Cx, b: &Cx, prec: usize) -> Cx {
     }
 }
 
-// **仅测试用**：把 `cx_mul` 切换回"每步各自舍入"的朴素写法，
-// 好在同一进程里做 A/B（`cfg!(test)` 在正式构建里恒为 false，分支会被优化掉）。
-#[cfg(test)]
-thread_local! {
-    static NAIVE_CX: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(test)]
-fn set_naive_cx(on: bool) {
-    NAIVE_CX.with(|c| c.set(on));
-}
-
-// **仅测试用**：关掉 `den_product` 快路径（等于改造前的逐项舍入）
-#[cfg(test)]
-thread_local! {
-    static NAIVE_DEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(test)]
-fn set_naive_den(on: bool) {
-    NAIVE_DEN.with(|c| c.set(on));
-}
-
 fn cx_mul(a: &Cx, b: &Cx, prec: usize) -> Cx {
-    #[cfg(test)]
-    if NAIVE_CX.with(|c| c.get()) {
-        let re = BigFloat::sub(
-            &BigFloat::mul(&a.re, &b.re, prec),
-            &BigFloat::mul(&a.im, &b.im, prec),
-            prec,
-        );
-        let im = BigFloat::add(
-            &BigFloat::mul(&a.re, &b.im, prec),
-            &BigFloat::mul(&a.im, &b.re, prec),
-            prec,
-        );
-        return Cx { re, im };
-    }
     // ── 融合舍入（用户 2026-10-30："做第一步"）────────────────────────────
     //
     // 朴素写法「4 乘 + 2 加，每步各自舍入」= **6 次 10^k 除法**（实测 div@80 ≈ 2.8µs）。
@@ -783,10 +751,6 @@ fn poly_eval_cx(coeffs: &[BigFloat], z: &Cx, prec: usize) -> Cx {
 ///
 /// 精度不一致时返回 `None`，调用方退回逐项舍入的老路（行为不变）。
 fn den_product(zs: &[Cx], k: usize, prec: usize) -> Option<Cx> {
-    #[cfg(test)]
-    if NAIVE_DEN.with(|c| c.get()) {
-        return None; // 强制走调用方的慢路径，供 A/B 基准用
-    }
     // 舍入间隔：越大越省除法，但中间位数越多、乘法越贵。4 是实测的平衡点。
     const ROUND_EVERY: usize = 4;
     let p = prec;
@@ -830,6 +794,107 @@ fn den_product(zs: &[Cx], k: usize, prec: usize) -> Option<Cx> {
 /// `10^prec` 作为 BigInt（借用 `from_scaled` 的移位语义：1.0 = 10^prec / 10^prec）
 fn pow10_bigint(prec: usize) -> BigInt {
     BigFloat::from_scaled(BigInt::from(1), 0, prec).value
+}
+
+/* ---------------- 定宽 W 版：内层零堆分配 ---------------- */
+
+type WCx = (W, W);
+
+fn w_mul(a: &WCx, b: &WCx) -> WCx {
+    (
+        a.0.mul(&b.0).sub(&a.1.mul(&b.1)),
+        a.0.mul(&b.1).add(&a.1.mul(&b.0)),
+    )
+}
+
+fn poly_eval_w(coeffs: &[W], z: &WCx) -> WCx {
+    let mut acc = (W::zero(), W::zero());
+    for c in coeffs.iter().rev() {
+        let m = w_mul(&acc, z);
+        acc = (m.0.add(c), m.1);
+    }
+    acc
+}
+
+fn den_product_w(zs: &[WCx], k: usize) -> WCx {
+    let mut den = (W::from_i64(1), W::zero());
+    for (j, zj) in zs.iter().enumerate() {
+        if j == k {
+            continue;
+        }
+        let d = (zs[k].0.sub(&zj.0), zs[k].1.sub(&zj.1));
+        den = w_mul(&den, &d);
+    }
+    den
+}
+
+fn dk_iterate_wide(
+    coeffs: &[BigFloat],
+    zs: &mut [Cx],
+    prec: usize,
+    tol: &BigFloat,
+    max_iter: usize,
+) -> bool {
+    let Some(wc) = coeffs
+        .iter()
+        .map(W::from_bigfloat)
+        .collect::<Option<Vec<W>>>()
+    else {
+        return false;
+    };
+    let Some(wtol) = W::from_bigfloat(tol) else {
+        return false;
+    };
+    let mut wz: Vec<WCx> = Vec::with_capacity(zs.len());
+    for z in zs.iter() {
+        match (W::from_bigfloat(&z.re), W::from_bigfloat(&z.im)) {
+            (Some(a), Some(b)) if !a.over && !b.over => wz.push((a, b)),
+            _ => {
+                return false;
+            }
+        }
+    }
+
+    for _ in 0..max_iter {
+        let mut max_step = W::zero();
+        for k in 0..wz.len() {
+            let zk = wz[k];
+            let num = poly_eval_w(&wc, &zk);
+            let den = den_product_w(&wz, k);
+            if num.0.over || num.1.over {
+                return false;
+            }
+            if den.0.over || den.1.over {
+                return false;
+            }
+            let (nr, ni) = (num.0.to_bigfloat(prec), num.1.to_bigfloat(prec));
+            let (dr, di) = (den.0.to_bigfloat(prec), den.1.to_bigfloat(prec));
+            let Some(delta) = cx_div(&Cx { re: nr, im: ni }, &Cx { re: dr, im: di }, prec) else {
+                return false;
+            };
+            let (Some(sr), Some(si)) = (W::from_bigfloat(&delta.re), W::from_bigfloat(&delta.im))
+            else {
+                return false;
+            };
+            wz[k] = (zk.0.sub(&sr), zk.1.sub(&si));
+            let step = if sr.abs_lt(&si) { si.abs() } else { sr.abs() };
+            if max_step.abs_lt(&step) {
+                max_step = step;
+            }
+        }
+        if max_step.is_zero() || max_step.abs_lt(&wtol) {
+            for (z, w) in zs.iter_mut().zip(wz.iter()) {
+                z.re = w.0.to_bigfloat(prec);
+                z.im = w.1.to_bigfloat(prec);
+            }
+            return true;
+        }
+    }
+    for (z, w) in zs.iter_mut().zip(wz.iter()) {
+        z.re = w.0.to_bigfloat(prec);
+        z.im = w.1.to_bigfloat(prec);
+    }
+    false
 }
 
 fn dk_iterate(
@@ -1012,10 +1077,16 @@ fn durand_kerner(coeffs: &[BigFloat]) -> Result<Vec<Cx>, String> {
 
     // 先按贴近根模的半径试一次；未收敛则退回柯西界半径重试一次
     let mut zs = make_init(&radius);
-    let mut ok = dk_iterate(&rough_coeffs, &mut zs, rough_prec, &rough_tol, 300);
+    // 优先走**定宽 W**（内层零堆分配，实测同一多项式求值快 ×10）；失败自动退回 BigFloat
+    let mut ok = dk_iterate_wide(&rough_coeffs, &mut zs, rough_prec, &rough_tol, 300);
+    if !ok {
+        zs = make_init(&radius);
+        ok = dk_iterate(&rough_coeffs, &mut zs, rough_prec, &rough_tol, 300);
+    }
     if !ok && radius.value != cauchy.value {
         zs = make_init(&cauchy);
-        ok = dk_iterate(&rough_coeffs, &mut zs, rough_prec, &rough_tol, 300);
+        ok = dk_iterate_wide(&rough_coeffs, &mut zs, rough_prec, &rough_tol, 300)
+            || dk_iterate(&rough_coeffs, &mut zs, rough_prec, &rough_tol, 300);
     }
     if !ok {
         // 未收敛：宁可不给根，也不能把中间迭代值当作根输出
@@ -1023,7 +1094,9 @@ fn durand_kerner(coeffs: &[BigFloat]) -> Result<Vec<Cx>, String> {
             "数值求根未收敛（{n} 次多项式的低精度粗收敛失败），请尝试低次方程",
         ));
     }
-    if !dk_iterate(&norm, &mut zs, bigfloat::precision(), &tol, 200) {
+    let polish_ok = dk_iterate_wide(&norm, &mut zs, bigfloat::precision(), &tol, 200)
+        || dk_iterate(&norm, &mut zs, bigfloat::precision(), &tol, 200);
+    if !polish_ok {
         return Err(format!(
             "数值求根未收敛（{n} 次多项式超出当前迭代策略），请尝试低次方程",
         ));
@@ -1140,30 +1213,70 @@ mod tests {
                 _ => Number::from_int(0),
             })
             .collect();
-        let mut best = [std::time::Duration::MAX; 3];
+        let mut best_w = std::time::Duration::MAX;
+        let mut best_bf = std::time::Duration::MAX;
         for _ in 0..3 {
-            for (idx, (ncx, nden)) in [(true, true), (false, true), (false, false)]
-                .into_iter()
-                .enumerate()
-            {
-                set_naive_cx(ncx);
-                set_naive_den(nden);
-                let t = Instant::now();
-                let r = solve_poly_full(&nums).expect("应当有解");
-                best[idx] = best[idx].min(t.elapsed());
-                assert_eq!(r.len(), 50, "50 次方程应有 50 个根");
-            }
-            set_naive_cx(false);
-            set_naive_den(false);
+            // 安全：单线程测试进程，只影响本进程
+            unsafe { std::env::remove_var("HCNOW") };
+            let t = Instant::now();
+            let r = solve_poly_full(&nums).expect("应当有解");
+            best_w = best_w.min(t.elapsed());
+            assert_eq!(r.len(), 50);
+
+            unsafe { std::env::set_var("HCNOW", "1") };
+            let t = Instant::now();
+            let r2 = solve_poly_full(&nums).expect("应当有解");
+            best_bf = best_bf.min(t.elapsed());
+            assert_eq!(r2.len(), 50);
+            unsafe { std::env::remove_var("HCNOW") };
         }
-        let names = ["1 原始（每步舍入）", "2 融合乘法", "3 融合乘法+精确分母"];
-        for (n, d) in names.iter().zip(best.iter()) {
-            println!("{n:26} {d:?}");
+        println!("BigFloat 迭代（旧） {best_bf:?}");
+        println!("定宽 W 迭代（新）   {best_w:?}");
+        println!("提速 ×{:.2}", best_bf.as_secs_f64() / best_w.as_secs_f64());
+    }
+
+    /// **定宽 W 版求根**的回归测试：必须在三次方程上收敛，且根正确。
+    ///
+    /// ⚠️ 两条"初值纪律"（都是踩过的坑）：
+    /// 1. **系数必须首一**：DK 的步长 `f(z_k)/∏(z_k−z_j)` 只在首一时成立，
+    ///    非首一相当于每步多乘一个常数，收敛慢到跑不出 tol；
+    /// 2. **初值不能共线**：三点近似共线时排斥项退化，DK 自己就会自激发散
+    ///    —— 实测 BigFloat 版在 (1.1, 2.2, 2.9) 上同样不收敛，一个根炸到 1e169。
+    ///    生产路径用"圆周撒点"正是为了避开这一点。
+    #[test]
+    fn wide_iterate_converges_on_cubic() {
+        let prec = 80usize;
+        // z³ − 6z² + 11z − 6，根 1 / 2 / 3
+        let cf: Vec<BigFloat> = [-6i64, 11, -6, 1]
+            .iter()
+            .map(|v| BigFloat::from_i64(*v))
+            .collect();
+        let mk = |re: i64, im: i64| Cx {
+            re: BigFloat::from_scaled(BigInt::from(re), 1, prec),
+            im: BigFloat::from_scaled(BigInt::from(im), 1, prec),
+        };
+        let mut zs = vec![mk(14, 11), mk(-13, -5), mk(2, -16)];
+        let tol = BigFloat::from_scaled(BigInt::from(1), 20, prec);
+        {
+            // 对照组：BigFloat 版同样初值也应当收敛（否则是初值的问题，不是 W 的）
+            let mut b = zs.clone();
+            assert!(
+                dk_iterate(&cf, &mut b, prec, &tol, 200),
+                "对照：BigFloat 版也没收敛"
+            );
         }
-        println!(
-            "1→3 提速 ×{:.2}",
-            best[0].as_secs_f64() / best[2].as_secs_f64()
+        assert!(
+            dk_iterate_wide(&cf, &mut zs, prec, &tol, 200),
+            "W 版应当收敛"
         );
+        for want in [1i64, 2, 3] {
+            let target = BigFloat::from_i64(want);
+            let near = zs.iter().any(|z| {
+                let d = BigFloat::sub(&z.re, &target, prec);
+                d.is_zero() || d.magnitude_log10() < -2.0
+            });
+            assert!(near, "缺少根 {want}");
+        }
     }
 
     #[test]

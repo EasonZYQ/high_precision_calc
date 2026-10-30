@@ -86,7 +86,11 @@ impl W {
             } else {
                 0
             };
-            let hi = if i >= words { self.w[i - words] << b } else { 0 };
+            let hi = if i >= words {
+                self.w[i - words] << b
+            } else {
+                0
+            };
             self.w[i] = lo | hi;
         }
     }
@@ -130,7 +134,10 @@ impl W {
     /// 加法
     pub fn add(&self, o: &Self) -> Self {
         if self.over || o.over {
-            return W { over: true, ..W::zero() };
+            return W {
+                over: true,
+                ..W::zero()
+            };
         }
         if self.neg == o.neg {
             let (w, over) = Self::add_mag(&self.w, &o.w);
@@ -177,7 +184,10 @@ impl W {
     /// 乘法：512×512 → 1024 位中间结果，右移 `FRAC` 并四舍五入
     pub fn mul(&self, o: &Self) -> Self {
         if self.over || o.over {
-            return W { over: true, ..W::zero() };
+            return W {
+                over: true,
+                ..W::zero()
+            };
         }
         if self.is_zero() || o.is_zero() {
             return W::zero();
@@ -272,7 +282,11 @@ impl W {
             *slot = (&cur & &mask).iter_u64_digits().next().unwrap_or(0);
             cur >>= 64;
         }
-        Some(W { w, neg, over: false })
+        Some(W {
+            w,
+            neg,
+            over: false,
+        })
     }
 
     /// 转回 `BigFloat`（按 `prec` 十进制位）：`q = M · 10^prec >> FRAC`
@@ -289,7 +303,11 @@ impl W {
         let num = m * BigInt::from(10).pow(prec as u32);
         let den = BigInt::from(1) << FRAC;
         let (q, r) = num.div_rem(&den);
-        let q = if (&r * 2u32).abs() >= den { q + 1u32 } else { q };
+        let q = if (&r * 2u32).abs() >= den {
+            q + 1u32
+        } else {
+            q
+        };
         crate::bigfloat::BigFloat {
             value: q,
             precision: prec,
@@ -299,7 +317,11 @@ impl W {
     /// 近似成 f64（**仅供调试/诊断**：量级对了就够用，别拿它做运算）
     pub fn to_f64_approx(&self) -> f64 {
         let hi = self.w[LIMBS - 1] as f64;
-        let lo = if LIMBS >= 2 { self.w[LIMBS - 2] as f64 } else { 0.0 };
+        let lo = if LIMBS >= 2 {
+            self.w[LIMBS - 2] as f64
+        } else {
+            0.0
+        };
         let mag = hi * 2f64.powi((LIMBS as i32 - 1) * 64) + lo * 2f64.powi((LIMBS as i32 - 2) * 64);
         let v = mag * 2f64.powi(-(FRAC as i32));
         if self.neg { -v } else { v }
@@ -321,6 +343,21 @@ impl W {
     }
 
     /// 取绝对值
+    /// 量级（十进制）：`-20.0` 表示约 1e-20。**仅诊断用**。
+    pub fn mag(&self) -> f64 {
+        let mut n = 0usize;
+        for i in (0..LIMBS).rev() {
+            if self.w[i] != 0 {
+                n = i * 64 + (64 - self.w[i].leading_zeros() as usize);
+                break;
+            }
+        }
+        if n == 0 {
+            return f64::NEG_INFINITY;
+        }
+        (n as f64 - FRAC as f64) * std::f64::consts::LOG10_2
+    }
+
     pub fn abs(&self) -> Self {
         W {
             w: self.w,
@@ -364,7 +401,9 @@ mod tests {
 
     /// 确定性伪随机
     fn lcg(s: &mut u64) -> u64 {
-        *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         *s >> 11
     }
 
@@ -391,11 +430,7 @@ mod tests {
             out <<= 64;
             out += BigInt::from(w.w[i]);
         }
-        if w.neg && !out.is_zero() {
-            -out
-        } else {
-            out
-        }
+        if w.neg && !out.is_zero() { -out } else { out }
     }
 
     /// **等价性**：`W` 的加减乘与 `BigInt` 的精确结果一致（误差 ≤ 1 个最低位）
@@ -436,7 +471,12 @@ mod tests {
         // 系数 c = [1, -6, 11, -6] ⇒ p(z) = c0 + c1·z + c2·z² + c3·z³
         // （Horner 从最高项起，实现在 `poly_eval_*` 里）
         let z = W::from_i64(2);
-        let cf = [W::from_i64(1), W::from_i64(-6), W::from_i64(11), W::from_i64(-6)];
+        let cf = [
+            W::from_i64(1),
+            W::from_i64(-6),
+            W::from_i64(11),
+            W::from_i64(-6),
+        ];
         let mut acc = W::zero();
         for c in cf.iter().rev() {
             let m = acc.mul(&z);
@@ -470,24 +510,33 @@ mod tests {
                 }
                 best = best.min(t.elapsed());
             }
-            println!(
-                "{name:12} {:.3} µs/op",
-                best.as_secs_f64() * 1e6 / 20000.0
-            );
+            println!("{name:12} {:.3} µs/op", best.as_secs_f64() * 1e6 / 20000.0);
         };
 
-        bench("W::mul", Box::new(move || {
-            std::hint::black_box(a.mul(&b));
-        }));
-        bench("W::add", Box::new(move || {
-            std::hint::black_box(a.add(&b));
-        }));
+        bench(
+            "W::mul",
+            Box::new(move || {
+                std::hint::black_box(a.mul(&b));
+            }),
+        );
+        bench(
+            "W::add",
+            Box::new(move || {
+                std::hint::black_box(a.add(&b));
+            }),
+        );
         let (am2, bm2) = (am.clone(), bm.clone());
-        bench("BigInt::mul", Box::new(move || {
-            std::hint::black_box(&am * &bm);
-        }));
-        bench("BigInt::add", Box::new(move || {
-            std::hint::black_box(&am2 + &bm2);
-        }));
+        bench(
+            "BigInt::mul",
+            Box::new(move || {
+                std::hint::black_box(&am * &bm);
+            }),
+        );
+        bench(
+            "BigInt::add",
+            Box::new(move || {
+                std::hint::black_box(&am2 + &bm2);
+            }),
+        );
     }
 }
