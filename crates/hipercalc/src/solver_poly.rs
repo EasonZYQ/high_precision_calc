@@ -644,7 +644,6 @@ struct Cx {
     im: BigFloat,
 }
 
-
 fn cx_sub(a: &Cx, b: &Cx, prec: usize) -> Cx {
     Cx {
         re: BigFloat::sub(&a.re, &b.re, prec),
@@ -652,7 +651,50 @@ fn cx_sub(a: &Cx, b: &Cx, prec: usize) -> Cx {
     }
 }
 
+// **仅测试用**：把 `cx_mul` 切换回"每步各自舍入"的朴素写法，
+// 好在同一进程里做 A/B（`cfg!(test)` 在正式构建里恒为 false，分支会被优化掉）。
+#[cfg(test)]
+thread_local! {
+    static NAIVE_CX: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn set_naive_cx(on: bool) {
+    NAIVE_CX.with(|c| c.set(on));
+}
+
 fn cx_mul(a: &Cx, b: &Cx, prec: usize) -> Cx {
+    #[cfg(test)]
+    if NAIVE_CX.with(|c| c.get()) {
+        let re = BigFloat::sub(
+            &BigFloat::mul(&a.re, &b.re, prec),
+            &BigFloat::mul(&a.im, &b.im, prec),
+            prec,
+        );
+        let im = BigFloat::add(
+            &BigFloat::mul(&a.re, &b.im, prec),
+            &BigFloat::mul(&a.im, &b.re, prec),
+            prec,
+        );
+        return Cx { re, im };
+    }
+    // ── 融合舍入（用户 2026-10-30："做第一步"）────────────────────────────
+    //
+    // 朴素写法「4 乘 + 2 加，每步各自舍入」= **6 次 10^k 除法**（实测 div@80 ≈ 2.8µs）。
+    // 而 `BigFloat.value` 是 BigInt 定点数（真实值 = value / 10^precision），
+    // 所以可以先用 BigInt **精确**算出 `A·B·10^(pa+pb)`，最后每个分量只折算一次：
+    // **6 次除法 → 2 次**，数值上只差"中间不舍入"的那一点点（更准，不是更差）。
+    let (pa, pb) = (a.re.precision, b.re.precision);
+    if pa == pb && a.im.precision == pa && b.im.precision == pb {
+        let (ar, ai, br, bi) = (&a.re.value, &a.im.value, &b.re.value, &b.im.value);
+        let re = ar * br - ai * bi;
+        let im = ar * bi + ai * br;
+        return Cx {
+            re: BigFloat::from_scaled(re, pa + pb, prec),
+            im: BigFloat::from_scaled(im, pa + pb, prec),
+        };
+    }
+    // 精度不一致（极少见：初值/常数项混进来时）：走原来的逐步舍入，行为不变
     let re = BigFloat::sub(
         &BigFloat::mul(&a.re, &b.re, prec),
         &BigFloat::mul(&a.im, &b.im, prec),
@@ -936,8 +978,7 @@ mod tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
-    /// **多项式求值**的 A/B（同进程 min-of-3）：旧写法把实常数也塞进 `cx_add`，
-    /// 白算一次虚部加法（大数里一次加法 = 一次 10^k 除法）。
+    /// **cx_mul 融合舍入** 的 A/B：朴素写法（6 次 10^k 除法）vs 融合（2 次）。
     ///
     /// `cargo test --release -p hipercalc --lib poly_eval_bench -- --ignored --nocapture`
     #[test]
@@ -953,43 +994,88 @@ mod tests {
             re: BigFloat::div(&BigFloat::from_u64(7), &BigFloat::from_u64(10), 80),
             im: BigFloat::div(&BigFloat::from_u64(9), &BigFloat::from_u64(10), 80),
         };
-        let old_eval = |z: &Cx| -> Cx {
+        // 朴素：每步各自舍入（改造前的写法）
+        let naive_eval = |z: &Cx| -> Cx {
             let mut acc = Cx {
                 re: BigFloat::from_u64(0),
                 im: BigFloat::from_u64(0),
             };
             for c in coeffs.iter().rev() {
-                let m = cx_mul(&acc, z, 80);
+                let re = BigFloat::sub(
+                    &BigFloat::mul(&acc.re, &z.re, 80),
+                    &BigFloat::mul(&acc.im, &z.im, 80),
+                    80,
+                );
+                let im = BigFloat::add(
+                    &BigFloat::mul(&acc.re, &z.im, 80),
+                    &BigFloat::mul(&acc.im, &z.re, 80),
+                    80,
+                );
                 acc = Cx {
-                    re: BigFloat::add(&m.re, c, 80),
-                    im: BigFloat::add(&m.im, &BigFloat::from_u64(0), 80),
+                    re: BigFloat::add(&re, c, 80),
+                    im: BigFloat::add(&im, &BigFloat::from_u64(0), 80),
                 };
             }
             acc
         };
-        for (name, f) in [
-            (
-                "旧（cx_add）",
-                &(|z: &Cx| old_eval(z)) as &dyn Fn(&Cx) -> Cx,
-            ),
-            (
-                "新（省虚部）",
-                &(|z: &Cx| poly_eval_cx(&coeffs, z, 80)) as &dyn Fn(&Cx) -> Cx,
-            ),
-        ] {
-            let mut best = std::time::Duration::MAX;
-            for _ in 0..3 {
-                let t = Instant::now();
-                for _ in 0..2000 {
-                    let _ = f(&z);
-                }
-                let d = t.elapsed();
-                if d < best {
-                    best = d;
-                }
+        let mut best_naive = std::time::Duration::MAX;
+        let mut best_fused = std::time::Duration::MAX;
+        for _ in 0..3 {
+            let t = Instant::now();
+            for _ in 0..2000 {
+                let _ = naive_eval(&z);
             }
-            println!("{name:16} 2000 次求值 {:?}", best);
+            best_naive = best_naive.min(t.elapsed());
+
+            let t = Instant::now();
+            for _ in 0..2000 {
+                let _ = poly_eval_cx(&coeffs, &z, 80);
+            }
+            best_fused = best_fused.min(t.elapsed());
         }
+        println!("朴素（6 次除法） 2000 次求值 {best_naive:?}");
+        println!("融合（2 次除法） 2000 次求值 {best_fused:?}");
+        println!(
+            "提速 ×{:.2}",
+            best_naive.as_secs_f64() / best_fused.as_secs_f64()
+        );
+    }
+
+    /// **整个求根流程**的 A/B（同进程 min-of-3）：融合舍入前 vs 后。
+    ///
+    /// `cargo test --release -p hipercalc --lib root_solver_bench -- --ignored --nocapture`
+    #[test]
+    #[ignore = "性能基准，按需手动跑"]
+    fn root_solver_bench() {
+        use std::time::Instant;
+        let nums: Vec<Number> = (0..=50)
+            .map(|i| match i {
+                0 => Number::from_int(1),
+                1 => Number::from_int(-2),
+                50 => Number::from_int(1),
+                _ => Number::from_int(0),
+            })
+            .collect();
+        let mut best_naive = std::time::Duration::MAX;
+        let mut best_fused = std::time::Duration::MAX;
+        for _ in 0..3 {
+            set_naive_cx(true);
+            let t = Instant::now();
+            let r = solve_poly_full(&nums).expect("应当有解");
+            best_naive = best_naive.min(t.elapsed());
+            set_naive_cx(false);
+
+            let t = Instant::now();
+            let r2 = solve_poly_full(&nums).expect("应当有解");
+            best_fused = best_fused.min(t.elapsed());
+            assert_eq!(r.len(), r2.len(), "两种写法根数必须一致");
+        }
+        println!("朴素（每步舍入） {best_naive:?}");
+        println!("融合（末位舍入） {best_fused:?}");
+        println!(
+            "提速 ×{:.2}",
+            best_naive.as_secs_f64() / best_fused.as_secs_f64()
+        );
     }
 
     #[test]

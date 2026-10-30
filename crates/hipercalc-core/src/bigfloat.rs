@@ -328,6 +328,41 @@ impl BigFloat {
     }
 
     /// 四舍五入到指定位数并返回
+    /// 由**定点整数**构造：`value / 10^src_prec` 这个精确值，再折算到 `prec` 位。
+    ///
+    /// 为什么需要它：`value` 是 `BigInt` 定点数（真实值 = `value / 10^precision`），
+    /// 而复数乘法的两个分量 `A·B·10^(pa+pb)` 可以直接用 **BigInt 精确累加**，
+    /// 最后每个分量只折算一次 —— 把 4 乘 2 加里的 **6 次 10^k 除法降到 2 次**。
+    /// 这是 `solver_poly::cx_mul` 快 2~3 倍的全部秘密（见 change_log120）。
+    ///
+    /// - `prec >= src_prec`：左移（乘 10^k），**精确无损**；
+    /// - `prec < src_prec`：除以 10^k 并四舍五入（一次除法）。
+    pub fn from_scaled(value: BigInt, src_prec: usize, prec: usize) -> BigFloat {
+        if prec >= src_prec {
+            let diff = prec - src_prec;
+            return BigFloat {
+                value: if diff == 0 {
+                    value
+                } else {
+                    value * pow10(diff)
+                },
+                precision: prec,
+            };
+        }
+        let scale = pow10(src_prec - prec);
+        let is_neg = value.is_negative();
+        let abs = value.abs();
+        let (q, rem) = abs.div_rem(&scale);
+        let mut out = if &rem * 2u32 >= scale { q + 1u32 } else { q };
+        if is_neg {
+            out = -out;
+        }
+        BigFloat {
+            value: out,
+            precision: prec,
+        }
+    }
+
     pub fn rounded(&self, target_prec: usize) -> Self {
         let mut result = self.clone();
         result.round_to(target_prec);
