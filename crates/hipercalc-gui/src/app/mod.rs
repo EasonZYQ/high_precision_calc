@@ -1442,12 +1442,27 @@ impl State {
     /// 副标题走 `i18n`（中文"超高精度计算器"/英文"High-Precision Calculator"），
     /// 品牌名 `HiPerCalc` 是专有名词，不翻译。
     fn titlebar_area(&self) -> Element<'_, Message> {
-        crate::chrome::titlebar(
+        let bar = crate::chrome::titlebar(
             "HiPerCalc".to_string(),
             t("超高精度计算器"),
             self.maximized,
             Message::Chrome,
-        )
+        );
+        // ⚠️ **透传模式下标题栏要垫一层淡底**：Windows 上标题栏下面是抓来的桌面帧
+        // （或氛围底），文字有承托；Linux/macOS 透传时下面是**裸壁纸**，
+        // 白字压到浅色壁纸上直接看不见。这里补一层半透明主题底色。
+        if theme::desktop_passthrough() {
+            let c = theme::colors();
+            container(bar)
+                .width(Length::Fill)
+                .style(move |_t| container::Style {
+                    background: Some(Background::Color(c.backdrop.scale_alpha(0.72))),
+                    ..container::Style::default()
+                })
+                .into()
+        } else {
+            bar
+        }
     }
 
     /// 窗口栏的意图 → 系统窗口命令。
