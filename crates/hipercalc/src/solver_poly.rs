@@ -663,6 +663,17 @@ fn set_naive_cx(on: bool) {
     NAIVE_CX.with(|c| c.set(on));
 }
 
+// **仅测试用**：关掉 `den_product` 快路径（等于改造前的逐项舍入）
+#[cfg(test)]
+thread_local! {
+    static NAIVE_DEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn set_naive_den(on: bool) {
+    NAIVE_DEN.with(|c| c.set(on));
+}
+
 fn cx_mul(a: &Cx, b: &Cx, prec: usize) -> Cx {
     #[cfg(test)]
     if NAIVE_CX.with(|c| c.get()) {
@@ -756,6 +767,67 @@ fn poly_eval_cx(coeffs: &[BigFloat], z: &Cx, prec: usize) -> Cx {
 
 /// Durand-Kerner 单阶段迭代（就地更新 zs），返回是否在步数上限内收敛。
 /// `prec` 为该阶段的运算精度，`tol` 为最大单步长阈值。
+/// `∏_{j≠k} (z_k − z_j)` —— Durand-Kerner 的分母。
+///
+/// **为什么单独写一个**：这一步是 O(n²) 里最贵的地方。朴素写法每对根做
+/// 一次复数减法（2 次舍入）+ 一次复数乘法（融合后 2 次舍入）⇒ n=50 时一轮
+/// 2500 对 × 4 = **1 万次 10^k 除法**。
+///
+/// 这里全部用 **BigInt 精确累乘**（同精度的定点数相减不需要任何折算），
+/// 只每隔 `ROUND_EVERY` 项把规模折回 `prec` 位一次：
+/// 除法次数从"每对 4 次"降到"每 4 对 2 次" —— 约 **8 倍**的减少。
+///
+/// 精度不一致时返回 `None`，调用方退回逐项舍入的老路（行为不变）。
+fn den_product(zs: &[Cx], k: usize, prec: usize) -> Option<Cx> {
+    #[cfg(test)]
+    if NAIVE_DEN.with(|c| c.get()) {
+        return None; // 强制走调用方的慢路径，供 A/B 基准用
+    }
+    // 舍入间隔：越大越省除法，但中间位数越多、乘法越贵。4 是实测的平衡点。
+    const ROUND_EVERY: usize = 4;
+    let p = prec;
+    if zs
+        .iter()
+        .any(|z| z.re.precision != p || z.im.precision != p)
+    {
+        return None;
+    }
+    let one = pow10_bigint(p); // 1.0 在 p 位精度下的定点表示
+    let zero = BigInt::from(0);
+    let mut dr = one;
+    let mut di = zero;
+    let mut scale = p;
+    let mut count = 0usize;
+    for (j, zj) in zs.iter().enumerate() {
+        if j == k {
+            continue;
+        }
+        // 同尺度直接相减 —— 不需要折算
+        let ar = &zs[k].re.value - &zj.re.value;
+        let ai = &zs[k].im.value - &zj.im.value;
+        let nr = &dr * &ar - &di * &ai;
+        let ni = &dr * &ai + &di * &ar;
+        dr = nr;
+        di = ni;
+        scale += p;
+        count += 1;
+        if count.is_multiple_of(ROUND_EVERY) {
+            dr = BigFloat::from_scaled(dr, scale, p).value;
+            di = BigFloat::from_scaled(di, scale, p).value;
+            scale = p;
+        }
+    }
+    Some(Cx {
+        re: BigFloat::from_scaled(dr, scale, p),
+        im: BigFloat::from_scaled(di, scale, p),
+    })
+}
+
+/// `10^prec` 作为 BigInt（借用 `from_scaled` 的移位语义：1.0 = 10^prec / 10^prec）
+fn pow10_bigint(prec: usize) -> BigInt {
+    BigFloat::from_scaled(BigInt::from(1), 0, prec).value
+}
+
 fn dk_iterate(
     coeffs: &[BigFloat],
     zs: &mut [Cx],
@@ -771,15 +843,22 @@ fn dk_iterate(
         for k in 0..n {
             let zk = zs[k].clone();
             let num = poly_eval_cx(coeffs, &zk, prec);
-            let mut den = Cx {
-                re: BigFloat::from_u64(1),
-                im: BigFloat::from_u64(0),
-            };
-            for j in 0..n {
-                if j != k {
-                    den = cx_mul(&den, &cx_sub(&zk, &zs[j], prec), prec);
+            // 分母：优先走"BigInt 精确累乘、周期性折算"的快路径
+            let den = match den_product(zs, k, prec) {
+                Some(d) => d,
+                None => {
+                    let mut d = Cx {
+                        re: BigFloat::from_u64(1),
+                        im: BigFloat::from_u64(0),
+                    };
+                    for j in 0..n {
+                        if j != k {
+                            d = cx_mul(&d, &cx_sub(&zk, &zs[j], prec), prec);
+                        }
+                    }
+                    d
                 }
-            }
+            };
             if let Some(delta) = cx_div(&num, &den, prec) {
                 zs[k] = cx_sub(&zk, &delta, prec);
                 if max_step.value.abs() < delta.re.value.abs() {
@@ -1041,7 +1120,8 @@ mod tests {
         );
     }
 
-    /// **整个求根流程**的 A/B（同进程 min-of-3）：融合舍入前 vs 后。
+    /// **整个求根流程**的三档 A/B（同进程 min-of-3）：
+    /// ① 原始（每步舍入 + 逐项分母）② 融合乘法 ③ 融合乘法 + 精确分母。
     ///
     /// `cargo test --release -p hipercalc --lib root_solver_bench -- --ignored --nocapture`
     #[test]
@@ -1056,25 +1136,29 @@ mod tests {
                 _ => Number::from_int(0),
             })
             .collect();
-        let mut best_naive = std::time::Duration::MAX;
-        let mut best_fused = std::time::Duration::MAX;
+        let mut best = [std::time::Duration::MAX; 3];
         for _ in 0..3 {
-            set_naive_cx(true);
-            let t = Instant::now();
-            let r = solve_poly_full(&nums).expect("应当有解");
-            best_naive = best_naive.min(t.elapsed());
+            for (idx, (ncx, nden)) in [(true, true), (false, true), (false, false)]
+                .into_iter()
+                .enumerate()
+            {
+                set_naive_cx(ncx);
+                set_naive_den(nden);
+                let t = Instant::now();
+                let r = solve_poly_full(&nums).expect("应当有解");
+                best[idx] = best[idx].min(t.elapsed());
+                assert_eq!(r.len(), 50, "50 次方程应有 50 个根");
+            }
             set_naive_cx(false);
-
-            let t = Instant::now();
-            let r2 = solve_poly_full(&nums).expect("应当有解");
-            best_fused = best_fused.min(t.elapsed());
-            assert_eq!(r.len(), r2.len(), "两种写法根数必须一致");
+            set_naive_den(false);
         }
-        println!("朴素（每步舍入） {best_naive:?}");
-        println!("融合（末位舍入） {best_fused:?}");
+        let names = ["1 原始（每步舍入）", "2 融合乘法", "3 融合乘法+精确分母"];
+        for (n, d) in names.iter().zip(best.iter()) {
+            println!("{n:26} {d:?}");
+        }
         println!(
-            "提速 ×{:.2}",
-            best_naive.as_secs_f64() / best_fused.as_secs_f64()
+            "1→3 提速 ×{:.2}",
+            best[0].as_secs_f64() / best[2].as_secs_f64()
         );
     }
 
