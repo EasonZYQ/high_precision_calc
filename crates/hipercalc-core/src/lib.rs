@@ -42,6 +42,7 @@ pub mod calc_mode;
 pub mod cancel;
 pub mod complex;
 pub mod display;
+pub mod wide;
 pub mod matrix;
 pub mod number;
 pub mod quantity;
