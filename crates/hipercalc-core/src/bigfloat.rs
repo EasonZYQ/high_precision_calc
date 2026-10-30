@@ -1326,6 +1326,51 @@ impl From<BigInt> for BigFloat {
 
 #[cfg(test)]
 mod tests {
+    /// 微基准：`pi(prec)` 与几个常用运算的单次成本（同进程 min-of-20，避开机器噪声）
+    #[test]
+    #[ignore]
+    fn pi_micro_bench() {
+        use std::time::Instant;
+        for prec in [40usize, 80, 160] {
+            let mut best = std::time::Duration::MAX;
+            for _ in 0..20 {
+                let t = Instant::now();
+                let _ = BigFloat::pi(prec);
+                let d = t.elapsed();
+                if d < best {
+                    best = d;
+                }
+            }
+            println!("pi({prec}) = {:?}", best);
+        }
+        // 对比：一次 80 位乘法
+        let a = BigFloat::div(
+            &BigFloat::from_u64(123456789),
+            &BigFloat::from_u64(987654321),
+            80,
+        );
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..2000 {
+            let t = Instant::now();
+            let _ = BigFloat::mul(&a, &a, 80);
+            let d = t.elapsed();
+            if d < best {
+                best = d;
+            }
+        }
+        println!("mul@80    = {:?}", best);
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..2000 {
+            let t = Instant::now();
+            let _ = BigFloat::div(&a, &a, 80);
+            let d = t.elapsed();
+            if d < best {
+                best = d;
+            }
+        }
+        println!("div@80    = {:?}", best);
+    }
+
     use super::*;
 
     #[test]

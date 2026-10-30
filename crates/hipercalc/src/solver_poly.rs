@@ -644,12 +644,6 @@ struct Cx {
     im: BigFloat,
 }
 
-fn cx_add(a: &Cx, b: &Cx, prec: usize) -> Cx {
-    Cx {
-        re: BigFloat::add(&a.re, &b.re, prec),
-        im: BigFloat::add(&a.im, &b.im, prec),
-    }
-}
 
 fn cx_sub(a: &Cx, b: &Cx, prec: usize) -> Cx {
     Cx {
@@ -705,15 +699,15 @@ fn poly_eval_cx(coeffs: &[BigFloat], z: &Cx, prec: usize) -> Cx {
         re: BigFloat::from_u64(0),
         im: BigFloat::from_u64(0),
     };
+    // ⚠️ 常数项是**实数**：不要走 `cx_add`（那会白算一次虚部加法 + 一次舍入）。
+    // 在大数里"一次加法"就是一次 `div_rem`（见 `BigFloat::round_to`），
+    // 50 次多项式每次求值省 50 次加法，DK/Aberth 几万轮下来是可观的。
     for c in coeffs.iter().rev() {
-        acc = cx_add(
-            &cx_mul(&acc, z, prec),
-            &Cx {
-                re: c.clone(),
-                im: BigFloat::from_u64(0),
-            },
-            prec,
-        );
+        let m = cx_mul(&acc, z, prec);
+        acc = Cx {
+            re: BigFloat::add(&m.re, c, prec),
+            im: m.im,
+        };
     }
     acc
 }
@@ -940,6 +934,62 @@ mod tests {
 
     fn set(items: &[&str]) -> std::collections::BTreeSet<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// **多项式求值**的 A/B（同进程 min-of-3）：旧写法把实常数也塞进 `cx_add`，
+    /// 白算一次虚部加法（大数里一次加法 = 一次 10^k 除法）。
+    ///
+    /// `cargo test --release -p hipercalc --lib poly_eval_bench -- --ignored --nocapture`
+    #[test]
+    #[ignore = "性能基准，按需手动跑"]
+    fn poly_eval_bench() {
+        use std::time::Instant;
+        let n = 50usize;
+        let mut coeffs: Vec<BigFloat> = vec![BigFloat::from_u64(0); n + 1];
+        coeffs[0] = BigFloat::from_u64(1);
+        coeffs[1] = BigFloat::from_u64(2).neg();
+        coeffs[n] = BigFloat::from_u64(1);
+        let z = Cx {
+            re: BigFloat::div(&BigFloat::from_u64(7), &BigFloat::from_u64(10), 80),
+            im: BigFloat::div(&BigFloat::from_u64(9), &BigFloat::from_u64(10), 80),
+        };
+        let old_eval = |z: &Cx| -> Cx {
+            let mut acc = Cx {
+                re: BigFloat::from_u64(0),
+                im: BigFloat::from_u64(0),
+            };
+            for c in coeffs.iter().rev() {
+                let m = cx_mul(&acc, z, 80);
+                acc = Cx {
+                    re: BigFloat::add(&m.re, c, 80),
+                    im: BigFloat::add(&m.im, &BigFloat::from_u64(0), 80),
+                };
+            }
+            acc
+        };
+        for (name, f) in [
+            (
+                "旧（cx_add）",
+                &(|z: &Cx| old_eval(z)) as &dyn Fn(&Cx) -> Cx,
+            ),
+            (
+                "新（省虚部）",
+                &(|z: &Cx| poly_eval_cx(&coeffs, z, 80)) as &dyn Fn(&Cx) -> Cx,
+            ),
+        ] {
+            let mut best = std::time::Duration::MAX;
+            for _ in 0..3 {
+                let t = Instant::now();
+                for _ in 0..2000 {
+                    let _ = f(&z);
+                }
+                let d = t.elapsed();
+                if d < best {
+                    best = d;
+                }
+            }
+            println!("{name:16} 2000 次求值 {:?}", best);
+        }
     }
 
     #[test]
