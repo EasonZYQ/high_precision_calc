@@ -193,7 +193,11 @@ jobs:
             | macOS Apple Silicon | `hipercalc-gui-macos-aarch64` |
             | Linux x86_64 | `hipercalc-gui-linux-x86_64` |
 
-            Linux 的 GUI 依赖系统库：`sudo apt install libxkbcommon-x11-0 libwayland-client0`（玻璃质感只在 Windows 可用，其它平台自动退回"关闭"）。
+            Linux 的 GUI 依赖系统库：`sudo apt install libxkbcommon-x11-0 libwayland-client0`。
+
+            **关于玻璃质感**：Windows 上由应用自己抓屏做模糊/折射；Linux / macOS 上抓不到桌面帧，
+            改为**窗口透传**（窗口真透明、面板半透明，桌面由合成器合成，需要合成器；KWin 可给窗口
+            加一条「强制模糊」规则获得模糊）。
 
             **Linux / macOS 需要先加可执行位**（GitHub 不保留它）：
 

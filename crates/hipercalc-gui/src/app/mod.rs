@@ -720,6 +720,14 @@ impl State {
         theme::set_glass(prefs.glass);
         theme::set_glass_tint(prefs.glass_tint);
         theme::set_texture(theme::Texture::from_key(&prefs.texture));
+        // 非 Windows 的玻璃模式走"窗口透传"（没有抓屏 ⇒ 由合成器把桌面透上来）。
+        // 打一行日志，用户报"还是看不到背景"时能立刻确认走的是哪条路。
+        if theme::desktop_passthrough() {
+            eprintln!(
+                "[hipercalc-gui] 玻璃透传模式：本平台没有抓屏实现，窗口对桌面透明 \
+                 （需要合成器；KWin 可给窗口加「强制模糊」规则）"
+            );
+        }
         theme::set_glass2_blur(prefs.glass_blur);
         theme::set_glass2_tint(prefs.glass_tint2);
         theme::set_shadow(prefs.shadow);

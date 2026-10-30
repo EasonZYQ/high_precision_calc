@@ -113,7 +113,7 @@ crates/hipercalc-gui/    图形界面（Iced 0.14）：app / keypad / mathrender
   | `mathrender.rs` | MathIO 文本 → 真正的数学排版（分数竖排、根号顶线、幂上标）。**解析与渲染分离**，解析层是纯函数 |
   | `fonts.rs` | **内置字体**（`assets/fonts/`，见下节）+ 数学字体选择（进程级）+ `font_for` / `label` 的自适应分派 |
   | `theme.rs` | 色板令牌 + 全部样式函数 + 圆角定额。深/浅两套 WinUI3 令牌 |
-  | `backdrop.rs` | Windows DWM 亚克力 + **抓屏调度**（DXGI 优先 / GDI 兜底）+ `capture_ok` 截图开关。⚠️ 「允许截图」时 DXGI 帧里**有自己**，窗口那块用 `inpaint_self_rect`（四边插值）补掉 —— 不是填平色块 |
+  | `backdrop.rs` | **非 Windows 没有抓屏实现** ⇒ 玻璃模式改走"窗口透传"（`theme::desktop_passthrough()`：清屏色与根容器都设成透明，桌面由合成器合成，没有折射）。Windows DWM 亚克力 + **抓屏调度**（DXGI 优先 / GDI 兜底）+ `capture_ok` 截图开关。⚠️ 「允许截图」时 DXGI 帧里**有自己**，窗口那块用 `inpaint_self_rect`（四边插值）补掉 —— 不是填平色块 |
   | `refraction.rs` | **窗口边缘折射**：整窗一次 pass，离边 12% 的环带内按**单调拉扯**位移背景（见 `glass_wgsl.rs` 的 `glass_fold`） |
   | `glass_wgsl.rs` | **玻璃着色器的共用 WGSL**：背景多 tap 模糊 / 圆角矩形 SDF / **折痕 `glass_fold`**（直边 12% 环带内单调拉扯、`WIN_PULL=0.49` 贴着单调上限 + 角部方向转向角心）/ 窗口环带 `window_refract`。窗口折射与按键折射**逐字共用**这一份，避免两处公式漂移 |
   | `liquid.rs` | **液态玻璃**：每个面板/按键一次 pass（面板中间走"零位移快路径"）；uniform 按外观分槽缓存 |

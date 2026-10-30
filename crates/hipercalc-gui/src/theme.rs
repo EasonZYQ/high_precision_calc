@@ -148,6 +148,21 @@ pub fn acrylic() -> bool {
     ACRYLIC.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// **没有抓屏能力的平台**上，玻璃模式直接把窗口画成真透明，让合成器把桌面透上来。
+///
+/// 为什么这么做：Windows 能抓到桌面帧，模糊/折射都在应用内自己算；而
+/// Linux / macOS **拿不到帧**（抓屏实现是 Win32 专用的，见 `backdrop::platform`），
+/// 玻璃层于是只剩一层底色 —— 表现就是"选了玻璃质感但完全看不到背景"
+///（用户 2026-10-30 在 CachyOS 上报的正是这个）。
+///
+/// 改成透传后：窗口清成透明，面板仍是半透明色块，桌面由合成器合成 ——
+/// 观感接近 macOS 的 vibrancy（**没有折射**，因为折射需要背景纹理）。
+///
+/// ⚠️ 依赖合成器（KWin / Mutter / Piccom 都行）；纯 X11 无合成器时会看到黑底。
+pub fn desktop_passthrough() -> bool {
+    !cfg!(windows) && liquid_on()
+}
+
 /// 当前是否深色模式（由 `State` 写入，供样式函数读取）
 static DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
@@ -382,9 +397,17 @@ pub fn colors() -> Colors {
 pub fn theme(_state: &super::app::State) -> Theme {
     let dark = _state.dark;
     let c = Colors::of(dark);
+    // ⚠️ 透传模式下**清屏色必须是透明的**：iced 用 `palette.background` 清窗口，
+    // 不透明的话不管根容器怎么画，桌面都透不上来（第一版就是只改了根容器，
+    // 结果依旧是一片"氛围底色"）。
+    let win_bg = if desktop_passthrough() {
+        Color::TRANSPARENT
+    } else {
+        c.backdrop
+    };
     let palette = if dark {
         Palette {
-            background: c.backdrop,
+            background: win_bg,
             text: c.text,
             primary: c.accent,
             success: c.success,
@@ -393,7 +416,7 @@ pub fn theme(_state: &super::app::State) -> Theme {
         }
     } else {
         Palette {
-            background: c.backdrop,
+            background: win_bg,
             text: c.text,
             primary: c.accent,
             success: c.success,
@@ -679,7 +702,10 @@ pub fn root(_theme: &Theme) -> container::Style {
         // 根容器立刻退回**不透明的氛围底**，底下那层桌面图被完整盖住 ——
         // 用户实测："模糊轻度为 0 还是纯色，完全无法看到桌面"。
         // 强度 0 的语义是「不模糊」，不是「关掉背景」，所以它必须继续全透。
-        background: Some(if (acrylic() || bg_ready()) && texture() != Texture::Off {
+        background: Some(if desktop_passthrough() {
+            // Linux/macOS 的玻璃：**完全透**，桌面由合成器合成
+            Background::Color(Color::TRANSPARENT)
+        } else if (acrylic() || bg_ready()) && texture() != Texture::Off {
             Background::Color(c.backdrop_for(true))
         } else {
             ambient_background(&c)
@@ -1250,6 +1276,32 @@ pub fn accent_text(_theme: &Theme) -> text::Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **玻璃透传只在"没有抓屏能力"的平台上开**（用户 2026-10-30：CachyOS 上看不到背景）。
+    ///
+    /// Windows 绝不能透传 —— 那边是"抓屏 + 自绘"，窗口一透明，
+    /// 界面就变成一层浮在裸桌面上的半透明色块，反而更糟。
+    #[test]
+    fn passthrough_only_when_glass_and_no_capture() {
+        let saved = texture();
+        set_texture(Texture::Off);
+        assert!(!desktop_passthrough(), "关闭质感时永远不透传");
+
+        set_texture(Texture::Glass);
+        assert_eq!(
+            desktop_passthrough(),
+            !cfg!(windows),
+            "只有非 Windows 的玻璃模式才透传"
+        );
+
+        set_texture(Texture::Acrylic);
+        assert!(
+            !desktop_passthrough(),
+            "亚克力不走透传（Windows 上由 DWM 负责）"
+        );
+
+        set_texture(saved);
+    }
 
     #[test]
     fn palettes_have_expected_contrast_direction() {
