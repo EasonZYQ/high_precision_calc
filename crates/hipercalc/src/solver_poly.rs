@@ -698,8 +698,12 @@ fn cx_mul(a: &Cx, b: &Cx, prec: usize) -> Cx {
     let (pa, pb) = (a.re.precision, b.re.precision);
     if pa == pb && a.im.precision == pa && b.im.precision == pb {
         let (ar, ai, br, bi) = (&a.re.value, &a.im.value, &b.re.value, &b.im.value);
-        let re = ar * br - ai * bi;
-        let im = ar * bi + ai * br;
+        // 用**原地运算**（`-=` / `+=`）而不是 `x - y`：后者会为结果再分配一次，
+        // 而这条路径是求根循环里跑得最多的一段（见 change_log122）。
+        let mut re = ar * br;
+        re -= ai * bi;
+        let mut im = ar * bi;
+        im += ai * br;
         return Cx {
             re: BigFloat::from_scaled(re, pa + pb, prec),
             im: BigFloat::from_scaled(im, pa + pb, prec),
