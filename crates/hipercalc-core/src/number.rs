@@ -617,7 +617,7 @@ impl Number {
             return self.int_pow(e);
         }
 
-        // 复数底数或指数：只支持整数指数（快速幂，精确）；非整数指数暂不支持
+        // 复数底数或指数：整数指数走快速幂（精确）；非整数指数走主值 z^w = exp(w·ln z)（已支持）
         if self.is_complex() || exponent.is_complex() {
             // 指数不是「有理整数」时走复数幂的**主值**：z^w = exp(w·ln z)
             // （ln 取主支 ⇒ 结果是主值；整数指数继续走下面的精确快路，行为完全不变）

@@ -1,3 +1,8 @@
+//! **线性方程组**：高斯-约当消元（精确有理数优先，退化为浮点时走 `BigFloat`）。
+//!
+//! 被 `solver_fit`（拟合的法方程）与 `solver_nonlinear`（牛顿步的线性子问题）复用，
+//! 也是 `linsolve(...)` 的实现。
+
 use crate::parser::DisplayMode;
 use hipercalc_core::number::Number;
 

@@ -372,7 +372,29 @@ reported. The angle unit follows the current `/mode deg|rad`.
 
 These expand into ordinary expressions, so they compose freely (`diff(x^2,x)+1`); symbolic results are displayed as-is.
 
-## 21. Variables
+## 21. Variables and custom functions
+
+**Custom functions** — `f(x) = x^2 + 1` defines a function; afterwards `f(3)` is `10`.
+The number of parameters is **unlimited**: `g(x, y, z) = x + y*z`.
+
+Three rules (no hidden cases):
+
+1. **The name is a single lowercase letter** (`f`, `g`, `h`…). Every built-in is two letters or
+   longer (`sin`/`abs`/`gcd`), so a single letter can never collide with one.
+2. **Parameters must be bare variables** — `f(x)` or `g(x, y)`; `f(2) = …` is not a definition.
+3. **It only counts as a definition while the name is still undefined.** Once defined,
+   `f(x) = 0` goes back to **solving an equation** — "first time defines, later solves".
+
+| Command | Effect |
+|---|---|
+| `/fn` | list custom functions |
+| `/del f` | delete function `f` (lowercase; uppercase still deletes a variable) |
+| `/reset` | clear settings, variables and functions |
+
+Recursion is allowed but capped at **64 levels** (`g(x) = g(x) + 1` reports "too deep").
+Definitions are persisted as `fn:f(x) = x^2 + 1` and replayed on startup.
+
+### Variable storage
 
 `/let A = 3.5` stores a variable (**names must be uppercase**); variables **persist across restarts** and may hold
 numbers, complex values, matrices or dimensioned quantities. `ans` holds the previous result.

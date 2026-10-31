@@ -1,3 +1,11 @@
+//! **多项式求根**：系数提取、二次精确解、高次数值全复根（Durand-Kerner）、单根牛顿。
+//!
+//! 数值内核：优先走 `hipercalc_core::wide::W`（定宽栈上大数，**零堆分配**），
+//! 溢出/不收敛时自动退回 `BigFloat`。⚠️ 两条纪律写在 `wide_iterate_converges_on_cubic`
+//! 的注释里：**系数必须首一**、**初值不能共线**。
+//!
+//! 边界：`newton_solve` 也给非多项式方程（`solve_aux`）用，那条路径不走 `W`。
+
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};

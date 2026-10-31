@@ -1,3 +1,9 @@
+//! **多项式因式分解**（单/多元）：提取公因子、按变量分组、有理根与二次因式分解。
+//!
+//! 边界：只处理**多项式**（有理系数）；显示模式决定在有理数域还是实数域分解。
+//! 与 `solver_poly` 的关系：`solver_poly` 负责**求根**，这里负责**因式分解**，
+//! 两者共用 `extract_polynomial` 的系数提取。
+
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_rational::BigRational;
