@@ -630,6 +630,99 @@ mod tests {
         p
     }
 
+    /// **自定义函数的持久化闭环**：`save`（写盘）→ `load`（读回）→ **重放**（用解析器登记）。
+    ///
+    /// 为什么这条必须测：状态文件是跨进程的接口，一旦"存得进、读不回"，
+    /// 用户下次启动就会发现函数凭空消失 —— 而且只有重启才暴露，平时测不到。
+    ///
+    /// 做法：把 `USERPROFILE`/`HOME` 指到临时目录，冒充"用户主目录"，
+    /// 绝不碰真实的状态文件；用一个 `Drop` 守卫把环境变量还原，避免污染别的用例。
+    #[test]
+    fn user_fns_roundtrip_and_replay() {
+        struct HomeGuard {
+            dir: PathBuf,
+            old_pp: Option<std::ffi::OsString>,
+            old_home: Option<std::ffi::OsString>,
+        }
+        impl Drop for HomeGuard {
+            fn drop(&mut self) {
+                // 安全：进程内单线程测试（RUST_TEST_THREADS=1），且这里只还原自己改过的键
+                unsafe {
+                    match &self.old_pp {
+                        Some(v) => std::env::set_var("USERPROFILE", v),
+                        None => std::env::remove_var("USERPROFILE"),
+                    }
+                    match &self.old_home {
+                        Some(v) => std::env::set_var("HOME", v),
+                        None => std::env::remove_var("HOME"),
+                    }
+                }
+                let _ = std::fs::remove_dir_all(&self.dir);
+            }
+        }
+
+        let dir = tmp_path("home");
+        std::fs::create_dir_all(&dir).unwrap();
+        let guard = HomeGuard {
+            dir: dir.clone(),
+            old_pp: std::env::var_os("USERPROFILE"),
+            old_home: std::env::var_os("HOME"),
+        };
+        // 安全同 `Drop` 里的说明
+        unsafe {
+            std::env::set_var("USERPROFILE", &dir);
+            std::env::set_var("HOME", &dir);
+        }
+
+        let fns = vec![
+            "f(x, y) = x^2 + y".to_string(),
+            "g(x) = 2*x + 1".to_string(),
+        ];
+        let vars: BTreeMap<String, Number> = BTreeMap::new();
+        save(
+            DisplayMode::MathIO,
+            AngleMode::Radian,
+            CalcMode::Fast,
+            Lang::ZhCn,
+            true,
+            80,
+            20,
+            true,
+            false,
+            &vars,
+            &fns,
+            &[],
+        )
+        .expect("写状态文件失败");
+
+        // 真实路径确实落在临时目录里（防止守卫失效、误写用户文件）
+        let path = state_path().expect("应当能定位状态文件");
+        assert!(
+            path.starts_with(&dir),
+            "状态文件跑到测试目录之外了：{path:?}"
+        );
+
+        let (_, _, _, _, got) = load().expect("应当能读回状态文件");
+        assert_eq!(got, fns, "自定义函数定义没有原样读回");
+
+        // **重放**：与 CLI/GUI 的恢复逻辑一致 —— 每条原文交给同一个解析器
+        let mut ev = crate::parser::Evaluator::new();
+        for def in &got {
+            crate::parser::parse_and_eval(def, &mut ev).expect("定义应当能被重放");
+        }
+        assert_eq!(ev.user_fns.len(), 2, "重放后应有两条函数");
+        let v = ev
+            .evaluate(
+                &crate::parser::Parser::new("f(1, 2)")
+                    .parse_expression()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(hipercalc_core::display::format_mathio(&v), "3");
+
+        drop(guard);
+    }
+
     /// ⚠️ **本文件最重要的一条不变量**：GUI 写自己那几个键时，
     /// CLI 的键（变量表、颜色、模式…）必须**一个字都不能变**。
     ///

@@ -2756,6 +2756,9 @@ fn handle_mode(parts: &[&str], state: &mut AppState) {
 /// 生成一行的结果文本（供 REPL 与非交互入口共用）；返回 (文本, 是否错误)。
 /// 不做打印、不涉及计时——计时与输出由调用方负责。
 fn run_line(input: &str, state: &mut AppState) -> (String, bool) {
+    // ⚠️ 快照必须在**求值之前**取：`parse_and_eval` 内部就会把 `f(x)=…` 登记进函数表，
+    // 等进了下面那个 match 再取，前后永远相等 ⇒ 永远不落盘（踩过）。
+    let fns_before: Vec<String> = state.evaluator.user_fns.keys().cloned().collect();
     let parsed = parse_and_eval(input, &mut state.evaluator);
     match parsed {
         Ok(EvalResult::Value(result)) => {
@@ -2794,7 +2797,17 @@ fn run_line(input: &str, state: &mut AppState) -> (String, bool) {
         Ok(EvalResult::Fit(fit)) => (handle_fit(&fit, state), false),
         Ok(EvalResult::Triangle(tri)) => (handle_triangle(&tri, state), false),
         Ok(EvalResult::PrimeFac(n)) => (handle_primefac(&n, state), false),
-        Ok(EvalResult::Symbolic(expr)) => (handle_symbolic(&expr, state), false),
+        Ok(EvalResult::Symbolic(expr)) => {
+            // **自定义函数定义要立刻落盘**（用户 2026-10-31 实测：定义完重启就没了）。
+            // 判据是"函数表变了"，而不是"结果是 Symbolic" —— 后者也会被 diff/int
+            // 这类符号结果触发，没必要每次都写一遍状态文件。
+            let out = handle_symbolic(&expr, state);
+            let after: Vec<String> = state.evaluator.user_fns.keys().cloned().collect();
+            if fns_before != after {
+                persist_state(state);
+            }
+            (out, false)
+        }
         Err(e) => (
             format!("{}: {}", "错误".color(state.colors.error).bold(), e),
             true,
@@ -4506,6 +4519,46 @@ mod cli_tests {
     }
 
     /// `-V` / `--version` 要能被认出来（发版后用户自查版本）
+    /// **定义完立刻落盘**（用户 2026-10-31 实测的 bug：定义完重启就没了）。
+    ///
+    /// 这条守的是"谁负责触发持久化"：`parse_and_eval` 在**求值阶段**就把函数登记进表，
+    /// 所以快照必须取在 `run_line` 调用 `parse_and_eval` **之前** ——
+    /// 取在里面那个 match 里就永远相等，永远不落盘（我第一版就是这么写的）。
+    #[test]
+    fn definition_triggers_persist() {
+        // 用临时 HOME 隔离，绝不碰真实状态文件
+        let dir = std::env::temp_dir().join(format!("hipercalc-persist-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = std::env::var_os("USERPROFILE");
+        let old_home = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("USERPROFILE", &dir);
+            std::env::set_var("HOME", &dir);
+        }
+
+        let mut st = eq_state(trig::AngleMode::Radian);
+        let (out, err) = run_line("k(x, y) = x + y", &mut st);
+        assert!(!err, "{out}");
+        let path = state::state_path().expect("应当有状态文件路径");
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            text.contains("fn:k(x, y) = x + y"),
+            "定义后应立刻落盘，实际文件内容：\n{text}"
+        );
+
+        unsafe {
+            match old {
+                Some(v) => std::env::set_var("USERPROFILE", v),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+            match old_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn parse_args_recognizes_version_flag() {
         for f in ["-V", "--version"] {
