@@ -181,7 +181,7 @@ pub fn dark() -> bool {
 /// 用整数存是为了避开 `AtomicF32` 这种不存在的类型 —— 换算一次而已，
 /// 精度到 1% 对"通透程度"这种主观指标完全够用。
 ///
-/// 与 [`DARK`]、[`ACRYLIC`] 同一套理由：样式函数的签名是 `Fn(&Theme) -> Style`，
+/// 与 `DARK`、`ACRYLIC` 同一套理由：样式函数的签名是 `Fn(&Theme) -> Style`，
 /// 拿不到 `State`，所以这类"全局观感开关"只能走进程级静态量。
 /// **质感模式**（三选一，互斥生效）。
 ///
@@ -294,7 +294,7 @@ static GLASS_PERCENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8:
 /// - **底色**只拧一个旋钮：面板底色本身有多实。想要"更飘"就调低，想要"更稳、
 ///   字更好认"就调高。
 ///
-/// 默认 70 而不是 100：配合 [`ambient_background`] 的氛围底，70% 就能看出
+/// 默认 70 而不是 100：配合 `ambient_background` 的氛围底，70% 就能看出
 /// "面板是块玻璃"，而 100% 会让所有面板看起来还是不透明的色块。
 static GLASS_TINT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(70);
 
@@ -585,7 +585,7 @@ fn glass_with(c: &Colors, lift: f32, tint: f32, t: f32) -> container::Style {
 /// 两个色按 `t` 线性插值（`t = 0` 取 `base`，`t = 1` 取 `over`）。
 ///
 /// `Color` 没有内置的 `lerp`，而这里只需要 RGB 三个通道 —— 手算比拉一个依赖划算。
-/// 结果**强制不透明**：调用方（[`ambient_background`]）要的正是"实色"。
+/// 结果**强制不透明**：调用方（`ambient_background`）要的正是"实色"。
 fn mix(base: Color, over: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     Color {
@@ -598,7 +598,7 @@ fn mix(base: Color, over: Color, t: f32) -> Color {
 
 /// 两个色按 `t` 插值，**保留 `base` 的 alpha**。
 ///
-/// 与 [`mix`] 的区别：`mix` 强制不透明（那是给 [`ambient_background`] 用的，
+/// 与 [`mix`] 的区别：`mix` 强制不透明（那是给 `ambient_background` 用的，
 /// 氛围底色必须是实色，否则会透出桌面变成花屏）；而**面板底色本身是半透明的**，
 /// 掺白/掺黑之后必须保持原来的 alpha —— 否则玻璃模式一混就变成不透明，
 /// 等于把质感直接关掉了。
@@ -690,7 +690,7 @@ pub fn panel_low(_theme: &Theme) -> container::Style {
 }
 
 /// 窗口根容器：亚克力成功时**完全透明**（让 DWM 的模糊透上来 —— 那才是真正的
-/// liquid glass），否则铺一层[氛围底色][ambient_background]。
+/// liquid glass），否则铺一层氛围底色（`ambient_background`）。
 pub fn root(_theme: &Theme) -> container::Style {
     let c = colors();
     container::Style {

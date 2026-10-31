@@ -40,7 +40,7 @@ use crate::theme;
 /// 一个可排版的数学节点。
 ///
 /// 刻意保持最小：只覆盖 `format_mathio` 真正会产出的结构。遇到不认识的写法一律
-/// 降级成 [`Node::Raw`]（原样文本），**保证任何输入都能显示**，绝不 panic、绝不吞内容。
+/// 降级成 `Node::Raw`（原样文本），**保证任何输入都能显示**，绝不 panic、绝不吞内容。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
     /// 原样文本（数字、变量名、无法识别的片段）

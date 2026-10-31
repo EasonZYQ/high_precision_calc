@@ -20,7 +20,7 @@
 //! ```
 //!
 //! ④ 与函数弹窗是用户明确要求的两处（"下面应当加上虚拟键盘…旁边有函数按钮，
-//! 点一下弹出函数列表"）。函数列表用 [`stack`] 做成**浮层**：
+//! 点一下弹出函数列表"）。函数列表用 `stack` 做成**浮层**：
 //! iced 0.14 实测**没有可直接用的菜单/popup 组件**，`stack` 是唯一干净的做法。
 //!
 //! ## 光标插入
@@ -165,7 +165,7 @@ const INPUT_HEIGHT: f32 = 72.0;
 ///
 /// 必须显式给一个：用户要求"输入框的光标应当一直显示"。iced 只在**聚焦**时画光标，
 /// 所以要能对它做 `operation::focus` / `operation::is_focused`，
-/// 而这两个操作都得靠 id 定位（见 [`State::ensure_input_focus`]）。
+/// 而这两个操作都得靠 id 定位（见 `State::ensure_input_focus`）。
 /// 把 `a²` / `aᵇ` 这类键面拆成 `(底, 上标)`。
 ///
 /// 拆开排才能得到"上标"的观感：直接当普通文本排的话，`²` 与 `a` 等高，
@@ -388,7 +388,7 @@ pub struct State {
     glass_backup: f32,
     /// 玻璃**底色的浓度**：`0.0` = 完全透明，`1.0` = 完全不透明。
     ///
-    /// 与 [`State::glass`] 的分工（用户要求两者都要）：强度拧的是"整体玻璃效果"，
+    /// 与 `State::glass` 的分工（用户要求两者都要）：强度拧的是"整体玻璃效果"，
     /// 这一个只拧"面板底色有多实"。同样与 [`theme::set_glass_tint`] 双写。
     /// 亚克力模式的**底色浓度**（面板有多不透明）
     acrylic_tint: f32,
@@ -586,7 +586,7 @@ pub enum Message {
     CopyEntry(usize),
     /// 搜索框内容变化
     SearchChanged(String),
-    /// 几何节流的"末尾补写"（由 [`State::save_geom_throttled`] 的延迟任务发回）
+    /// 几何节流的"末尾补写"（由 `State::save_geom_throttled` 的延迟任务发回）
     SaveGeomNow,
     /// 切换「三角形求解」页（结果区）
     ToggleTriangle,
@@ -692,7 +692,7 @@ pub enum Message {
     /// 真正的循环由 [`Message::BgTick`] 承担，全局只有一条。
     CaptureBg,
     /// 窗口**被移动**了（附带新位置：只更新"记住的位置"，不重抓背景 —— 背景靠
-    /// uv 偏移跟手，见 [`State::bg_cycle`] 里"拖动中跳过抓屏"的说明）。
+    /// uv 偏移跟手，见 `State::bg_cycle` 里"拖动中跳过抓屏"的说明）。
     WindowMoved(iced::Point),
     /// 窗口**尺寸变化**（附带新尺寸：既要重抓背景，也要更新"记住的大小"）。
     WindowResized(iced::Size),
@@ -743,7 +743,7 @@ impl Default for State {
 
 /// 产品路径的入口：构造 + **启动时探测桌面模糊**。
 ///
-/// 探测走 Task（[`backdrop::probe`]）：一来 `EnumWindows` 反查需要窗口
+/// 探测走 Task（`backdrop::probe`）：一来 `EnumWindows` 反查需要窗口
 /// **已经创建**（这里拿不到 HWND），二来探测是阻塞的 FFI 调用，
 /// 不该占 UI 线程 —— 丢进 Task 后 runtime 会在线程池里跑。
 pub fn boot() -> (State, Task<Message>) {
@@ -2232,7 +2232,7 @@ impl State {
 
     /// **同步求值**（测试用）。
     ///
-    /// 产品路径是异步的（[`State::evaluate`] 返回 `Task`，结果稍后由
+    /// 产品路径是异步的（`State::evaluate` 返回 `Task`，结果稍后由
     /// [`Message::Evaluated`] 送回来）。但集成测试（`tests/` 目录，尤其是快照）
     /// 里没有 iced 的事件循环 —— `Task` 交出去就没人跑，历史永远空着。
     ///

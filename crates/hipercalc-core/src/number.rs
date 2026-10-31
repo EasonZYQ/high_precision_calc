@@ -1,3 +1,15 @@
+//! **数的双表示**：能精确就精确，不能精确才落到浮点。
+//!
+//! `Number` 的变体覆盖了这个计算器要处理的所有"数"：
+//! - `Exact`：`BigRational` 有理数（`1/3` 存成 1/3，不是 0.333…）；
+//! - `Approx`：`BigFloat` 近似值（无理数、三角、指数）；
+//! - 以及复数、矩阵、带量纲的值（`Complex` / `Matrix` / `Quantity`）。
+//!
+//! 运算规则是**逐级降级**：精确 ⊕ 精确 → 精确；只要有一边是近似 → 全走近似。
+//! 这是"能给出 `1/3` 就绝不给 `0.3333…`"这条产品承诺的实现基础。
+//!
+//! 边界：不做化简/排版（那是 `display` 与 `calculus::render` 的事）。
+
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_rational::BigRational;

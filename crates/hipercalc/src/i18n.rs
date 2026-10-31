@@ -193,7 +193,7 @@ pub fn fmt(template: &str, args: &[&str]) -> String {
     fill(target, &values)
 }
 
-/// 把 `{n}` 占位符替换为 values[n]（越界或非数字占位符原样保留）
+/// 把 `{n}` 占位符替换为 `values[n]`（越界或非数字占位符原样保留）
 fn fill(template: &str, values: &[String]) -> String {
     let mut out = String::with_capacity(template.len() + 16);
     let mut chars = template.chars().peekable();

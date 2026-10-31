@@ -96,7 +96,7 @@ fn poly_const(r: &BigRational) -> Poly {
     poly_of(vec![(Vec::new(), r.clone())])
 }
 
-/// 线性多项式: coeffs[0..n] 为各变量系数，coeffs[n]（若有）为常数项
+/// 线性多项式: `coeffs[0..n]` 为各变量系数，`coeffs[n]`（若有）为常数项
 fn poly_linear(vars: &[char], coeffs: &[BigRational]) -> Poly {
     let mut terms = Vec::new();
     for (i, c) in coeffs.iter().enumerate() {
@@ -697,7 +697,7 @@ const QUADRATIC_WORK_BUDGET: usize = 40_000;
 
 /// 从首一整数多项式 f 的升幂系数中提取一个二次因子 (A x^2 + B x + C)。
 /// A | 首项系数，C | 常数项，B 在柯西界内枚举（超上限则截断并置 truncated）。
-/// 返回 (Some((g 升幂 [C,B,A], 商升幂)) 或 None, 是否发生截断)。
+/// 返回 (Some((g 升幂 `[C,B,A]`, 商升幂)) 或 None, 是否发生截断)。
 fn extract_quadratic_factor(
     coeffs: &[BigRational],
 ) -> (Option<(Vec<BigRational>, Vec<BigRational>)>, bool) {

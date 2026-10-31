@@ -26,7 +26,7 @@
 //!   队列（[`Command`]），由 worker 在执行请求的间隙顺带应用 —— 这样 UI 改设置是
 //!   非阻塞的，且不必给 `Session` 加锁。
 //! - 计时用 `std::time::Instant`，与 CLI 的 `Timing` 同一套口径（整秒；不足 1 秒
-//!   显示 `<1秒`）。文本格式化在 UI 侧（[`crate::app::elapsed_text`]），因为
+//!   显示 `<1秒`）。文本格式化在 UI 侧（`crate::app::elapsed_text`），因为
 //!   文案要跟着界面语言走，而语言是 UI 侧的进程级开关。
 //!
 //! ## 为什么不是 `Arc<Mutex<Session>>`

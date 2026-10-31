@@ -1,3 +1,36 @@
+//! # hipercalc —— 高精度计算器的**表达式层与命令行外壳**
+//!
+//! 这一层负责"读懂人话、算出来、说得清楚"，数值运算本身交给 `hipercalc-core`。
+//!
+//! ## 一次输入经过的路径
+//!
+//! ```text
+//! 用户输入 "x^2-2x+1=0"
+//!   │
+//!   ├─ parse_and_eval（parser.rs）  → Expr 树；顺手识别自定义函数定义
+//!   │
+//!   ├─ run_line（本文件）           → 按 EvalResult 分派到具体求解器
+//!   │     ├─ 数值/符号  → Evaluator::evaluate
+//!   │     ├─ 方程       → solver_poly / solver_linear / 数值初值扫描
+//!     │     ├─ 不等式     → solver_ineq
+//!     │     ├─ 拟合       → solver_fit
+//!     │     └─ 三角形     → solver_triangle
+//!   │
+//!   └─ 渲染（calculus::render / display）→ 带颜色的输出；顺带写入 history 与状态文件
+//! ```
+//!
+//! ## 与 GUI 的关系
+//!
+//! `hipercalc-gui` **不直接调用**这里的 `run_*`，而是用 [`session::Session`]
+//! （它内部持有 `AppState`，走的就是 `run_line`）—— 命令行与图形界面共享同一套语义，
+//! 不会出现"同一个式子在两边算得不一样"。
+//!
+//! ## 边界
+//!
+//! - 不实现数值算法（`hipercalc-core` 负责 + `solver_*` 做求解策略）；
+//! - 不做界面渲染（`hipercalc-gui` 负责），只产出**纯文本**结果；
+//! - 命令（`/help`、`/let`、`/fn`…）都在本文件 `handle_command` 一带。
+
 // 数值底座已拆成独立 crate `hipercalc-core`（可发布）。
 // 这里用 `use` 把模块名带进本文件作用域：lib.rs 里有大量裸路径（`bigfloat::`、`trig::`、
 // `calc_mode::`…）原来是靠 crate 根的 `mod` 声明解析的，拆走后必须显式引入。

@@ -20,9 +20,9 @@
 //!
 //! ## 结构
 //!
-//! - [`titlebar`]：一行标题（logo + 名字 + 副标题）+ 三个按钮，整行可拖动；
-//! - [`resize_overlay`]：铺在整窗之上的 8 条热区（只占边缘几像素，中间不挡事件）；
-//! - [`ChromeMessage`]：本模块只产这几种意图，转成应用消息由 `app.rs` 决定。
+//! - `titlebar`：一行标题（logo + 名字 + 副标题）+ 三个按钮，整行可拖动；
+//! - `resize_overlay`：铺在整窗之上的 8 条热区（只占边缘几像素，中间不挡事件）；
+//! - `ChromeMessage`：本模块只产这几种意图，转成应用消息由 `app.rs` 决定。
 
 use iced::widget::{button, canvas, container, mouse_area, stack};
 use iced::{
@@ -61,7 +61,7 @@ const CORNER: f32 = 12.0;
 ///
 /// - `title` / `subtitle`：名字与副标题（副标题用 hint 色，可留空）；
 /// - `maximized`：决定第三个按钮画"最大化"还是"还原"；
-/// - `to`：把 [`ChromeMessage`] 映射成应用自己的消息类型。
+/// - `to`：把 `ChromeMessage` 映射成应用自己的消息类型。
 ///
 /// 整行包在 `mouse_area` 里：按下 = 拖动，双击 = 最大化/还原。
 /// ⚠️ 按钮是它的**子 widget**，点击会被按钮先捕获，所以点按钮不会误触发拖动

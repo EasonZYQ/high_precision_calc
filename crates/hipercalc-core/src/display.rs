@@ -1,3 +1,13 @@
+//! **输出格式化**：把一个 `Number` 渲染成用户看到的文本。
+//!
+//! 两套显示模式（由 `settings::` 的进程级开关决定）：
+//! - **MathIO**：精确式优先（`1 / 3`、`sqrt(2)`、`π`），适合教学与阅读；
+//! - **LineIO**：小数/科学计数（`0.3333…`），适合连续计算。
+//!
+//! 还有：结果进制（`/base`）、有效位数、数字分组（千分位）、LaTeX 输出。
+//!
+//! 边界：只做"数 → 文本"；表达式树 → 文本在 `hipercalc::calculus::render`。
+
 use crate::bigfloat;
 use crate::number::{ExactExpr, ExactTerm, Number};
 use crate::settings::{LATEX, RESULT_BASE};

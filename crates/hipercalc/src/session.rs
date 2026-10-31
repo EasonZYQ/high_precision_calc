@@ -28,7 +28,7 @@ pub use crate::i18n::Lang as UiLang;
 
 /// GUI 专属偏好（深色 / 玻璃强度 / 行布局）的公开门面。
 ///
-/// 定义在 [`crate::state`]（状态文件的格式由那里说了算），这里只是把它
+/// 定义在 `crate::state`（状态文件的格式由那里说了算），这里只是把它
 /// 交给 `hipercalc-gui` 使用 —— GUI 不该、也不需要认识 `state` 模块的其余部分。
 pub use crate::state::GuiPrefs;
 

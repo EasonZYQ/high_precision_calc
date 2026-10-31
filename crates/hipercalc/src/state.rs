@@ -70,7 +70,7 @@ fn foreign_lines(path: &Path) -> Vec<String> {
 
 /// GUI 专属偏好。
 ///
-/// CLI **不解释**这几个键，但保存时会[原样保留](foreign_lines) —— 于是两个前端
+/// CLI **不解释**这几个键，但保存时会**原样保留**（`foreign_lines`）—— 于是两个前端
 /// 可以共用一份状态文件而互不干扰。
 ///
 /// 放在 `state.rs` 而不是 `hipercalc-gui`：状态文件的格式应当由**一个地方**说了算，

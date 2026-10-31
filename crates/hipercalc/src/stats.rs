@@ -256,7 +256,7 @@ fn expand_median_like(ev: &Evaluator, name: &str, args: Vec<Expr>) -> Result<Exp
     }
 }
 
-/// `corr(x, y, k, a, b)` 或 `corr([xs], [ys])`：r = (E[XY] − E[X]E[Y]) / (σx·σy)
+/// `corr(x, y, k, a, b)` 或 `corr([xs], [ys])`：r = (E`[XY]` − E`[X]`E`[Y]`) / (σx·σy)
 fn expand_corr(args: Vec<Expr>) -> Result<Expr, String> {
     let (dx, dy) = if args.len() == 5 {
         if let Expr::Variable(k) = &args[2] {

@@ -9,10 +9,10 @@
 //! ## 实现路线
 //!
 //! 用 `iced::widget::shader`（底层就是 wgpu）：
-//! 1. [`RefractionPipeline::new`]：建渲染管线 + 采样器 + 绑定布局；
-//! 2. [`RefractionPrimitive::prepare`]：把抓屏得到的 RGBA 上传成纹理，
+//! 1. `RefractionPipeline::new`：建渲染管线 + 采样器 + 绑定布局；
+//! 2. `RefractionPrimitive::prepare`：把抓屏得到的 RGBA 上传成纹理，
 //!    并把"扭曲强度"写进 uniform；
-//! 3. [`RefractionPrimitive::draw`]：画一个**全屏三角形**（三个顶点盖满整个
+//! 3. `RefractionPrimitive::draw`：画一个**全屏三角形**（三个顶点盖满整个
 //!    bounds，比分两个三角形少一次顶点）；
 //! 4. WGSL 里按"到窗口边缘的距离"算**翻折位移**：中间一大块不动，
 //!    只有靠边的环带（短边的 18%）里位移先外推、过零、再反向吸回来 ——

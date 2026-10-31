@@ -391,12 +391,12 @@ pub fn uv_map_with(
     ))
 }
 
-/// 当前主窗口的屏幕矩形（转发 [`platform::window_rect`]，给拖动检测用）。
+/// 当前主窗口的屏幕矩形（转发 `platform::window_rect`，给拖动检测用）。
 pub fn window_rect() -> Option<(i32, i32, u32, u32)> {
     platform::window_rect()
 }
 
-/// 开/关"本窗口不出现在任何捕获里"（转发 [`platform::exclude_from_capture`]）
+/// 开/关"本窗口不出现在任何捕获里"（转发 `platform::exclude_from_capture`）
 pub fn exclude_from_capture(on: bool) -> bool {
     platform::exclude_from_capture(on)
 }

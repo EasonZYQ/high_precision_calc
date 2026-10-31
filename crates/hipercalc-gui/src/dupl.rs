@@ -131,7 +131,7 @@ static BROKEN: AtomicBool = AtomicBool::new(false);
 /// 质感就永久泄漏一条线程池线程（iced 的线程池只有 CPU 核心数那么多）。
 static STOP: AtomicBool = AtomicBool::new(false);
 
-/// 请求停止轮询（见 [`STOP`]）
+/// 请求停止轮询（见 `STOP`）
 pub fn stop() {
     STOP.store(true, Ordering::Relaxed);
 }

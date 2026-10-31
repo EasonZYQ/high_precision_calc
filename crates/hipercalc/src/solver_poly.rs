@@ -190,7 +190,7 @@ pub fn newton_solve(
     }
 }
 
-/// 从 Expr 中提取多项式系数（按升幂排列: coeffs[i] = x^i 的系数）
+/// 从 Expr 中提取多项式系数（按升幂排列: `coeffs[i]` = x^i 的系数）
 pub fn extract_polynomial(evaluator: &Evaluator, expr: &Expr, var: char) -> Option<Vec<Number>> {
     // 先判断是否多项式：仅含常数、变量、+-*^(整数)
     if !crate::equation::is_polynomial(expr) {

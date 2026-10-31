@@ -1,3 +1,10 @@
+//! **三角函数与角度模式**：特殊角精确值表 + 度/弧度换算 + 反三角。
+//!
+//! 特殊角（`0/30/45/60/90` 及其派生）走**精确值表**，所以 `sin(30°)` 给 `1 / 2`
+//! 而不是 `0.4999…`；其余走 `bigfloat` 的级数实现。
+//!
+//! 边界：只处理实数角的函数值；三角方程求解在 `hipercalc` 的 `solve_aux`。
+
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};

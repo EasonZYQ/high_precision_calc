@@ -63,6 +63,7 @@ and `libwayland-client0`; the glass texture uses Windows desktop duplication and
 ## Docs
 
 - 📘 [Full manual (English)](docs/DOC.en.md) · [完整文档（中文）](docs/DOC.zh-CN.md) — every function, command and switch
+- 🧭 [Code structure (CODEDOC)](docs/CODEDOC.en.md) · [中文](docs/CODEDOC.zh-CN.md) — for people changing the code (key types / data flow / extension guide)
 - 🎨 [Liquid glass notes](docs/liquid-glass-report.md) — algorithm, frame budget, measurements
 - 🧩 [Windows 7 compatibility survey](docs/windows7.md)
 - 🤝 [Contributing](CONTRIBUTING.en.md) · [贡献指南](CONTRIBUTING.md)

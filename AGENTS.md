@@ -495,6 +495,17 @@ cargo build -p hipercalc-gui   # 图形界面（唯一会编 iced 的命令，�
 | `HIPERCALC_BLUR=<px>` | 覆盖模糊半径（离屏快照做 0 / 6 / 14 对比用） |
 | `HIPERCALC_CONSOLE_PROBE=1` | 把**控制台模式位**（是否真控制台、VT 位前后值）追加写到 `%TEMP%/hc_console_probe.txt` —— 查"CLI 窗口里全是 `[1;94m` 乱码"时用它（控制台本身显示不出东西，日志只能落文件） |
 
+## 代码文档（CODEDOC / rustdoc）
+
+- **结构说明**看 `docs/CODEDOC.zh-CN.md` 与 `docs/CODEDOC.en.md`（代码长什么样、
+  关键类型、数据流、扩展指南）；**用户手册**是 `docs/DOC.*.md`，两者不重复。
+- **API 文档**用 `cargo doc --no-deps --workspace --document-private-items --open`。
+  仓库要求**零 rustdoc 警告**（`RUSTDOCFLAGS="-D warnings"` 也干净）：
+  - 文档注释里的 `[...]` 会被当成**内联链接** —— 写数组下标、区间要加反引号（`` `[0,1]` ``）；
+  - 链接到私有项（`State::xxx`、`DARK`…）会警告，改用反引号；
+  - `stack` 这类"同名函数 + 宏"要用 `stack!` 或反引号消歧。
+- 加新模块时**必须写 `//!` 模块头**：一句职责 + 与相邻模块的边界（这是本仓库的既有风格）。
+
 ## 数值热点的优化约定
 
 新增/改造**内层循环**（求根、积分、拟合、矩阵）时，先看是否值得用

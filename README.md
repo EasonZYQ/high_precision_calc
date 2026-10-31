@@ -63,6 +63,7 @@ cargo build -p hipercalc-gui --release    # 图形界面 → target/release/hipe
 ## 文档
 
 - 📘 [完整文档（中文）](docs/DOC.zh-CN.md) · [Full manual (English)](docs/DOC.en.md) —— 每个函数、每条指令、所有开关
+- 🧭 [代码结构说明 CODEDOC](docs/CODEDOC.zh-CN.md) · [English](docs/CODEDOC.en.md) —— 想改代码看这份（关键类型 / 数据流 / 扩展指南）
 - 🎨 [液态玻璃实现笔记](docs/liquid-glass-report.md) —— 玻璃算法、帧预算与实测
 - 🧩 [Windows 7 兼容性调研](docs/windows7.md)
 - 🤝 [贡献指南](CONTRIBUTING.md) · [Contributing](CONTRIBUTING.en.md)
