@@ -458,7 +458,7 @@ impl State {
                     italic_names: true,
                 },
                 // 点空槽位框 / 点某个记号 ⇒ 光标落在那里（用户要求）
-                Some(&|id| Message::PlaceCaret(id)),
+                Some(&|id: usize, right: bool| Message::PlaceCaret { at: id, right }),
             )
         };
 

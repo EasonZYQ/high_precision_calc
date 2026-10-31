@@ -587,7 +587,7 @@ impl State {
                 mathrender::build(
                     &mathrender::Node::Seq(nodes),
                     sig_style,
-                    None::<&dyn Fn(usize) -> Message>,
+                    None::<&dyn Fn(usize, bool) -> Message>,
                 )
             }
             // 普通函数：签名按数学排版（`sin(x)` → 斜体函数名 + 括号）。

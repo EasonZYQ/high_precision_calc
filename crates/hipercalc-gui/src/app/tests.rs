@@ -55,27 +55,73 @@ fn settings_budget_follows_window_width() {
     assert!(st.settings_row_budget_for_test() >= 280.0);
 }
 
-/// **「自定义函数与变量」页**：页面内定义 → 列表出现 → 删除 → 消失
+/// **点字符右半段 ⇒ 光标落在该字符之后**（用户 2026-10-31 报的 bug）。
+///
+/// 之前每个字只有一个落点（永远在它之前），点右半边没反应。
+/// 现在右半段会先落位、再右移一格 —— 这里用"落位后插一个 9"来观察光标到底在哪。
+#[test]
+fn click_right_half_puts_caret_after_char() {
+    // 左半段：光标停在 "1" 之前 ⇒ 插入后 "912+3"
+    let mut st = State {
+        input: expr::Doc::from_text("12+3"),
+        ..Default::default()
+    };
+    let _ = st.update(Message::PlaceCaret {
+        at: 0,
+        right: false,
+    });
+    st.insert("9");
+    assert_eq!(st.input_text(), "912+3", "左半段应落在字符之前");
+
+    // 右半段：光标越过 "1" ⇒ 插入后 "192+3"
+    let mut st = State {
+        input: expr::Doc::from_text("12+3"),
+        ..Default::default()
+    };
+    let _ = st.update(Message::PlaceCaret { at: 0, right: true });
+    st.insert("9");
+    assert_eq!(st.input_text(), "192+3", "右半段应落在字符之后");
+}
+
+/// **「自定义函数与变量」页**：按模式填字段 → 保存 → 列表出现 → 删除 → 消失
 #[test]
 fn userdefs_page_defines_and_deletes() {
     let mut st = State::default();
     let _ = st.update(Message::ToggleUserDefs);
     assert_eq!(st.page, ResultsPage::UserDefs);
 
-    // 空输入：给行内提示，不发求值
+    // 空字段：给行内提示，不发求值
     let _ = st.update(Message::UdfSubmit);
     assert!(st.udf_hint.is_some());
 
-    // 定义 f(x) = x^2 + 1（走与主输入栏同一条通道）
-    let _ = st.update(Message::UdfChanged("f(x)=x^2+1".into()));
+    // 函数模式：名称 + 参数（两个）+ 表达式（参数个数不限）
+    let _ = st.update(Message::UdfMode(true));
+    let _ = st.update(Message::UdfName("f".into()));
+    let _ = st.update(Message::UdfParams("x, y".into()));
+    let _ = st.update(Message::UdfExpr("x^2+y".into()));
     let _ = st.update(Message::UdfSubmit);
     st.await_pending_for_test();
     assert!(
-        st.user_fns.iter().any(|(n, _, _)| n == "f"),
-        "定义后列表里应出现 f：{:?}",
+        st.user_fns.iter().any(|(n, p, _)| n == "f" && p.len() == 2),
+        "定义后应有双参函数 f：{:?}",
         st.user_fns
     );
-    assert!(st.udf_input.is_empty(), "提交后输入框应清空");
+    assert!(
+        st.udf_name.is_empty() && st.udf_expr.is_empty(),
+        "保存后字段应清空"
+    );
+
+    // 变量模式：名称 + 值
+    let _ = st.update(Message::UdfMode(false));
+    let _ = st.update(Message::UdfName("A".into()));
+    let _ = st.update(Message::UdfExpr("3".into()));
+    let _ = st.update(Message::UdfSubmit);
+    st.await_pending_for_test();
+    assert!(
+        st.user_vars.iter().any(|(n, _)| n == "A"),
+        "定义后应有变量 A：{:?}",
+        st.user_vars
+    );
 
     // 删除
     let _ = st.update(Message::DelUserDef {

@@ -38,7 +38,7 @@
   "未知颜色": "unknown color",
   "颜色: {0}": "Colors: {0}",
   "颜色已设置为 {0}（已保存，重启后保持）": "Color set: {0} (saved, kept after restart)",
-  "函数": "functions",
+  "函数": "Function",
   "运算符": "operators",
   "指令": "commands",
   "括号": "brackets",
@@ -502,5 +502,17 @@
   "输入 f(x)=x^2+1 定义函数，或 A=3 定义变量": "Enter f(x)=x^2+1 to define a function, or A=3 for a variable",
   "先输入定义，例如 f(x)=x^2+1 或 A=3": "Enter a definition first, e.g. f(x)=x^2+1 or A=3",
   "定义": "Define",
-  "删除": "Delete"
+  "删除": "Delete",
+  "名称": "Name",
+  "参数": "Parameters",
+  "表达式": "Expression",
+  "值": "Value",
+  "保存": "Save",
+  "变量": "Variable",
+  "搜索名称或内容": "Search name or content",
+  "没有匹配的函数": "No matching functions",
+  "没有匹配的变量": "No matching variables",
+  "先填名称": "Fill in the name first",
+  "先填表达式或值": "Fill in the expression or value first",
+  "函数至少要有一个参数，例如 x": "A function needs at least one parameter, e.g. x"
 }

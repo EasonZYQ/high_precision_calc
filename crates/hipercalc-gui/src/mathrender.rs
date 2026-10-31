@@ -814,7 +814,7 @@ pub fn render<'a, M: Clone + 'a>(
     src: &str,
     math: bool,
     style: Style2,
-    on_placeholder: Option<&'a dyn Fn(usize) -> M>,
+    on_placeholder: Option<&'a dyn Fn(usize, bool) -> M>,
 ) -> Element<'a, M> {
     if !math {
         return plain(src, style);
@@ -884,7 +884,7 @@ fn is_variable(s: &str) -> bool {
 pub fn build<'a, M: Clone + 'a>(
     node: &Node,
     style: Style2,
-    on_placeholder: Option<&'a dyn Fn(usize) -> M>,
+    on_placeholder: Option<&'a dyn Fn(usize, bool) -> M>,
 ) -> Element<'a, M> {
     match node {
         // 变量（单个字母）用斜体 —— 数学排版规范。
@@ -914,7 +914,7 @@ pub fn build<'a, M: Clone + 'a>(
                     iced::widget::mouse_area(
                         container(el).padding([2, 1]).align_y(Alignment::Center),
                     )
-                    .on_press(f(*at))
+                    .on_press(f(*at, false))
                     .into()
                 }
                 None => el,
@@ -926,7 +926,27 @@ pub fn build<'a, M: Clone + 'a>(
         Node::Hit { at, inner } => {
             let el = build(inner, style, on_placeholder);
             match on_placeholder {
-                Some(f) => iced::widget::mouse_area(el).on_press(f(*at)).into(),
+                Some(f) => {
+                    // **左右半边交给不同语义**（用户 2026-10-31 报的 bug：
+                    // "点字符右半段无法把光标移到该字符后面"）。
+                    //
+                    // 做法：整块热区按"落在该字符之前"处理；再用一层**透明覆盖**
+                    // 盖住右半边，点它就"落在该字符之后"。用 `stack!` 叠上去，
+                    // 不改动字形本身的布局（覆盖层是不占位、无内容的 Space）。
+                    let left = iced::widget::mouse_area(el).on_press(f(*at, false));
+                    let right_half = Row::new()
+                        .height(Length::Fill)
+                        .push(Space::new().width(Length::FillPortion(1)))
+                        .push(
+                            iced::widget::mouse_area(
+                                Space::new()
+                                    .width(Length::FillPortion(1))
+                                    .height(Length::Fill),
+                            )
+                            .on_press(f(*at, true)),
+                        );
+                    iced::widget::stack![left, right_half].into()
+                }
                 None => el,
             }
         }
@@ -938,7 +958,7 @@ pub fn build<'a, M: Clone + 'a>(
                 .height(Length::Fixed(style.size * 1.35))
                 .into();
             match on_placeholder {
-                Some(f) => iced::widget::mouse_area(el).on_press(f(*at)).into(),
+                Some(f) => iced::widget::mouse_area(el).on_press(f(*at, false)).into(),
                 None => el,
             }
         }
@@ -964,7 +984,9 @@ pub fn build<'a, M: Clone + 'a>(
                 .into();
             let stacked: Element<'a, M> = iced::widget::stack![box_el, caret_el].into();
             match on_placeholder {
-                Some(f) => iced::widget::mouse_area(stacked).on_press(f(*at)).into(),
+                Some(f) => iced::widget::mouse_area(stacked)
+                    .on_press(f(*at, false))
+                    .into(),
                 None => stacked,
             }
         }
@@ -1021,7 +1043,9 @@ pub fn build<'a, M: Clone + 'a>(
             .height(Length::Fixed(h))
             .into();
             match on_placeholder {
-                Some(f) => iced::widget::mouse_area(box_el).on_press(f(*at)).into(),
+                Some(f) => iced::widget::mouse_area(box_el)
+                    .on_press(f(*at, false))
+                    .into(),
                 None => box_el,
             }
         }

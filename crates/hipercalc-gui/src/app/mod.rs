@@ -31,8 +31,10 @@
 
 use std::sync::Arc;
 
+use iced::Font;
 use iced::widget::{
-    Column, Row, Space, Stack, button, container, rule, scrollable, slider, stack, text, text_input,
+    Column, Row, Space, Stack, button, container, row, rule, scrollable, slider, stack, text,
+    text_input,
 };
 // `Element` / `Length` / `Pixels` 在 iced 顶层与 `iced::widget` 都可用；
 // 这里从 `iced` 顶层取，与官方示例一致。
@@ -299,8 +301,16 @@ pub struct State {
     /// ⚠️ 原来是 `triangle_open: bool`；再加一个布尔就会出现"两个 true 同时开"的
     /// 自相矛盾状态，所以一次性收敛成枚举。
     page: ResultsPage,
-    /// 「自定义函数与变量」页的输入框内容（页面内可直接定义）
-    udf_input: String,
+    /// 「自定义函数与变量」页：当前是**函数模式**（true）还是变量模式
+    udf_is_fn: bool,
+    /// 名称（函数名 `f` 或变量名 `A`）
+    udf_name: String,
+    /// 参数表（函数模式用，`x, y, z` 任意个）
+    udf_params: String,
+    /// 表达式（函数体）或变量的值
+    udf_expr: String,
+    /// 列表搜索（与计算栏历史搜索同一套：大小写不敏感的子串匹配）
+    udf_search: String,
     /// 该页的行内提示（定义失败的报错就显示在这里）
     udf_hint: Option<String>,
     /// 自定义函数快照（每轮求值回包更新，见 `Evaluated::user_fns`）
@@ -582,8 +592,16 @@ pub enum Message {
     ToggleTriangle,
     /// 开关「自定义函数与变量」页
     ToggleUserDefs,
-    /// 页面内输入框内容变化
-    UdfChanged(String),
+    /// 切换函数 / 变量模式（true = 函数）
+    UdfMode(bool),
+    /// 名称变化
+    UdfName(String),
+    /// 参数表变化（函数模式）
+    UdfParams(String),
+    /// 表达式 / 值变化
+    UdfExpr(String),
+    /// 搜索框变化
+    UdfSearch(String),
     /// 页面内提交定义（走与主输入栏**同一条**求值通道）
     UdfSubmit,
     /// 删除一条用户定义（函数或变量）
@@ -603,7 +621,8 @@ pub enum Message {
     /// 计算中的**秒表跳动**（订阅每 100ms 发一条，只为刷新"计算中 3.2s"）
     Tick,
     /// 点了排版层里的**空参数框**：把光标挪到源文本的第 n 个字符处
-    PlaceCaret(usize),
+    /// 点击算式里的一个字：`right` 表示点的是**右半段**（光标落到该字符之后）
+    PlaceCaret { at: usize, right: bool },
     /// 点输入栏的**空白处** ⇒ 光标送到整份输入的最后面。
     ///
     /// 为什么需要它：字符级点击目标只能表达"落在某个记号之前"，
@@ -789,7 +808,11 @@ impl State {
             history: Vec::new(),
             search: String::new(),
             page: ResultsPage::History,
-            udf_input: String::new(),
+            udf_is_fn: true,
+            udf_name: String::new(),
+            udf_params: String::new(),
+            udf_expr: String::new(),
+            udf_search: String::new(),
             udf_hint: None,
             user_fns: Vec::new(),
             user_vars: Vec::new(),
@@ -851,7 +874,7 @@ impl State {
             // 点排版层空白处：现在没有独立编辑器抢焦点了，什么都不用做
             Message::FocusInput => {}
             // 点空参数框：直接把光标挪过去（**精确到字符偏移**，不再靠 Motion 逼近）
-            Message::PlaceCaret(at) => self.place_caret(at),
+            Message::PlaceCaret { at, right } => self.place_caret(at, right),
             Message::PlaceCaretEnd => self.input.end(),
             Message::KeyPressed(key, modifiers) => return self.handle_key(key, modifiers),
             Message::Noop => {}
@@ -922,26 +945,52 @@ impl State {
                 self.page = self.page.toggled(ResultsPage::UserDefs);
                 self.udf_hint = None;
             }
-            Message::UdfChanged(v) => {
-                self.udf_input = v;
+            Message::UdfMode(is_fn) => {
+                self.udf_is_fn = is_fn;
                 self.udf_hint = None;
             }
+            Message::UdfName(v) => {
+                self.udf_name = v;
+                self.udf_hint = None;
+            }
+            Message::UdfParams(v) => {
+                self.udf_params = v;
+                self.udf_hint = None;
+            }
+            Message::UdfExpr(v) => {
+                self.udf_expr = v;
+                self.udf_hint = None;
+            }
+            Message::UdfSearch(v) => self.udf_search = v,
             Message::UdfSubmit => {
-                let text = self.udf_input.trim().to_string();
-                if text.is_empty() {
-                    self.udf_hint = Some(t("先输入定义，例如 f(x)=x^2+1 或 A=3"));
+                let name = self.udf_name.trim().to_string();
+                let expr = self.udf_expr.trim().to_string();
+                if name.is_empty() {
+                    self.udf_hint = Some(t("先填名称"));
                     return Task::none();
                 }
-                // **变量定义**（`A = 3`）要当 `/let` 命令走：否则 `A=3` 会被当成方程去解。
-                let src = if is_var_definition(&text) {
-                    format!("/let {text}")
+                if expr.is_empty() {
+                    self.udf_hint = Some(t("先填表达式或值"));
+                    return Task::none();
+                }
+                // 函数 ⇒ `f(x, y) = …`（参数任意个）；变量 ⇒ `/let A = …`
+                // （不写成 `/let` 的话 `A=3` 会被当成方程去解）。
+                let src = if self.udf_is_fn {
+                    let params = self.udf_params.trim().trim_end_matches(',').to_string();
+                    if params.is_empty() {
+                        self.udf_hint = Some(t("函数至少要有一个参数，例如 x"));
+                        return Task::none();
+                    }
+                    format!("{name}({params}) = {expr}")
                 } else {
-                    text
+                    format!("/let {name} = {expr}")
                 };
                 // 借用主输入栏的求值通道；但**不动输入框内容**（用户可能正打到一半），
-                // 也不切页 —— 定义成功后靠回包刷新列表，失败则把报错留在本页。
+                // 也不切页 —— 成功后靠回包刷新列表，失败则把报错留在本页。
                 let saved = self.input.clone();
-                self.udf_input.clear();
+                self.udf_name.clear();
+                self.udf_params.clear();
+                self.udf_expr.clear();
                 let task = self.evaluate_lines(vec![src]);
                 self.input = saved;
                 return task;
@@ -1517,8 +1566,16 @@ impl State {
     /// `id` 是 [`expr::Doc::targets`] 的下标 —— **不是字符偏移**了。
     /// 两者必须与渲染时登记的 id 同源（`to_node` 与 `targets` 是同一个遍历），
     /// 否则"点哪去哪"会错位。
-    fn place_caret(&mut self, id: usize) {
+    /// 把光标放到第 `id` 个可点目标上。
+    ///
+    /// `right == true` 表示用户点的是那个字符的**右半段**：先落到它之前，再右移一格 ——
+    /// 这样"点右半边 = 光标在该字符之后"（用户 2026-10-31 报的 bug：
+    /// 之前只有"之前"一种落点，字符右半段点了没反应）。
+    fn place_caret(&mut self, id: usize, right: bool) {
         self.input.place(id);
+        if right {
+            self.input.right();
+        }
     }
 
     /// 清空输入
@@ -1932,24 +1989,6 @@ impl State {
         let fut = self.evaluator.eval(eval_src, eval_lines);
         Task::perform(fut, Message::Evaluated)
     }
-}
-
-/// 这行是不是**变量定义**（`A = 3`、`AB_1 = 2`）？
-///
-/// 变量名全大写（与 `/let` 的约定一致）。命中就按 `/let` 命令发，否则按普通表达式发。
-fn is_var_definition(text: &str) -> bool {
-    let Some((lhs, _)) = text.split_once('=') else {
-        return false;
-    };
-    let lhs = lhs.trim();
-    !lhs.is_empty()
-        && lhs
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
-        && lhs
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_uppercase() || c == '_')
 }
 
 fn is_precise(text: &str) -> bool {

@@ -153,14 +153,22 @@ fn userdefs_page_snapshot() {
     let mut state = populated_state();
     state.set_dark_for_test(true);
     let _ = state.update(Message::ToggleUserDefs);
-    // 定义一条函数 + 一个变量，再在输入框留一条待提交的内容
-    let _ = state.update(Message::UdfChanged("f(x)=x^2+1".into()));
+    // 定义一条双参函数 + 一个变量，再让搜索命中一处（看高亮）
+    let _ = state.update(Message::UdfMode(true));
+    let _ = state.update(Message::UdfName("f".into()));
+    let _ = state.update(Message::UdfParams("x, y".into()));
+    let _ = state.update(Message::UdfExpr("x^2+y".into()));
     let _ = state.update(Message::UdfSubmit);
     state.await_pending_for_test();
-    let _ = state.update(Message::UdfChanged("A=3".into()));
+    let _ = state.update(Message::UdfMode(false));
+    let _ = state.update(Message::UdfName("A".into()));
+    let _ = state.update(Message::UdfExpr("3".into()));
     let _ = state.update(Message::UdfSubmit);
     state.await_pending_for_test();
-    let _ = state.update(Message::UdfChanged("g(x,y)=x*y".into()));
+    // 搜索框留在半填状态 + 命中高亮
+    let _ = state.update(Message::UdfSearch("x^2".into()));
+    let _ = state.update(Message::UdfMode(true));
+    let _ = state.update(Message::UdfName("g".into()));
 
     let snapshot = snap(&state);
     let path = format!("{SNAP_DIR}/userdefs.png");
