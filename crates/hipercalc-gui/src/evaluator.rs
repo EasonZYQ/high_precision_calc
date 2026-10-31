@@ -106,6 +106,10 @@ pub enum Command {
     SetAngle(AngleMode),
     SetCalc(CalcMode),
     SetPrecision(usize),
+    /// 删除一个自定义函数（名字）
+    DelFn(String),
+    /// 删除一个存储变量（名字）
+    DelVar(String),
 }
 
 /// worker 收到的请求。求值请求自带回传通道（见模块头的说明）。
@@ -134,6 +138,13 @@ pub struct Evaluated {
     pub is_error: bool,
     /// 整段"解析 + 结果生成"的耗时（对标 CLI 的 `Timing` 口径）
     pub elapsed: Duration,
+    /// **自定义函数快照**：`(名字, 参数表, 函数体 MathIO 文本)`。
+    ///
+    /// ⚠️ UI 线程**读不到** worker 里的 `Session`（见 `app/mod.rs` 的说明），
+    /// 所以每次求值回包都把这份表带回来 —— 页面直接渲染它，删改后下一次回包即刷新。
+    pub user_fns: Vec<(String, Vec<String>, String)>,
+    /// **变量快照**：`(名字, 值文本)`（与 `Session::vars()` 同源）
+    pub user_vars: Vec<(String, String)>,
 }
 
 /// 与 worker 通信的句柄。UI 线程持有它。
@@ -214,6 +225,8 @@ fn degraded(input: String) -> Evaluated {
         text: String::new(),
         is_error: false,
         elapsed: Duration::ZERO,
+        user_fns: Vec::new(),
+        user_vars: Vec::new(),
     }
 }
 
@@ -243,6 +256,8 @@ fn worker_loop(mut session: Session, rx: Receiver<Request>) {
                     text: result.text,
                     is_error: result.is_error,
                     elapsed,
+                    user_fns: session.user_fns(),
+                    user_vars: session.vars(),
                 });
             }
         }
@@ -256,6 +271,13 @@ fn apply(session: &mut Session, cmd: Command) {
         Command::SetAngle(m) => session.set_angle_mode(m),
         Command::SetCalc(m) => session.set_calc_mode(m),
         Command::SetPrecision(p) => session.set_precision(p),
+        // 删除类命令不产生结果，UI 侧会就地更新自己的快照（见 `Message::DelUserDef`）
+        Command::DelFn(name) => {
+            session.del_fn(&name);
+        }
+        Command::DelVar(name) => {
+            session.del_var(&name);
+        }
     }
 }
 

@@ -10,9 +10,11 @@ use super::*;
 
 impl State {
     pub(super) fn results(&self) -> Element<'_, Message> {
-        // 三角形页（用户 2026-10-27）：整块结果区换成表单
-        if self.triangle_open {
-            return self.triangle_page();
+        // 结果区按当前页切换（历史 / 三角求解 / 自定义函数与变量）
+        match self.page {
+            ResultsPage::Triangle => return self.triangle_page(),
+            ResultsPage::UserDefs => return self.userdefs_page(),
+            ResultsPage::History => {}
         }
         let math = self.modes.display == DisplayMode::MathIO;
 

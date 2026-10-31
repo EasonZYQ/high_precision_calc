@@ -371,7 +371,7 @@ impl State {
         // `triangle(...)` 猜参数）。点了就把结果区切成表单页。
         r = r.push(seg_t(
             t("三角形求解"),
-            self.triangle_open,
+            self.page == ResultsPage::Triangle,
             Message::ToggleTriangle,
         ));
         // 清空历史：这条**必须**翻译（工具条上最显眼的中文之一）。
@@ -555,6 +555,19 @@ impl State {
     /// 网格内的 `ƒ` 键是照 Desmos 的布局放的，这里这个按钮则是"一眼能看见"的入口
     /// —— 函数面板是本项目的主力功能，藏在一个小键里不好找。
     pub(super) fn keypad_header(&self) -> Element<'_, Message> {
+        // 自定义函数与变量页的入口（在函数面板按钮**左边**）
+        let udf_btn = button(
+            row![
+                text("f").size(17).font(theme::font_math_italic()),
+                theme::label(t("自定义")).size(14),
+            ]
+            .spacing(7)
+            .align_y(Alignment::Center),
+        )
+        .padding([7, 12])
+        .style(move |t, s| theme::mode_chip(t, s, self.page == ResultsPage::UserDefs))
+        .on_press(Message::ToggleUserDefs);
+
         let func_btn = button(
             row![
                 text("ƒ").size(17).font(theme::font_math()),
@@ -583,6 +596,8 @@ impl State {
                 .font(theme::font_cjk())
                 .style(theme::accent_text),
             Space::new().width(Length::Fill),
+            // 「自定义函数与变量」页（用户 2026-10-31 指定：放在**函数列表按钮左边**）
+            udf_btn,
             func_btn,
         ]
         .spacing(6)

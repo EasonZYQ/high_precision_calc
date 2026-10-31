@@ -492,5 +492,15 @@
   "至少填一个已知量": "Enter at least one known value",
   "中线": "Median",
   "角平分线": "Angle bisector",
-  "填任意三个已知量（至少要有一个长度），点求解": "Fill any three knowns (at least one length), then Solve"
+  "填任意三个已知量（至少要有一个长度），点求解": "Fill any three knowns (at least one length), then Solve",
+  "自定义": "Custom",
+  "自定义函数与变量": "Custom functions & variables",
+  "自定义函数": "Custom functions",
+  "存储变量": "Stored variables",
+  "还没有自定义函数": "No custom functions yet",
+  "还没有变量": "No variables yet",
+  "输入 f(x)=x^2+1 定义函数，或 A=3 定义变量": "Enter f(x)=x^2+1 to define a function, or A=3 for a variable",
+  "先输入定义，例如 f(x)=x^2+1 或 A=3": "Enter a definition first, e.g. f(x)=x^2+1 or A=3",
+  "定义": "Define",
+  "删除": "Delete"
 }

@@ -144,6 +144,32 @@ fn function_panel_snapshot() {
 }
 
 /// **三角形求解页**（用户 2026-10-27 要求的独立界面）
+/// **「自定义函数与变量」页**（用户 2026-10-31 要求）。
+///
+/// 覆盖三种状态：函数列表有内容、变量列表有内容、输入框里正打着一条定义。
+#[test]
+fn userdefs_page_snapshot() {
+    let _guard = lock();
+    let mut state = populated_state();
+    state.set_dark_for_test(true);
+    let _ = state.update(Message::ToggleUserDefs);
+    // 定义一条函数 + 一个变量，再在输入框留一条待提交的内容
+    let _ = state.update(Message::UdfChanged("f(x)=x^2+1".into()));
+    let _ = state.update(Message::UdfSubmit);
+    state.await_pending_for_test();
+    let _ = state.update(Message::UdfChanged("A=3".into()));
+    let _ = state.update(Message::UdfSubmit);
+    state.await_pending_for_test();
+    let _ = state.update(Message::UdfChanged("g(x,y)=x*y".into()));
+
+    let snapshot = snap(&state);
+    let path = format!("{SNAP_DIR}/userdefs.png");
+    assert!(
+        snapshot.matches_image(&path).expect("快照比对/写入失败"),
+        "自定义函数与变量页与基线不一致：{path}"
+    );
+}
+
 #[test]
 fn triangle_page_snapshot() {
     let _guard = lock();

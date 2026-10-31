@@ -55,6 +55,43 @@ fn settings_budget_follows_window_width() {
     assert!(st.settings_row_budget_for_test() >= 280.0);
 }
 
+/// **「自定义函数与变量」页**：页面内定义 → 列表出现 → 删除 → 消失
+#[test]
+fn userdefs_page_defines_and_deletes() {
+    let mut st = State::default();
+    let _ = st.update(Message::ToggleUserDefs);
+    assert_eq!(st.page, ResultsPage::UserDefs);
+
+    // 空输入：给行内提示，不发求值
+    let _ = st.update(Message::UdfSubmit);
+    assert!(st.udf_hint.is_some());
+
+    // 定义 f(x) = x^2 + 1（走与主输入栏同一条通道）
+    let _ = st.update(Message::UdfChanged("f(x)=x^2+1".into()));
+    let _ = st.update(Message::UdfSubmit);
+    st.await_pending_for_test();
+    assert!(
+        st.user_fns.iter().any(|(n, _, _)| n == "f"),
+        "定义后列表里应出现 f：{:?}",
+        st.user_fns
+    );
+    assert!(st.udf_input.is_empty(), "提交后输入框应清空");
+
+    // 删除
+    let _ = st.update(Message::DelUserDef {
+        is_fn: true,
+        name: "f".into(),
+    });
+    assert!(
+        !st.user_fns.iter().any(|(n, _, _)| n == "f"),
+        "删除后应消失"
+    );
+
+    // 再点一次按钮回到历史页
+    let _ = st.update(Message::ToggleUserDefs);
+    assert_eq!(st.page, ResultsPage::History);
+}
+
 #[test]
 fn is_precise_reads_core_prefix() {
     assert!(is_precise("= 1 / 2"));
@@ -522,6 +559,8 @@ fn evaluated_message_pushes_history() {
         text: "= 2".into(),
         is_error: false,
         elapsed: std::time::Duration::from_secs(3),
+        user_fns: Vec::new(),
+        user_vars: Vec::new(),
     }));
     assert!(!s.busy, "结果回来应解除「计算中」");
     assert_eq!(s.history.len(), 1);

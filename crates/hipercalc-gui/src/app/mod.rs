@@ -52,6 +52,7 @@ use crate::liquid;
 mod results;
 mod settings;
 mod triangle;
+mod userdefs;
 mod view;
 use crate::mathrender;
 use crate::theme::{self, MathFont};
@@ -240,6 +241,30 @@ fn win_task(f: impl Fn(iced::window::Id) -> Task<Message> + Send + 'static) -> T
 type BgPixels = (std::sync::Arc<Vec<u8>>, i32, i32, u32, u32, u32, u32);
 
 /// 应用状态
+/// 结果区当前显示哪一页。
+///
+/// 三选一（而不是三个布尔）：同时只会有一页可见，用枚举把"不可能的状态"表达掉。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResultsPage {
+    /// 历史列表（默认）
+    History,
+    /// 三角形求解页
+    Triangle,
+    /// 自定义函数与变量页
+    UserDefs,
+}
+
+impl ResultsPage {
+    /// 点一次按钮：已经是这页 ⇒ 回到历史；否则切到这页。
+    fn toggled(self, target: ResultsPage) -> ResultsPage {
+        if self == target {
+            ResultsPage::History
+        } else {
+            target
+        }
+    }
+}
+
 pub struct State {
     /// 求值会话句柄。
     ///
@@ -269,8 +294,19 @@ pub struct State {
     history: Vec<Entry>,
     /// 历史搜索关键词（**子串匹配**，大小写不敏感；空串 = 不过滤）
     search: String,
-    /// 结果区是否切成**三角形求解页**（用户 2026-10-27：解三角形要独立界面）
-    triangle_open: bool,
+    /// 结果区当前显示哪一页（历史 / 三角求解 / 自定义函数与变量）。
+    ///
+    /// ⚠️ 原来是 `triangle_open: bool`；再加一个布尔就会出现"两个 true 同时开"的
+    /// 自相矛盾状态，所以一次性收敛成枚举。
+    page: ResultsPage,
+    /// 「自定义函数与变量」页的输入框内容（页面内可直接定义）
+    udf_input: String,
+    /// 该页的行内提示（定义失败的报错就显示在这里）
+    udf_hint: Option<String>,
+    /// 自定义函数快照（每轮求值回包更新，见 `Evaluated::user_fns`）
+    user_fns: Vec<(String, Vec<String>, String)>,
+    /// 存储变量快照
+    user_vars: Vec<(String, String)>,
     /// 三角形页的十二个输入（顺序见 [`triangle::TRI_KEYS`]：
     /// a b c / A B C / mA mB mC / tA tB tC）
     tri_vals: [String; 12],
@@ -544,6 +580,18 @@ pub enum Message {
     SaveGeomNow,
     /// 切换「三角形求解」页（结果区）
     ToggleTriangle,
+    /// 开关「自定义函数与变量」页
+    ToggleUserDefs,
+    /// 页面内输入框内容变化
+    UdfChanged(String),
+    /// 页面内提交定义（走与主输入栏**同一条**求值通道）
+    UdfSubmit,
+    /// 删除一条用户定义（函数或变量）
+    DelUserDef {
+        /// true = 自定义函数，false = 存储变量
+        is_fn: bool,
+        name: String,
+    },
     /// 三角形页某个输入框变化：`(字段下标 0..6, 内容)`
     TriChanged(usize, String),
     /// 三角形页：求解
@@ -740,7 +788,11 @@ impl State {
             input_hint: None,
             history: Vec::new(),
             search: String::new(),
-            triangle_open: false,
+            page: ResultsPage::History,
+            udf_input: String::new(),
+            udf_hint: None,
+            user_fns: Vec::new(),
+            user_vars: Vec::new(),
             tri_vals: Default::default(),
             tri_result: None,
             font_scale: prefs.font_scale,
@@ -864,7 +916,45 @@ impl State {
                 self.search = q;
             }
             Message::ToggleTriangle => {
-                self.triangle_open = !self.triangle_open;
+                self.page = self.page.toggled(ResultsPage::Triangle);
+            }
+            Message::ToggleUserDefs => {
+                self.page = self.page.toggled(ResultsPage::UserDefs);
+                self.udf_hint = None;
+            }
+            Message::UdfChanged(v) => {
+                self.udf_input = v;
+                self.udf_hint = None;
+            }
+            Message::UdfSubmit => {
+                let text = self.udf_input.trim().to_string();
+                if text.is_empty() {
+                    self.udf_hint = Some(t("先输入定义，例如 f(x)=x^2+1 或 A=3"));
+                    return Task::none();
+                }
+                // **变量定义**（`A = 3`）要当 `/let` 命令走：否则 `A=3` 会被当成方程去解。
+                let src = if is_var_definition(&text) {
+                    format!("/let {text}")
+                } else {
+                    text
+                };
+                // 借用主输入栏的求值通道；但**不动输入框内容**（用户可能正打到一半），
+                // 也不切页 —— 定义成功后靠回包刷新列表，失败则把报错留在本页。
+                let saved = self.input.clone();
+                self.udf_input.clear();
+                let task = self.evaluate_lines(vec![src]);
+                self.input = saved;
+                return task;
+            }
+            Message::DelUserDef { is_fn, name } => {
+                // 先就地更新快照（删的是自己刚列出来的行，不必等下一轮回包）
+                if is_fn {
+                    self.user_fns.retain(|(n, _, _)| n != &name);
+                    self.evaluator.config(Command::DelFn(name));
+                } else {
+                    self.user_vars.retain(|(n, _)| n != &name);
+                    self.evaluator.config(Command::DelVar(name));
+                }
             }
             Message::TriChanged(i, v) => {
                 if let Some(slot) = self.tri_vals.get_mut(i) {
@@ -1126,7 +1216,9 @@ impl State {
                 // 不算 error（否则整行染红、还带错误底色）。
                 let cancelled = out.text.contains(hipercalc_core::cancel::ERROR_CANCELLED);
                 // 三角页开着 ⇒ 结果同时就地显示（不跳页）
-                if self.triangle_open {
+                self.user_fns = out.user_fns.clone();
+                self.user_vars = out.user_vars.clone();
+                if self.page == ResultsPage::Triangle {
                     self.tri_result = Some(out.text.clone());
                 }
                 self.history.push(Entry {
@@ -1801,6 +1893,14 @@ impl State {
         if lines.is_empty() {
             return Task::none();
         }
+        self.evaluate_lines(lines)
+    }
+
+    /// 求值**已经准备好的**文本行（命令也可以，例如 `/let A = 3`）。
+    ///
+    /// 从 `evaluate` 里拆出来是为了让"自定义函数与变量"页能复用同一条通道：
+    /// 页面里的 `A = 3` 需要当作 `/let` 命令走（否则会被当成方程去解）。
+    fn evaluate_lines(&mut self, lines: Vec<String>) -> Task<Message> {
         // 历史里显示的原文 = 用户敲的全部内容（多行保留换行，便于回看）
         let src = lines.join("\n");
         self.last_input = src.clone();
@@ -1832,6 +1932,24 @@ impl State {
         let fut = self.evaluator.eval(eval_src, eval_lines);
         Task::perform(fut, Message::Evaluated)
     }
+}
+
+/// 这行是不是**变量定义**（`A = 3`、`AB_1 = 2`）？
+///
+/// 变量名全大写（与 `/let` 的约定一致）。命中就按 `/let` 命令发，否则按普通表达式发。
+fn is_var_definition(text: &str) -> bool {
+    let Some((lhs, _)) = text.split_once('=') else {
+        return false;
+    };
+    let lhs = lhs.trim();
+    !lhs.is_empty()
+        && lhs
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
+        && lhs
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_uppercase() || c == '_')
 }
 
 fn is_precise(text: &str) -> bool {
