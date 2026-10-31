@@ -203,12 +203,15 @@ pub fn inv(m: &Mat) -> Result<Number, String> {
         return Err("只有方阵才能求逆".to_string());
     }
     let n = rows(m);
+    // ⚠️ `identity(n)` 必须**只构造一次**：原来写在闭包里，每行都重建一张 n×n 单位阵
+    // ⇒ n 次 O(n²) 的 `Number` 构造（小矩阵看不出来，n 一大就是纯浪费）。
+    let id = identity(n);
     let mut a: Mat = m
         .iter()
         .enumerate()
         .map(|(i, r)| {
             let mut row = r.clone();
-            row.extend_from_slice(&identity(n)[i]);
+            row.extend_from_slice(&id[i]);
             row
         })
         .collect();
@@ -218,7 +221,9 @@ pub fn inv(m: &Mat) -> Result<Number, String> {
         };
         a.swap(p, col);
         let pivot = a[col][col].clone();
-        for c in 0..(2 * n) {
+        // 从 `col` 起算：左半边 `c < col` 的列要么是 0、要么是已归一化的单位列，
+        // 再除一遍纯属白做（这里原来写的是 `0..2n`，工作量整整多一倍）。
+        for c in col..(2 * n) {
             a[col][c] = a[col][c].div(&pivot);
         }
         for r in 0..n {
@@ -229,7 +234,7 @@ pub fn inv(m: &Mat) -> Result<Number, String> {
             if factor.is_zero() {
                 continue;
             }
-            for c in 0..(2 * n) {
+            for c in col..(2 * n) {
                 a[r][c] = a[r][c].sub(&factor.mul(&a[col][c]));
             }
         }
