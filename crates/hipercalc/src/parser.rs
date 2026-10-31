@@ -1049,8 +1049,11 @@ impl Parser {
                 }
             }
 
-            // 验证函数名
-            if FUNCTIONS.contains(&func_name.as_str()) {
+            // 验证函数名：内置函数走白名单；**单个 ASCII 小写字母**放行 ——
+            // 它可能是用户自定义函数（`f(x) = …`）。真正不认识的名字在**求值期**
+            // 由 `eval_user_fn` / `eval_function` 报"未知函数"，
+            // 这样"先定义后使用"才成立（解析期无从知道稍后会定义什么）。
+            if FUNCTIONS.contains(&func_name.as_str()) || is_user_fn_name(&func_name) {
                 return Ok(Expr::Function(func_name, args));
             } else {
                 return Err(format!("未知函数: {}", func_name));
@@ -1152,6 +1155,11 @@ pub struct Evaluator {
     pub ans: Number,
     /// 用户存储变量（/let 指令，名称全大写）
     pub vars: std::collections::BTreeMap<String, Number>,
+    /// **自定义函数**：`f(x) = x^2 + 1` 定义出来的函数表（名字 → (参数名, 函数体)）。
+    pub user_fns: std::collections::BTreeMap<String, (Vec<String>, Expr)>,
+    /// 自定义函数的展开深度 —— 防止 `f(x) = f(x)` 这类自引用把栈打穿。
+    /// 用 `Cell` 是因为求值走 `&self`（见 [`Evaluator::eval_node`]）。
+    user_fn_depth: std::cell::Cell<usize>,
 }
 
 /// 黎曼 ζ 的**数值路径**（Euler-Maclaurin）。
@@ -1418,6 +1426,8 @@ impl Evaluator {
             angle_mode: AngleMode::Radian,
             ans: Number::from_int(0),
             vars: std::collections::BTreeMap::new(),
+            user_fns: std::collections::BTreeMap::new(),
+            user_fn_depth: std::cell::Cell::new(0),
         }
     }
 
@@ -1453,6 +1463,44 @@ impl Evaluator {
         substs: &[(String, &Number)],
     ) -> Result<Number, String> {
         self.eval_node(expr, substs)
+    }
+
+    /// 求值一个**自定义函数**调用：绑定实参 → 求函数体。
+    ///
+    /// 用实参调用（call-by-value）：实参先在**调用方**上下文求值，再绑到形参名上；
+    /// 函数体只看得到自己的形参 + 全局变量/`ans`（看不到调用方的临时替换 —— 那会让
+    /// `f(x)` 在解方程的上下文中意外捕获外层的 `x`）。
+    fn eval_user_fn(
+        &self,
+        name: &str,
+        args: &[Expr],
+        substs: &[(String, &Number)],
+    ) -> Result<Number, String> {
+        const MAX_DEPTH: usize = 64;
+        let Some((params, body)) = self.user_fns.get(name).cloned() else {
+            return Err(format!("未知函数: {name}"));
+        };
+        if params.len() != args.len() {
+            return Err(format!(
+                "自定义函数 {name} 需要 {} 个参数，实际给了 {} 个",
+                params.len(),
+                args.len()
+            ));
+        }
+        if self.user_fn_depth.get() >= MAX_DEPTH {
+            return Err(format!(
+                "自定义函数递归过深（超过 {MAX_DEPTH} 层）：{name}（检查是否自我调用）"
+            ));
+        }
+        let vals: Vec<Number> = args
+            .iter()
+            .map(|a| self.eval_node(a, substs))
+            .collect::<Result<_, _>>()?;
+        let bound: Vec<(String, &Number)> = params.into_iter().zip(vals.iter()).collect();
+        self.user_fn_depth.set(self.user_fn_depth.get() + 1);
+        let out = self.eval_node(&body, &bound);
+        self.user_fn_depth.set(self.user_fn_depth.get() - 1);
+        out
     }
 
     fn eval_node(&self, expr: &Expr, substs: &[(String, &Number)]) -> Result<Number, String> {
@@ -1507,6 +1555,11 @@ impl Evaluator {
             Expr::Function(name, args) => {
                 if name == "factor" || name == "fac" {
                     return Err("fac/factor 必须作为最外层函数使用".to_string());
+                }
+                // **自定义函数**：参数是符号名，必须先绑定再求值 ——
+                // 不能像内置函数那样"逐参求值后交给 eval_function"。
+                if self.user_fns.contains_key(name) {
+                    return self.eval_user_fn(name, args, substs);
                 }
                 // 逐参求值后交给 eval_function（内部校验参数个数）
                 let mut vals = Vec::with_capacity(args.len());
@@ -3024,6 +3077,46 @@ fn ineq_result(items: Vec<(String, Vec<Expr>)>) -> Result<EvalResult, String> {
 }
 
 /// 解析并求值顶层输入
+/// 这个名字像不像**用户自定义函数**：单个 ASCII 小写字母。
+///
+/// 内置函数全是 ≥2 个字符（`sin`/`abs`/`gcd`…），所以单字母**永远不会**与内置撞名，
+/// 这也是"定义用 `f`、`g`、`h`"这条约定的机制保障。
+pub(crate) fn is_user_fn_name(s: &str) -> bool {
+    let mut it = s.chars();
+    matches!((it.next(), it.next()), (Some(c), None) if c.is_ascii_lowercase())
+}
+
+/// 若 `左 = 右` 是**自定义函数定义**（`f(x) = …`）就登记并返回 `true`。
+///
+/// 判定规则（三条同时满足，全部可预期）：
+/// 1. 左边是函数调用，且**名字是单个 ASCII 小写字母**（`f`、`g`…）——
+///    内置函数全是 ≥2 个字符（`sin`/`abs`…），所以单字母**永远不会**与内置撞名；
+/// 2. 参数列表非空，且每个参数都是**裸变量**（`f(x)`、`g(x,y)`；`f(2)` 不算）；
+/// 3. 该名字**尚未定义** —— 定义过之后 `f(x) = 0` 回到"解方程"的语义。
+fn try_define_user_fn(ev: &mut Evaluator, left: &Expr, right: &Expr) -> bool {
+    let Expr::Function(name, args) = left else {
+        return false;
+    };
+    if args.is_empty() || !is_user_fn_name(name) {
+        return false;
+    }
+    if ev.user_fns.contains_key(name) {
+        return false; // 已定义 ⇒ 这句是方程
+    }
+    let mut params: Vec<String> = Vec::with_capacity(args.len());
+    for a in args {
+        let Expr::Variable(v) = a else {
+            return false;
+        };
+        if params.contains(v) {
+            return false; // `f(x,x) = …` 参数重名，当语法错误交给后面的方程解析
+        }
+        params.push(v.clone());
+    }
+    ev.user_fns.insert(name.clone(), (params, right.clone()));
+    true
+}
+
 pub fn parse_and_eval(input: &str, evaluator: &mut Evaluator) -> Result<EvalResult, String> {
     let mut parser = Parser::new(input);
     parser.skip_whitespace();
@@ -3134,7 +3227,18 @@ pub fn parse_and_eval(input: &str, evaluator: &mut Evaluator) -> Result<EvalResu
             }
             Ok(EvalResult::System(pairs))
         }
-        Expr::Equation(left, right) => Ok(EvalResult::Equation(left, right)),
+        Expr::Equation(left, right) => {
+            // **自定义函数定义**：`f(x) = <表达式>`（名字单个小写字母、参数全是变量）。
+            // 只在该名字**尚未定义**时认领 —— 已定义过的 `f(x)=0` 仍是"解方程"，
+            // 这样"第一次写是定义、之后写是解方程"是可预期的规则（见 DOC 第 21 章）。
+            if try_define_user_fn(evaluator, &left, &right) {
+                return Ok(EvalResult::Symbolic(Box::new(Expr::Equation(
+                    left.clone(),
+                    right.clone(),
+                ))));
+            }
+            Ok(EvalResult::Equation(left, right))
+        }
         _ => {
             // 含自由变量的**符号结果**（如 `diff(x^2,x)` → `2*x`）交给 REPL 渲染。
             // 只在输入里真的用了高等数学函数时才走这条路：否则 `x+1` 这类输入
@@ -3154,7 +3258,41 @@ mod func_tests {
     use super::*;
     use hipercalc_core::display;
 
+    /// **自定义函数**：定义 → 调用 → 嵌套 → 递归护栏 → 已定义后回到方程
+    #[test]
+    fn user_fn_define_call_and_guard() {
+        let mut ev = Evaluator::new();
+        // 定义（返回 Symbolic 表示"已登记"，内容会被 REPL 渲染成 `f(x) = x^2 + 1`）
+        assert!(matches!(
+            parse_and_eval("f(x) = x^2 + 1", &mut ev).unwrap(),
+            EvalResult::Symbolic(_)
+        ));
+        assert!(ev.user_fns.contains_key("f"));
+        // 调用
+        assert_eq!(eval_with(&mut ev, "f(3)").unwrap(), "10");
+        // 嵌套：f(f(1)) = f(2) = 5
+        assert_eq!(eval_with(&mut ev, "f(f(1))").unwrap(), "5");
+        // 参数个数不对要报错（而不是静默算错）
+        assert!(eval_with(&mut ev, "f(1,2)").is_err());
+        // 已定义过 ⇒ `f(x)=0` 回到**解方程**（不是重定义）
+        assert!(matches!(
+            parse_and_eval("f(x) = 0", &mut ev).unwrap(),
+            EvalResult::Equation(_, _)
+        ));
+        // 递归护栏：自我调用报"递归过深"，不能栈溢出
+        let _ = parse_and_eval("g(x) = g(x) + 1", &mut ev);
+        let err = eval_with(&mut ev, "g(1)").unwrap_err();
+        assert!(err.contains("递归过深"), "{err}");
+    }
+
     /// 求值并返回 LineIO 显示串（与命令行输出同一套格式化）
+    /// 在**指定的** Evaluator 上求值（自定义函数测试要复用它，不能用默认 `new()`）
+    fn eval_with(ev: &mut Evaluator, expr: &str) -> Result<String, String> {
+        let ast = Parser::new(expr).parse_expression()?;
+        let v = ev.evaluate(&ast)?;
+        Ok(display::format_lineio(&v))
+    }
+
     fn eval_lineio(expr: &str) -> Result<String, String> {
         let mut ev = Evaluator::new();
         match parse_and_eval(expr, &mut ev) {

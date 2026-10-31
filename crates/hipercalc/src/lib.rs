@@ -137,6 +137,7 @@ const COMMANDS: &[&str] = &[
     "/let",
     "/var",
     "/del",
+    "/fn",
     "/base",
     "/unit",
     "/reset",
@@ -157,7 +158,8 @@ const COMMAND_HINTS: &[(&str, &str)] = &[
     ("/timing", "on|off"),
     ("/set", "<类别> <颜色>"),
     ("/let", "NAME = <表达式>（变量名须全大写）"),
-    ("/del", "NAME 或 all"),
+    ("/del", "NAME 或 all（小写单字母 = 删自定义函数）"),
+    ("/fn", "列出自定义函数（用 f(x)=x^2+1 定义）"),
     ("/base", "dec|hex|oct|bin（结果按该进制显示；仅整数）"),
     ("/unit", "单位名|off（结果按该单位显示；如 /unit km）"),
     ("/reset", "[all]（all = 连模式与颜色一起恢复默认）"),
@@ -2280,6 +2282,7 @@ fn handle_command(input: &str, state: &mut AppState) -> bool {
         "/let" => handle_let(input, state),
         "/var" => handle_vars(state),
         "/del" => handle_del(parts, state),
+        "/fn" => handle_fn_list(state),
         "/exit" | "/quit" | "/q" => return true,
         _ => {
             lprint!(
@@ -3351,6 +3354,31 @@ fn handle_vars(state: &AppState) {
 }
 
 /// /del：删除单个存储变量；`/del all` 清空全部变量
+/// `/fn`：列出已定义的自定义函数。
+fn handle_fn_list(state: &mut AppState) {
+    if state.evaluator.user_fns.is_empty() {
+        lprint!(
+            "{}: 还没有自定义函数 —— 用 {} 定义",
+            "提示".color(state.colors.prompt),
+            "f(x)=x^2+1".color(state.colors.command)
+        );
+        return;
+    }
+    // 排序后输出，保证多次运行顺序一致
+    let names: Vec<String> = state.evaluator.user_fns.keys().cloned().collect();
+    for name in names {
+        if let Some((params, body)) = state.evaluator.user_fns.get(&name) {
+            let rhs = crate::calculus::render::render_expr(body, DisplayMode::MathIO);
+            lprint!(
+                "{}({}) = {}",
+                name.color(state.colors.result).bold(),
+                params.join(", "),
+                colorize_text(&rhs, &state.colors, true)
+            );
+        }
+    }
+}
+
 fn handle_del(parts: Vec<&str>, state: &mut AppState) {
     if parts.len() < 2 {
         lprint!(
@@ -3378,6 +3406,17 @@ fn handle_del(parts: Vec<&str>, state: &mut AppState) {
         return;
     }
     let name = parts[1];
+    // **自定义函数**用小写单字母：先按函数名试一次，命中就直接删掉
+    if crate::parser::is_user_fn_name(name) && state.evaluator.user_fns.remove(name).is_some() {
+        persist_state(state);
+        lprint!(
+            "{}",
+            format!("已删除函数 {}", name)
+                .color(state.colors.result)
+                .bold()
+        );
+        return;
+    }
     if !name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
         lprint!(
             "{}: 变量名必须为全大写字母（如 X、AB），或用 /del all 清空",

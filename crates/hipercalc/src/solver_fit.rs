@@ -517,6 +517,7 @@ fn evaluator_with(
     ev.angle_mode = base.angle_mode;
     ev.ans = base.ans.clone();
     ev.vars = base.vars.clone();
+    ev.user_fns = base.user_fns.clone();
     for (i, name) in unknowns.iter().enumerate() {
         let v = match &set {
             Some((j, val)) if *j == i => val.clone(),

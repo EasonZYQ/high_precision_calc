@@ -271,6 +271,28 @@ impl Session {
     }
 
     /// 已存储的变量（`/let NAME = …`），按名字排序
+    /// **自定义函数表**（GUI 的「自定义函数与变量」页面用）：
+    /// 每项 = (函数名, 参数名列表, 函数体的 MathIO 文本)。
+    pub fn user_fns(&self) -> Vec<(String, Vec<String>, String)> {
+        self.state
+            .evaluator
+            .user_fns
+            .iter()
+            .map(|(name, (params, body))| {
+                (
+                    name.clone(),
+                    params.clone(),
+                    crate::calculus::render::render_expr(body, DisplayMode::MathIO),
+                )
+            })
+            .collect()
+    }
+
+    /// 删除一个自定义函数（不存在返回 false）
+    pub fn del_fn(&mut self, name: &str) -> bool {
+        self.state.evaluator.user_fns.remove(name).is_some()
+    }
+
     pub fn vars(&self) -> Vec<(String, String)> {
         self.state
             .evaluator
