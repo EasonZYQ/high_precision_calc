@@ -700,6 +700,24 @@ fn legendre_derivative(n: usize, x: &BigFloat, prec: usize) -> BigFloat {
     )
 }
 
+// **本进程内数值积分的累计函数求值次数**（仅测试用）。
+// 为什么要有它：本机计时噪声极大（同一题 8ms 与 36ms 都测到过），
+// 而"求值次数"是确定量 —— 优化有没有效果，看这个数最可靠。
+#[cfg(test)]
+thread_local! {
+    pub(crate) static INT_EVALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn int_evals() -> usize {
+    INT_EVALS.with(|c| c.get())
+}
+
+#[cfg(test)]
+pub(crate) fn reset_int_evals() {
+    INT_EVALS.with(|c| c.set(0));
+}
+
 struct Integrator<'a> {
     ev: &'a crate::parser::Evaluator,
     f: &'a Expr,
@@ -707,12 +725,14 @@ struct Integrator<'a> {
     evals: usize,
     budget: usize,
     tol: f64,
-    nodes: Vec<(BigFloat, BigFloat)>,
+    nodes: std::sync::Arc<Vec<(BigFloat, BigFloat)>>,
 }
 
 impl<'a> Integrator<'a> {
     fn eval_at(&mut self, x: &Number) -> Result<Number, String> {
         self.evals += 1;
+        #[cfg(test)]
+        INT_EVALS.with(|c| c.set(c.get() + 1));
         if self.evals > self.budget {
             return Err(ERROR_INT_BUDGET.to_string());
         }
@@ -731,37 +751,49 @@ impl<'a> Integrator<'a> {
         let mid = mid(a, b);
         let width = hipercalc_core::number::Number::sub(b, a);
         let half = hipercalc_core::number::Number::div(&width, &Number::from_int(2));
-        let nodes = self.nodes.clone();
+        // `Arc::clone` 只加引用计数：原来这里是**整表深拷贝**（10 对 BigFloat），
+        // 而每个自适应节点要调 2 次 `rule`，白白分配几十个 BigFloat。
+        let nodes = std::sync::Arc::clone(&self.nodes);
         let mut sum = Number::from_int(0);
-        for (t, w) in nodes {
+        for (t, w) in nodes.iter() {
             let x = hipercalc_core::number::Number::add(
                 &mid,
-                &hipercalc_core::number::Number::mul(&half, &Number::Approx(t)),
+                &hipercalc_core::number::Number::mul(&half, &Number::Approx(t.clone())),
             );
             let fx = self.eval_at(&x)?;
             sum = hipercalc_core::number::Number::add(
                 &sum,
-                &hipercalc_core::number::Number::mul(&Number::Approx(w), &fx),
+                &hipercalc_core::number::Number::mul(&Number::Approx(w.clone()), &fx),
             );
         }
         Ok(hipercalc_core::number::Number::mul(&half, &sum))
     }
 
-    /// 自适应二分：比较整段与两半的求积结果，误差估计 `|S2 − S1|`
-    fn adaptive(&mut self, a: &Number, b: &Number, depth: usize) -> Result<Number, String> {
-        let s1 = self.rule(a, b)?;
+    /// 自适应二分：比较整段与两半的求积结果，误差估计 `|S2 − S1|`。
+    ///
+    /// ⚠️ `s_ab` 是**调用方已经算好**的整段求积值。原来的写法在函数里重算一遍
+    /// `s1 = rule(a,b)`，而父层刚刚才为同一区间算过 —— 每层白白多 1/3 的整棵 AST 求值
+    ///（`exp(-x^2)` 在全区间上要 10 次求值，层级一多就是成百次）。
+    /// 现在由父层把自己的 `l` / `r` 直接传下来，求值次数降到原来的 2/3。
+    fn adaptive(
+        &mut self,
+        a: &Number,
+        b: &Number,
+        s_ab: &Number,
+        depth: usize,
+    ) -> Result<Number, String> {
         let m = mid(a, b);
         let l = self.rule(a, &m)?;
         let r = self.rule(&m, b)?;
         let s2 = hipercalc_core::number::Number::add(&l, &r);
-        let err = hipercalc_core::number::Number::sub(&s2, &s1);
+        let err = hipercalc_core::number::Number::sub(&s2, s_ab);
         let scale = s2.to_approx().magnitude_log10().max(0.0);
         let converged = err.to_approx().magnitude_log10() <= -self.tol + scale;
         if converged || depth >= max_int_depth() {
             return Ok(s2);
         }
-        let left = self.adaptive(a, &m, depth + 1)?;
-        let right = self.adaptive(&m, b, depth + 1)?;
+        let left = self.adaptive(a, &m, &l, depth + 1)?;
+        let right = self.adaptive(&m, b, &r, depth + 1)?;
         Ok(hipercalc_core::number::Number::add(&left, &right))
     }
 }
@@ -786,9 +818,28 @@ fn numeric(
         evals: 0,
         budget: max_int_evals(),
         tol: (hipercalc_core::bigfloat::display_digits() + 6) as f64,
-        nodes: gauss_legendre(GAUSS_NODES, prec),
+        nodes: gauss_nodes_cached(GAUSS_NODES, prec),
     };
-    it.adaptive(a, b, 0)
+    let s_ab = it.rule(a, b)?;
+    it.adaptive(a, b, &s_ab, 0)
+}
+
+/// Gauss–Legendre 节点表缓存（按 `(节点数, 精度)`）。
+///
+/// 节点是用 Newton 迭代求 Legendre 根算出来的，**同一个精度下永远一样** ——
+/// 每次 `int(...)` 重算一遍纯属浪费（每个 `int` 至少一次，级联积分还会多次）。
+fn gauss_nodes_cached(n: usize, prec: usize) -> std::sync::Arc<Vec<(BigFloat, BigFloat)>> {
+    use std::cell::RefCell;
+    thread_local! {
+        static CACHE: RefCell<std::collections::HashMap<(usize, usize), std::sync::Arc<Vec<(BigFloat, BigFloat)>>>> =
+            RefCell::new(std::collections::HashMap::new());
+    }
+    CACHE.with(|c| {
+        let mut m = c.borrow_mut();
+        m.entry((n, prec))
+            .or_insert_with(|| std::sync::Arc::new(gauss_legendre(n, prec)))
+            .clone()
+    })
 }
 
 /// Gauss–Legendre 节点数：10 点对 19 次多项式精确
@@ -855,6 +906,31 @@ fn lt(a: &Number, b: &Number) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// **求值次数回归**（自适应复用左右半区的哨兵）。
+    ///
+    /// 改造前后实测（`cargo test ... measure` 得来，非估算）：
+    /// - `int(exp(-x^2),x,0,1)`：**150 → 110** 次
+    /// - `int(sin(x)/x,x,0,pi)`：**90 → 70** 次
+    ///
+    /// 阈值取得比实测略宽（120 / 80）：这是"防止有人把重复求值写回去"的哨兵，
+    /// 不是精确断言 —— 收敛路径随精度设置略有浮动，但不可能回到 150。
+    #[test]
+    fn adaptive_reuses_half_range_results() {
+        for (case, max_evals) in [
+            ("int(exp(-x^2),x,0,1)", 120usize),
+            ("int(sin(x)/x,x,0,pi)", 80),
+        ] {
+            super::reset_int_evals();
+            let _ = crate::parser::parse_and_eval(case, &mut crate::parser::Evaluator::new());
+            let n = super::int_evals();
+            assert!(
+                n <= max_evals,
+                "{case} 求值 {n} 次，超过上限 {max_evals}（疑似退回了重复求值）"
+            );
+            assert!(n >= 30, "{case} 只求值 {n} 次，计数器可能没工作");
+        }
+    }
+
     use super::*;
     use crate::parser::{DisplayMode, Evaluator, Parser};
 
