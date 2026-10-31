@@ -27,6 +27,24 @@ use hipercalc_gui::app::{Message, State};
 /// 快照落地目录（相对 crate 根）
 const SNAP_DIR: &str = "tests/snapshots";
 
+/// 快照基线的路径：**按平台分开**（`dark-windows` / `dark-linux` / `dark-macos`）。
+///
+/// 为什么要按平台分：同一条断言在不同 OS 上渲染结果本来就会差（字体栅格化、
+/// 亚像素排列、圆角抗锯齿都不一样）。共用一份基线的话，Linux 上第一次生成
+/// 就会把 Windows 的基线覆盖掉，之后 Windows 全红 —— 而且没人会立刻想到是这个原因。
+///
+/// ⚠️ 配套约定（都是现状，不是设想）：
+/// - **基线不入库**：`.gitignore` 明确忽略了 `tests/snapshots/*.png` ——
+///   每台机器第一次跑自己生成，所以"提交 Linux 基线"这件事本身不存在；
+/// - 按平台分名是为了**同一份 checkout 被两个系统共用**时（WSL + Windows、
+///   或双系统）不互相覆盖；
+/// - 第一次跑是"文件不存在 ⇒ 自动写入"，然后**必须用 Read 打开 PNG 看一眼**；
+/// - CI **不跑快照**（headless 没有稳定 GPU/字体，像素比不出意义），
+///   所以 CI 不会因为缺某平台基线而红。
+fn snap_path(name: &str) -> String {
+    format!("{SNAP_DIR}/{name}-{}", std::env::consts::OS)
+}
+
 /// 固定视口尺寸 —— 必须与 `main.rs` 的 `window::Settings.size` 一致，
 /// 否则快照里看到的布局不等于用户真实看到的布局（这类偏差最难发现）
 const VIEWPORT: (f32, f32) = (940.0, 900.0);
@@ -86,7 +104,7 @@ fn dark_theme_snapshot() {
     state.set_dark_for_test(true);
 
     let snapshot = snap(&state);
-    let path = format!("{SNAP_DIR}/dark.png");
+    let path = snap_path("dark");
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "深色主题界面与基线不一致：{path}"
@@ -100,7 +118,7 @@ fn light_theme_snapshot() {
     state.set_dark_for_test(false);
 
     let snapshot = snap(&state);
-    let path = format!("{SNAP_DIR}/light.png");
+    let path = snap_path("light");
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "浅色主题界面与基线不一致：{path}"
@@ -120,7 +138,7 @@ fn lineio_snapshot() {
     state.set_dark_for_test(true);
 
     let snapshot = snap(&state);
-    let path = format!("{SNAP_DIR}/lineio.png");
+    let path = snap_path("lineio");
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "LineIO 界面与基线不一致：{path}"
@@ -136,7 +154,7 @@ fn function_panel_snapshot() {
     let _ = state.update(Message::ToggleFuncs);
 
     let snapshot = snap(&state);
-    let path = format!("{SNAP_DIR}/funcs.png");
+    let path = snap_path("funcs");
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "函数弹窗界面与基线不一致：{path}"
@@ -171,7 +189,7 @@ fn userdefs_page_snapshot() {
     let _ = state.update(Message::UdfName("g".into()));
 
     let snapshot = snap(&state);
-    let path = format!("{SNAP_DIR}/userdefs.png");
+    let path = snap_path("userdefs");
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "自定义函数与变量页与基线不一致：{path}"
@@ -193,7 +211,7 @@ fn triangle_page_snapshot() {
     state.await_pending_for_test();
 
     let snapshot = snap(&state);
-    let path = format!("{SNAP_DIR}/triangle.png");
+    let path = snap_path("triangle");
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "三角形求解页与基线不一致：{path}"
@@ -214,7 +232,7 @@ fn settings_wide_snapshot() {
     let _ = state.update(Message::ToggleSettings);
 
     let snapshot = snap_sized(&state, w, h);
-    let path = format!("{SNAP_DIR}/settings-wide.png");
+    let path = snap_path("settings-wide");
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "宽窗口下的设置面板与基线不一致：{path}"
@@ -234,7 +252,7 @@ fn titlebar_maximized_snapshot() {
     state.set_maximized_for_test(true);
 
     let snapshot = snap(&state);
-    let path = format!("{SNAP_DIR}/titlebar-max.png");
+    let path = snap_path("titlebar-max");
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "标题栏（最大化态）与基线不一致：{path}"
@@ -249,7 +267,7 @@ fn empty_state_snapshot() {
     state.set_dark_for_test(true);
 
     let snapshot = snap(&state);
-    let path = format!("{SNAP_DIR}/empty.png");
+    let path = snap_path("empty");
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "空界面与基线不一致：{path}"
@@ -273,7 +291,7 @@ fn input_preview_snapshot() {
     let _ = state.update(Message::SetPanel(hipercalc_gui::keypad::Panel::Abc));
 
     let snapshot = snap(&state);
-    let path = format!("{SNAP_DIR}/preview.png");
+    let path = snap_path("preview");
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "预览行界面与基线不一致：{path}"
@@ -296,7 +314,7 @@ fn bigop_and_placeholder_snapshot() {
     // 还差最后一个参数没打 ⇒ 那个位置应是占位框
     state.set_input_for_test("∑()");
     let snapshot = snap(&state);
-    let path = format!("{SNAP_DIR}/bigop.png");
+    let path = snap_path("bigop");
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "Σ 大符号与占位框的渲染与基线不一致：{path}"
@@ -319,7 +337,7 @@ fn abc_panel_and_english_snapshot() {
     let _ = state.update(Message::SetLang(hipercalc::session::UiLang::En));
 
     let snapshot = snap(&state);
-    let path = format!("{SNAP_DIR}/abc-en.png");
+    let path = snap_path("abc-en");
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "字母面板界面与基线不一致：{path}"
@@ -341,7 +359,7 @@ fn settings_panel_snapshot() {
     let _ = state.update(Message::ToggleSettings);
 
     let snapshot = snap(&state);
-    let path = format!("{SNAP_DIR}/settings.png");
+    let path = snap_path("settings");
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "设置面板界面与基线不一致：{path}"
@@ -361,7 +379,7 @@ fn math_font_switch_snapshot() {
     let _ = state.update(Message::SetMathFont(2));
 
     let snapshot = snap(&state);
-    let path = format!("{SNAP_DIR}/font-georgia.png");
+    let path = snap_path("font-georgia");
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "换字体后的界面与基线不一致：{path}"
@@ -385,7 +403,7 @@ fn liquid_glass(dark: bool) {
     let _ = state.update(Message::SetTexture(hipercalc_gui::theme::Texture::Glass));
 
     let snapshot = snap(&state);
-    let path = format!("{SNAP_DIR}/liquid-{}", if dark { "dark" } else { "light" });
+    let path = snap_path(&format!("liquid-{}", if dark { "dark" } else { "light" }));
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "玻璃质感（{}）界面与基线不一致：{path}",
@@ -422,7 +440,7 @@ fn liquid_glass_settings_snapshot() {
     let _ = state.update(Message::ToggleSettings);
 
     let snapshot = snap(&state);
-    let path = format!("{SNAP_DIR}/liquid-settings.png");
+    let path = snap_path("liquid-settings");
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "玻璃质感（设置面板）界面与基线不一致：{path}"
@@ -448,7 +466,7 @@ fn structured_input_bigop_snapshot() {
     // 上限留空 ⇒ 光标优先落在第一个空槽（= 上限），正是要展示的那个位置
     state.set_input_for_test("∑(k^2,k,1,)");
 
-    let path = format!("{SNAP_DIR}/input-bigop.png");
+    let path = snap_path("input-bigop");
     let snapshot = snap(&state);
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
@@ -514,7 +532,7 @@ fn liquid_glass_refraction_snapshot() {
     )));
 
     let snapshot = snap(&state);
-    let path = format!("{SNAP_DIR}/liquid-refraction.png");
+    let path = snap_path("liquid-refraction");
     assert!(
         snapshot.matches_image(&path).expect("快照比对/写入失败"),
         "玻璃质感（折射）界面与基线不一致：{path}"

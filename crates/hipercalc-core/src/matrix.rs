@@ -167,34 +167,50 @@ pub fn trace(m: &Mat) -> Result<Number, String> {
     Ok(acc)
 }
 
-/// 行列式（高斯消元 + 行交换符号；第一个非零主元）
+/// 行列式：**Bareiss 分数自由消元**（每次消元除以"上一个主元"而不是当前主元）。
+///
+/// 为什么值得单独实现：
+/// - 朴素高斯消元每一步都要 `factor = a[r][col] / pivot`，一共 **O(n²) 次除法**；
+/// - Bareiss 的除法是 `a[i][j] = (a[i][j]·a[k][k] − a[i][k]·a[k][j]) / prev`，
+///   每个元素**每层只除一次**，而且整数矩阵下这些除法**必然整除**（这正是它的性质），
+///   所以中间量不会像高斯消元那样膨胀成巨大的分数。
+///
+/// 主元为 0 时向下换行（记一次符号）；整列全零则行列式为 0。
 pub fn det(m: &Mat) -> Result<Number, String> {
     if rows(m) != cols(m) {
         return Err("只有方阵才有行列式".to_string());
     }
     let n = rows(m);
+    if n == 0 {
+        return Ok(Number::from_int(1)); // 空矩阵的行列式约定为 1
+    }
     let mut a: Mat = m.to_vec();
     let mut sign = 1i64;
-    let mut acc = Number::from_int(1);
-    for col in 0..n {
-        // 找第一个非零主元
-        let Some(p) = (col..n).find(|&r| !a[r][col].is_zero()) else {
-            return Ok(Number::from_int(0)); // 该列全零 ⇒ 行列式为 0
-        };
-        if p != col {
-            a.swap(p, col);
+    // `prev` 是上一层的主元（第 0 层约定为 1）
+    let mut prev = Number::from_int(1);
+    for k in 0..n.saturating_sub(1) {
+        // 主元为 0 ⇒ 向下找一个非零的换上来（不能"整列全零就判 0"，
+        // 那只在**当前列**成立；这里按 Bareiss 的做法：找不到就真为 0）
+        if a[k][k].is_zero() {
+            let Some(p) = ((k + 1)..n).find(|&r| !a[r][k].is_zero()) else {
+                return Ok(Number::from_int(0));
+            };
+            a.swap(p, k);
             sign = -sign;
         }
-        let pivot = a[col][col].clone();
-        acc = acc.mul(&pivot);
-        for r in (col + 1)..n {
-            let factor = a[r][col].div(&pivot);
-            for c in col..n {
-                a[r][c] = a[r][c].sub(&factor.mul(&a[col][c]));
+        let pivot = a[k][k].clone();
+        for i in (k + 1)..n {
+            for j in (k + 1)..n {
+                let num = a[i][j].mul(&pivot).sub(&a[i][k].mul(&a[k][j]));
+                a[i][j] = num.div(&prev);
             }
+            // 该列消成 0（后面用不到，但保持矩阵形态清晰）
+            a[i][k] = Number::from_int(0);
         }
+        prev = pivot;
     }
-    Ok(if sign < 0 { acc.neg() } else { acc })
+    let d = a[n - 1][n - 1].clone();
+    Ok(if sign < 0 { d.neg() } else { d })
 }
 
 /// 逆矩阵（在增广矩阵上做消元；无逆给出明确错误）
@@ -358,4 +374,115 @@ pub fn render(m: &Mat, fmt: &dyn Fn(&Number) -> String) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("[{body}]")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::display::format_mathio;
+
+    /// 造矩阵：`mat(&[&[1,2], &[3,4]])`
+    fn mat(rows: &[&[i64]]) -> Mat {
+        rows.iter()
+            .map(|r| r.iter().map(|v| Number::from_int(*v)).collect())
+            .collect()
+    }
+
+    /// **余子式（Laplace）展开** —— O(n!)，只拿来对拍 n ≤ 5。
+    ///
+    /// 单独写一份"显然正确但很慢"的实现，是这一对测试的全部价值：
+    /// Bareiss 的除法、换行符号一旦写错，只有和它逐项相等才算过。
+    fn cofactor(m: &Mat) -> Number {
+        let n = m.len();
+        if n == 1 {
+            return m[0][0].clone();
+        }
+        let mut acc = Number::from_int(0);
+        for j in 0..n {
+            if m[0][j].is_zero() {
+                continue;
+            }
+            // 去掉第 0 行、第 j 列
+            let minor: Mat = m[1..]
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .enumerate()
+                        .filter(|(k, _)| *k != j)
+                        .map(|(_, v)| v.clone())
+                        .collect()
+                })
+                .collect();
+            let term = m[0][j].mul(&cofactor(&minor));
+            acc = if j % 2 == 0 {
+                acc.add(&term)
+            } else {
+                acc.sub(&term)
+            };
+        }
+        acc
+    }
+
+    /// 确定性伪随机（不引第三方 RNG）
+    fn lcg(s: &mut u64) -> u64 {
+        *s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *s >> 11
+    }
+
+    /// **Bareiss 与余子式展开必须逐项相等**（整数矩阵 ⇒ 精确有理数，无误差）
+    #[test]
+    fn bareiss_matches_cofactor_expansion() {
+        let mut seed = 20261031u64;
+        for n in 2..=5usize {
+            for _ in 0..40 {
+                let mut rows: Vec<Vec<i64>> = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let mut r = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        r.push((lcg(&mut seed) % 9) as i64 - 4); // -4..=4
+                    }
+                    rows.push(r);
+                }
+                let owned: Vec<&[i64]> = rows.iter().map(|r| r.as_slice()).collect();
+                let m = mat(&owned);
+                let want = cofactor(&m);
+                let got = det(&m).unwrap();
+                assert_eq!(
+                    format_mathio(&got),
+                    format_mathio(&want),
+                    "n={n} 矩阵 {rows:?} 的行列式不一致"
+                );
+            }
+        }
+    }
+
+    /// 主元为 0 时必须**换行**而不是直接判 0；整列全零才是真的 0。
+    #[test]
+    fn bareiss_swaps_zero_pivot() {
+        // 首列首行为 0，但第二行同列非零 ⇒ det = 0*... - 1*... = 1
+        let m = mat(&[&[0, 1], &[1, 0]]);
+        assert_eq!(format_mathio(&det(&m).unwrap()), "-1");
+        // 首列全零 ⇒ det = 0
+        let z = mat(&[&[0, 2], &[0, 3]]);
+        assert_eq!(format_mathio(&det(&z).unwrap()), "0");
+        // 两行相同 ⇒ det = 0（Bareiss 在这里会出现"主元为 0 且下方也为 0"）
+        let s = mat(&[&[1, 2], &[1, 2]]);
+        assert_eq!(format_mathio(&det(&s).unwrap()), "0");
+    }
+
+    /// 三角矩阵：行列式 = 对角线乘积（6×6 也覆盖到 n>5 的路径）
+    #[test]
+    fn bareiss_triangular_is_product_of_diagonal() {
+        let m = mat(&[
+            &[2, 3, 1, 4, 5, 6],
+            &[0, 3, 7, 1, 2, 2],
+            &[0, 0, 4, 5, 1, 1],
+            &[0, 0, 0, 5, 3, 2],
+            &[0, 0, 0, 0, 6, 7],
+            &[0, 0, 0, 0, 0, 7],
+        ]);
+        assert_eq!(format_mathio(&det(&m).unwrap()), "5040"); // 2·3·4·5·6·7
+    }
 }

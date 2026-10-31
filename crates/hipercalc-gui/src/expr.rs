@@ -536,6 +536,14 @@ impl Doc {
         // 这里先把光标挪到幂外面，后面照常插一个普通括号组。
         if t == "(" {
             self.leave_neg_one_exponent();
+            // **括号自动配对**本来就成立：`(` 会走下面的"结构模板"分支，
+            // 由解析器造出一个**结构化 Paren 分组**（带一个空插槽），光标自动落在
+            // 里面；`t == ")"` 是"跳出分组"。也就是说 `(` `2` `)` → `(2)`，
+            // 且退格能整组删掉。
+            //
+            // ⚠️ 别把这里改成 `insert_text("()") + left()`：那样只是两段**纯文本**，
+            // 会丢掉分组结构（`jump_out` 找不到外层、退格不再整组删除）——
+            // 我 2026-10-31 试过，被 `paren_key_is_balanced_and_backspace_removes_whole_group` 抓到。
         }
         // ① 上标：把前一项当底数
         if let Some(exp_src) = t.strip_prefix('^') {

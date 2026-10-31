@@ -55,6 +55,32 @@ fn settings_budget_follows_window_width() {
     assert!(st.settings_row_budget_for_test() >= 280.0);
 }
 
+/// **括号自动配对**：敲 `(` 直接得到一对，光标在中间；右括号只是"跳出"。
+#[test]
+fn typing_paren_auto_pairs() {
+    let mut st = State::default();
+    st.insert("(");
+    assert_eq!(st.input_text(), "()", "敲 `(` 应自动补一个 `)`");
+    st.insert("2");
+    assert_eq!(st.input_text(), "(2)", "后续字符应落在括号内");
+    st.insert(")");
+    assert_eq!(
+        st.input_text(),
+        "(2)",
+        "右括号应跳出分组，而不是再加一个 `)`"
+    );
+
+    // 嵌套：第二个 `(` 落在里层
+    let mut st = State::default();
+    st.insert("(");
+    st.insert("(");
+    st.insert("3");
+    assert_eq!(st.input_text(), "((3))");
+    st.insert(")");
+    st.insert(")");
+    assert_eq!(st.input_text(), "((3))");
+}
+
 /// **点字符右半段 ⇒ 光标落在该字符之后**（用户 2026-10-31 报的 bug）。
 ///
 /// 之前每个字只有一个落点（永远在它之前），点右半边没反应。
