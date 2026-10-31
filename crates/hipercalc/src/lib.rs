@@ -1975,7 +1975,7 @@ pub fn run() -> i32 {
         Ok(o) => o,
         Err(e) => {
             // 参数错误时先确定界面语言，保证提示与后续输出一致
-            match state::load().and_then(|(_, _, _, saved_lang)| saved_lang) {
+            match state::load().and_then(|(_, _, _, saved_lang, _)| saved_lang) {
                 Some(l) => i18n::set(l),
                 None => i18n::set(i18n::detect_system()),
             }
@@ -2006,7 +2006,7 @@ pub fn run() -> i32 {
     let mut restore_ok = false;
     // 用户配置里的耗时开关（默认开）；命令行 `-q` 只改运行期值，不改它
     let mut timing_base = true;
-    if let Some((m, vars, saved_colors, saved_lang)) = restored {
+    if let Some((m, vars, saved_colors, saved_lang, saved_fns)) = restored {
         restore_ok = true;
         evaluator.display_mode = m.display;
         evaluator.angle_mode = m.angle;
@@ -2026,6 +2026,11 @@ pub fn run() -> i32 {
         restored_vars = vars.len();
         for (name, v) in vars {
             evaluator.vars.insert(name, v);
+        }
+        // **重放自定义函数定义**：状态文件里存的是定义原文，
+        // 交给同一个解析器登记 —— 语法只有一处实现，文件不会与它脱节。
+        for def in saved_fns {
+            let _ = parser::parse_and_eval(&def, &mut evaluator);
         }
         // 颜色：类别与颜色名都合法才应用（非法项跳过，保持默认）
         for (cat, name) in saved_colors {
@@ -3464,6 +3469,18 @@ fn persist_state(state: &AppState) {
         bigfloat::sci_allowed(),
         bigfloat::group_enabled(),
         &state.evaluator.vars,
+        &state
+            .evaluator
+            .user_fns
+            .iter()
+            .map(|(name, (params, body))| {
+                format!(
+                    "{name}({}) = {}",
+                    params.join(", "),
+                    crate::calculus::render::render_expr(body, state.evaluator.display_mode)
+                )
+            })
+            .collect::<Vec<String>>(),
         &state.colors.to_pairs(),
     );
     if let Err(e) = r {

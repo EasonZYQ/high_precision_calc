@@ -430,6 +430,8 @@ pub fn load() -> Option<(
     Vec<(String, Number)>,
     Vec<(String, String)>,
     Option<Lang>,
+    // 自定义函数定义原文（`f(x) = x^2 + 1`），由调用方用解析器重放
+    Vec<String>,
 )> {
     let path = state_path()?;
     let text = std::fs::read_to_string(path).ok()?;
@@ -443,6 +445,7 @@ pub fn load() -> Option<(
     let mut sci = true;
     let mut group = false;
     let mut vars: Vec<(String, Number)> = Vec::new();
+    let mut fns: Vec<String> = Vec::new();
     let mut colors: Vec<(String, String)> = Vec::new();
     let mut lang: Option<Lang> = None;
 
@@ -476,6 +479,11 @@ pub fn load() -> Option<(
                 {
                     vars.push((name.to_string(), n));
                 }
+            }
+        } else if let Some(def) = line.strip_prefix("fn:") {
+            // 原样收下，交给调用方用解析器重放（见 lib.rs / session.rs 的恢复逻辑）
+            if !def.trim().is_empty() {
+                fns.push(def.trim().to_string());
             }
         } else if let Some(v) = line.strip_prefix("prec=") {
             if let Ok(n) = v.trim().parse::<usize>() {
@@ -521,6 +529,7 @@ pub fn load() -> Option<(
         vars,
         colors,
         lang,
+        fns,
     ))
 }
 
@@ -536,6 +545,10 @@ pub fn save(
     sci: bool,
     group: bool,
     vars: &BTreeMap<String, Number>,
+    // **自定义函数**：每行是一条完整定义（`f(x) = x^2 + 1`），原样写成 `fn:…`。
+    // 不做结构化序列化 —— 加载时**原样重放**这条定义即可（见 `load`），
+    // 这样自定义函数的语法只有解析器一处实现，状态文件不会与它脱节。
+    fns: &[String],
     colors: &[(&'static str, &'static str)],
 ) -> std::io::Result<()> {
     let path = state_path()
@@ -573,6 +586,9 @@ pub fn save(
     out.push_str(&format!("group={}\n", if group { "on" } else { "off" }));
     for (name, v) in vars {
         out.push_str(&format!("var:{}={}\n", name, encode_var(v)));
+    }
+    for f in fns {
+        out.push_str(&format!("fn:{f}\n"));
     }
     for (cat, name) in colors {
         out.push_str(&format!("color:{}={}\n", cat, name));

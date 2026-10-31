@@ -377,7 +377,7 @@ impl Session {
     pub fn restored() -> (Self, GuiPrefs) {
         let prefs = GuiPrefs::load();
         let mut s = Self::new();
-        if let Some((modes, vars, _colors, lang)) = state::load() {
+        if let Some((modes, vars, _colors, lang, fns)) = state::load() {
             s.set_display_mode(modes.display);
             s.set_angle_mode(modes.angle);
             s.set_calc_mode(modes.calc);
@@ -389,6 +389,10 @@ impl Session {
             bigfloat::set_group_enabled(modes.group);
             if let Some(l) = lang {
                 s.set_lang(l);
+            }
+            // 重放自定义函数定义（与 CLI 同一套：文件里存的是定义原文）
+            for def in &fns {
+                let _ = crate::parser::parse_and_eval(def, &mut s.state.evaluator);
             }
             // `/let` 变量直接灌进会话（否则 GUI 里 `A` 会是"未定义变量"）
             s.state.evaluator.vars = vars.into_iter().collect();
@@ -409,6 +413,22 @@ impl Session {
             bigfloat::sci_allowed(),
             bigfloat::group_enabled(),
             &self.state.evaluator.vars,
+            &self
+                .state
+                .evaluator
+                .user_fns
+                .iter()
+                .map(|(name, (params, body))| {
+                    format!(
+                        "{name}({}) = {}",
+                        params.join(", "),
+                        crate::calculus::render::render_expr(
+                            body,
+                            self.state.evaluator.display_mode
+                        )
+                    )
+                })
+                .collect::<Vec<String>>(),
             &[],
         )
     }
